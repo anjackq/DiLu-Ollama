@@ -3,6 +3,9 @@ import random
 import numpy as np
 import yaml
 import os
+import json
+import re
+import time
 from rich import print
 from rich.table import Table
 from typing import Optional
@@ -19,6 +22,15 @@ from dilu.runtime import (
     build_highway_env_config,
     DEFAULT_DILU_SEEDS,
     ensure_dir,
+    timestamped_results_path,
+    current_timestamp,
+    slugify_model_name,
+    build_experiment_root,
+    build_model_root,
+    build_model_run_dir,
+    ensure_experiment_layout,
+    write_json_atomic,
+    read_json,
 )
 
 try:
@@ -42,6 +54,173 @@ def _to_bool(value, default=False):
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+STRICT_RESPONSE_PATTERN = re.compile(r"Response to user:\s*\#{4}\s*([0-4])\s*$", re.IGNORECASE)
+
+
+def _safe_int_action(action) -> int:
+    if isinstance(action, str):
+        action = action.strip()
+    action = int(action)
+    if action < 0 or action > 4:
+        raise ValueError(f"Invalid action id: {action}")
+    return action
+
+
+def _response_format_metrics(response_content: str) -> dict:
+    response_content = (response_content or "").strip()
+    has_delimiter = "####" in response_content
+    strict_match = STRICT_RESPONSE_PATTERN.search(response_content)
+    direct_action_parseable = False
+
+    if has_delimiter:
+        tail = response_content.split("####")[-1].strip()
+        try:
+            parsed_action = int(tail)
+            if 0 <= parsed_action <= 4:
+                direct_action_parseable = True
+        except Exception:
+            direct_action_parseable = False
+
+    return {
+        "has_delimiter": has_delimiter,
+        "strict_format_match": bool(strict_match),
+        "direct_action_parseable": direct_action_parseable,
+    }
+
+
+def extract_step_traffic_metrics(env, ttc_threshold_sec: float, headway_threshold_m: float) -> dict:
+    ego_speed_mps = None
+    front_gap_m = None
+    relative_speed_mps = None
+    ttc_sec = None
+    ttc_danger = False
+    headway_violation = False
+
+    try:
+        uenv = env.unwrapped
+        ego = getattr(uenv, "vehicle", None)
+        road = getattr(uenv, "road", None)
+        if ego is not None:
+            ego_speed_mps = float(getattr(ego, "speed", 0.0))
+        if ego is not None and road is not None:
+            front_vehicle, _ = road.neighbour_vehicles(ego, ego.lane_index)
+            if front_vehicle is not None:
+                front_gap_m = float(np.linalg.norm(ego.position - front_vehicle.position))
+                relative_speed_mps = float(ego.speed - front_vehicle.speed)
+                if relative_speed_mps > 0:
+                    ttc_sec = front_gap_m / max(relative_speed_mps, 1e-6)
+                    ttc_danger = bool(ttc_sec < ttc_threshold_sec)
+                headway_violation = bool(front_gap_m < headway_threshold_m)
+    except Exception:
+        pass
+
+    return {
+        "ego_speed_mps": ego_speed_mps,
+        "front_gap_m": front_gap_m,
+        "relative_speed_mps": relative_speed_mps,
+        "ttc_sec": ttc_sec,
+        "ttc_danger": ttc_danger,
+        "headway_violation": headway_violation,
+    }
+
+
+def aggregate_run_results(episodes: list) -> dict:
+    total = len(episodes)
+    crashes = sum(1 for e in episodes if e.get("crashed"))
+    errors = sum(1 for e in episodes if e.get("error"))
+    no_collision = sum(1 for e in episodes if e.get("success_no_collision"))
+    truncations = sum(1 for e in episodes if e.get("truncated"))
+    terminations = sum(1 for e in episodes if e.get("terminated"))
+    total_steps = sum(int(e.get("steps", 0)) for e in episodes)
+    total_runtime = sum(float(e.get("episode_runtime_sec", 0.0)) for e in episodes)
+    total_decisions = sum(int(e.get("decisions_made", 0)) for e in episodes)
+    total_delimiters = sum(int(e.get("responses_with_delimiter", 0)) for e in episodes)
+    total_strict = sum(int(e.get("responses_strict_format", 0)) for e in episodes)
+    total_direct = sum(int(e.get("responses_direct_parseable", 0)) for e in episodes)
+    total_format_failures = sum(int(e.get("format_failure_count", 0)) for e in episodes)
+    total_reward_sum = sum(float(e.get("episode_reward_sum", 0.0)) for e in episodes)
+    total_speed = sum(float(e.get("avg_ego_speed_mps", 0.0)) for e in episodes)
+    total_ttc_danger_rate = sum(float(e.get("ttc_danger_rate", 0.0)) for e in episodes)
+    total_headway_rate = sum(float(e.get("headway_violation_rate", 0.0)) for e in episodes)
+    total_lane_change_rate = sum(float(e.get("lane_change_rate", 0.0)) for e in episodes)
+    total_flap_rate = sum(float(e.get("flap_accel_decel_rate", 0.0)) for e in episodes)
+    total_decision_latency_ms = sum(float(e.get("decision_latency_ms_avg", 0.0)) for e in episodes)
+
+    return {
+        "episodes": total,
+        "crashes": crashes,
+        "errors": errors,
+        "no_collision_episodes": no_collision,
+        "crash_rate": round(crashes / total, 4) if total else None,
+        "no_collision_rate": round(no_collision / total, 4) if total else None,
+        "error_rate": round(errors / total, 4) if total else None,
+        "truncation_count": truncations,
+        "termination_count": terminations,
+        "avg_steps": round(total_steps / total, 2) if total else None,
+        "avg_episode_runtime_sec": round(total_runtime / total, 3) if total else None,
+        "avg_step_runtime_sec": round(total_runtime / max(total_steps, 1), 3),
+        "decisions_total": total_decisions,
+        "response_delimiter_rate": round(total_delimiters / total_decisions, 4) if total_decisions else None,
+        "response_strict_format_rate": round(total_strict / total_decisions, 4) if total_decisions else None,
+        "response_direct_parseable_rate": round(total_direct / total_decisions, 4) if total_decisions else None,
+        "avg_reward_sum": round(total_reward_sum / total, 4) if total else None,
+        "avg_reward_per_step": round(total_reward_sum / max(total_steps, 1), 4),
+        "avg_ego_speed_mps": round(total_speed / total, 4) if total else None,
+        "ttc_danger_rate_mean": round(total_ttc_danger_rate / total, 4) if total else None,
+        "headway_violation_rate_mean": round(total_headway_rate / total, 4) if total else None,
+        "lane_change_rate_mean": round(total_lane_change_rate / total, 4) if total else None,
+        "flap_accel_decel_rate_mean": round(total_flap_rate / total, 4) if total else None,
+        "format_failure_rate_mean": round(total_format_failures / max(total_decisions, 1), 4),
+        "decision_latency_ms_avg": round(total_decision_latency_ms / total, 3) if total else None,
+    }
+
+
+def _update_experiment_manifest(
+    experiment_root: str,
+    experiment_id: str,
+    model_name: str,
+    model_slug: str,
+    run_id: str,
+    run_dir: str,
+    metrics_report_path: str,
+    config_path: str,
+    memory_path: str,
+    few_shot_num: int,
+    simulation_duration: int,
+) -> None:
+    manifest_path = os.path.join(experiment_root, "manifest.json")
+    manifest = read_json(manifest_path, default={})
+    model_key = model_name
+
+    manifest.setdefault("experiment_id", experiment_id)
+    manifest.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
+    manifest["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    manifest["config_path"] = config_path
+    manifest["memory_path"] = memory_path
+    manifest["few_shot_num"] = int(few_shot_num)
+    manifest["simulation_duration"] = int(simulation_duration)
+
+    model_meta = manifest.setdefault("models", {})
+    model_record = model_meta.setdefault(model_key, {})
+    model_record["slug"] = model_slug
+    model_record["root"] = os.path.join(experiment_root, "models", model_slug)
+    model_record["latest_run_id"] = run_id
+    model_record["latest_run_dir"] = run_dir
+    model_record["latest_run_metrics"] = metrics_report_path
+
+    run_records = manifest.setdefault("runs", {})
+    run_records[f"{model_slug}:{run_id}"] = {
+        "model": model_name,
+        "model_slug": model_slug,
+        "run_id": run_id,
+        "run_dir": run_dir,
+        "run_metrics": metrics_report_path,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+    write_json_atomic(manifest_path, manifest)
 
 
 class TelemetryHUDWrapper(gym.Wrapper):
@@ -316,11 +495,12 @@ def setup_env(config):
     if config['OPENAI_API_TYPE'] == 'ollama':
         print(f"[bold yellow]Configured for Local Ollama: {selected_model}[/bold yellow]")
 
-    return build_highway_env_config(
+    env_cfg = build_highway_env_config(
         config,
         show_trajectories=True,
         render_agent=True,
     )
+    return env_cfg, selected_model
 
 
 if __name__ == '__main__':
@@ -328,7 +508,7 @@ if __name__ == '__main__':
     warnings.filterwarnings("ignore")
 
     config = yaml.load(open('config.yaml'), Loader=yaml.FullLoader)
-    env_config = setup_env(config)
+    env_config, selected_model = setup_env(config)
 
     REFLECTION = config["reflection_module"]
     reflection_interactive = _to_bool(config.get("reflection_interactive", True), default=True)
@@ -338,14 +518,93 @@ if __name__ == '__main__':
         reflection_add_every_n = 1
     memory_path = config["memory_path"]
     few_shot_num = config["few_shot_num"]
-    result_folder = config["result_folder"]
+
+    config_path = "config.yaml"
+    results_root_cfg = str(config.get("results_root", "") or "").strip()
+    experiment_id_cfg = str(config.get("experiment_id", "") or "").strip()
+    run_id_cfg = str(config.get("run_id", "") or "").strip()
+    result_folder_override = str(config.get("result_folder_override", "") or "").strip()
+    legacy_result_folder = str(config.get("result_folder", "") or "").strip()
+
+    model_name_for_paths = (
+        selected_model
+        or config.get("OPENAI_CHAT_MODEL")
+        or config.get("AZURE_CHAT_DEPLOY_NAME")
+        or "unknown_model"
+    )
+    model_name_for_paths = str(model_name_for_paths)
+    model_slug = slugify_model_name(model_name_for_paths)
+
+    structured_mode = False
+    experiment_root = None
+    experiment_id = None
+    model_root = None
+    run_id = None
+
+    if result_folder_override:
+        result_folder = ensure_dir(result_folder_override)
+    elif results_root_cfg:
+        structured_mode = True
+        experiment_root = build_experiment_root(results_root_cfg, experiment_id_cfg or None)
+        experiment_id = os.path.basename(experiment_root)
+        ensure_experiment_layout(experiment_root, [model_name_for_paths])
+        model_root = build_model_root(experiment_root, model_name_for_paths)
+        run_dir = build_model_run_dir(experiment_root, model_name_for_paths, run_id_cfg or None)
+        run_id = os.path.basename(run_dir)
+        result_folder = run_dir
+    elif legacy_result_folder:
+        # Backward-compatible fallback for older config files without structured-results keys.
+        result_folder = ensure_dir(legacy_result_folder)
+    else:
+        structured_mode = True
+        experiment_root = build_experiment_root(os.path.join("results", "experiments"), experiment_id_cfg or None)
+        experiment_id = os.path.basename(experiment_root)
+        ensure_experiment_layout(experiment_root, [model_name_for_paths])
+        model_root = build_model_root(experiment_root, model_name_for_paths)
+        run_dir = build_model_run_dir(experiment_root, model_name_for_paths, run_id_cfg or None)
+        run_id = os.path.basename(run_dir)
+        result_folder = run_dir
+
     ensure_dir(result_folder)
+    ttc_threshold_sec = float(config.get("metrics_ttc_threshold_sec", 2.0))
+    headway_threshold_m = float(config.get("metrics_headway_threshold_m", 15.0))
+
+    metrics_report = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "report_schema_version": "2.0",
+        "source": "run_dilu_ollama",
+        "config_path": config_path,
+        "openai_api_type": config.get("OPENAI_API_TYPE"),
+        "chat_model": selected_model,
+        "memory_path": memory_path,
+        "few_shot_num": int(few_shot_num),
+        "episodes_num": int(config["episodes_num"]),
+        "simulation_duration": int(config["simulation_duration"]),
+        "result_folder": result_folder,
+        "structured_results_mode": structured_mode,
+        "experiment_id": experiment_id,
+        "experiment_root": experiment_root,
+        "model_root": model_root,
+        "model_slug": model_slug,
+        "run_id": run_id,
+        "run_dir": result_folder,
+        "metrics_config": {
+            "ttc_threshold_sec": ttc_threshold_sec,
+            "headway_threshold_m": headway_threshold_m,
+            "flapping_mode": "accel_decel",
+        },
+        "episodes": [],
+        "aggregate": None,
+    }
     log_path = os.path.join(result_folder, "log.txt")
     with open(log_path, 'w') as f:
         f.write("memory_path {} | result_folder {} | few_shot_num: {} | lanes_count: {} \n".format(
             memory_path, result_folder, few_shot_num, env_config['highway-v0']['lanes_count']))
         f.write("reflection_module {} | reflection_interactive {} | reflection_auto_add {} | reflection_add_every_n {} \n".format(
             REFLECTION, reflection_interactive, reflection_auto_add, reflection_add_every_n
+        ))
+        f.write("structured_results_mode {} | experiment_id {} | model_slug {} | run_id {} \n".format(
+            structured_mode, experiment_id, model_slug, run_id
         ))
 
     agent_memory = DrivingMemory(db_path=memory_path)
@@ -379,9 +638,27 @@ if __name__ == '__main__':
         docs = []
         collision_frame = -1
         crashed = False
+        terminated = False
+        truncated = False
+        episode_error = None
+        episode_started = time.time()
+        already_decision_steps = 0
+
+        decisions_made = 0
+        responses_with_delimiter = 0
+        responses_strict_format = 0
+        responses_direct_parseable = 0
+        format_failure_count = 0
+        episode_reward_sum = 0.0
+        ego_speed_sum = 0.0
+        ego_speed_count = 0
+        ttc_danger_steps = 0
+        headway_violation_steps = 0
+        lane_change_count = 0
+        flap_accel_decel_count = 0
+        prev_action_id = None
 
         try:
-            already_decision_steps = 0
             for i in range(0, config["simulation_duration"]):
                 obs = np.array(obs, dtype=float)
 
@@ -414,6 +691,13 @@ if __name__ == '__main__':
                     driving_intensions="Drive safely and avoid collisons",
                     fewshot_answers=fewshot_answers,
                 )
+                decisions_made += 1
+                fmt = _response_format_metrics(response)
+                responses_with_delimiter += int(fmt["has_delimiter"])
+                responses_strict_format += int(fmt["strict_format_match"])
+                responses_direct_parseable += int(fmt["direct_action_parseable"])
+                format_failure_count += int(not fmt["strict_format_match"])
+
                 docs.append({
                     "sce_descrip": sce_descrip,
                     "human_question": human_question,
@@ -424,15 +708,25 @@ if __name__ == '__main__':
                 })
 
                 #obs, reward, done, info, _ = env.step(action)
-                if isinstance(action, str):
-                    action = int(action)
-                action = int(action)
+                action = _safe_int_action(action)
+                lane_change_count += int(action in (0, 2))
+                if prev_action_id is not None and ((prev_action_id == 3 and action == 4) or (prev_action_id == 4 and action == 3)):
+                    flap_accel_decel_count += 1
+                prev_action_id = action
 
                 obs, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
                 crashed = bool(info.get("crashed", False))
 
                 already_decision_steps += 1
+                episode_reward_sum += float(reward)
+
+                step_metrics = extract_step_traffic_metrics(env, ttc_threshold_sec, headway_threshold_m)
+                if step_metrics["ego_speed_mps"] is not None:
+                    ego_speed_sum += float(step_metrics["ego_speed_mps"])
+                    ego_speed_count += 1
+                ttc_danger_steps += int(step_metrics["ttc_danger"])
+                headway_violation_steps += int(step_metrics["headway_violation"])
 
                 env.render()
                 sce.promptsCommit(i, None, done, human_question,
@@ -449,6 +743,9 @@ if __name__ == '__main__':
                     else:
                         print("[yellow]Episode ended without collision (e.g., timeout/truncation).[/yellow]")
                     break
+        except Exception as exc:
+            episode_error = f"{type(exc).__name__}: {exc}"
+            print(f"[red]Episode {episode} error: {episode_error}[/red]")
         finally:
 
             with open(log_path, 'a') as f:
@@ -510,7 +807,51 @@ if __name__ == '__main__':
                                     updated_memory.scenario_memory._collection.get(include=['embeddings'])['embeddings']), " items.")
                     else:
                         print("[blue]Ignore these new memory items[/blue]")
-            
+
+            duration_sec = time.time() - episode_started
+            episode_reward_avg = episode_reward_sum / max(already_decision_steps, 1)
+            avg_ego_speed_mps = ego_speed_sum / max(ego_speed_count, 1)
+            ttc_danger_rate = ttc_danger_steps / max(already_decision_steps, 1)
+            headway_violation_rate = headway_violation_steps / max(already_decision_steps, 1)
+            lane_change_rate = lane_change_count / max(already_decision_steps, 1)
+            flap_accel_decel_rate = flap_accel_decel_count / max(already_decision_steps, 1)
+            decision_latency_ms_avg = (duration_sec / max(already_decision_steps, 1)) * 1000.0
+            format_failure_rate = format_failure_count / max(decisions_made, 1)
+
+            metrics_report["episodes"].append({
+                "episode_index": int(episode),
+                "seed": int(seed),
+                "result_prefix": result_prefix,
+                "video_prefix": result_prefix,
+                "database_path": database_path,
+                "steps": int(already_decision_steps),
+                "max_steps": int(config["simulation_duration"]),
+                "crashed": bool(crashed),
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
+                "success_no_collision": (episode_error is None and not crashed),
+                "episode_runtime_sec": round(duration_sec, 3),
+                "avg_step_runtime_sec": round(duration_sec / max(already_decision_steps, 1), 3),
+                "decisions_made": int(decisions_made),
+                "responses_with_delimiter": int(responses_with_delimiter),
+                "responses_strict_format": int(responses_strict_format),
+                "responses_direct_parseable": int(responses_direct_parseable),
+                "format_failure_count": int(format_failure_count),
+                "format_failure_rate": round(format_failure_rate, 4),
+                "episode_reward_sum": round(episode_reward_sum, 4),
+                "episode_reward_avg": round(episode_reward_avg, 4),
+                "avg_ego_speed_mps": round(avg_ego_speed_mps, 4),
+                "ttc_danger_steps": int(ttc_danger_steps),
+                "ttc_danger_rate": round(ttc_danger_rate, 4),
+                "headway_violation_steps": int(headway_violation_steps),
+                "headway_violation_rate": round(headway_violation_rate, 4),
+                "lane_change_count": int(lane_change_count),
+                "lane_change_rate": round(lane_change_rate, 4),
+                "flap_accel_decel_count": int(flap_accel_decel_count),
+                "flap_accel_decel_rate": round(flap_accel_decel_rate, 4),
+                "decision_latency_ms_avg": round(decision_latency_ms_avg, 3),
+                "error": episode_error,
+            })
 
             print("==========Simulation {} Done==========".format(episode))
             episode += 1
@@ -519,5 +860,25 @@ if __name__ == '__main__':
                 env.close()
             except Exception:
                 pass
+
+    metrics_report["aggregate"] = aggregate_run_results(metrics_report["episodes"])
+    metrics_report_path = timestamped_results_path("run_metrics", ext=".json", results_dir=result_folder)
+    write_json_atomic(metrics_report_path, metrics_report)
+
+    if structured_mode and experiment_root and experiment_id and run_id:
+        _update_experiment_manifest(
+            experiment_root=experiment_root,
+            experiment_id=experiment_id,
+            model_name=model_name_for_paths,
+            model_slug=model_slug,
+            run_id=run_id,
+            run_dir=result_folder,
+            metrics_report_path=metrics_report_path,
+            config_path=config_path,
+            memory_path=memory_path,
+            few_shot_num=int(few_shot_num),
+            simulation_duration=int(config["simulation_duration"]),
+        )
+    print(f"[bold green]Saved run metrics report:[/bold green] {metrics_report_path}")
 
 

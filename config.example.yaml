@@ -27,10 +27,23 @@ reflection_add_every_n: 5 # In non-collision runs, add one memory every N frames
 few_shot_num: 3 # 0 or 1 recommended for smaller local models
 episodes_num: 3
 memory_path: 'memories/qwen3_embed_8b'
-result_folder: 'results/deepseek-r1_14b'
+
+# Structured results layout (recommended default)
+results_root: 'results/experiments'
+experiment_id: null # null -> auto timestamped experiment id
+run_id: null # null -> auto run_<timestamp>
+
+# Legacy direct output override (optional)
+result_folder_override: null
+result_folder: 'results/deepseek-r1_14b' # backward-compat fallback when results_root is unset
 
 ############ Highway-env config ############
 simulation_duration: 20
 vehicle_count: 15
 other_vehicle_type: "highway_env.vehicle.behavior.IDMVehicle"
 vehicles_density: 2.0
+
+############ Evaluation metrics defaults ############
+metrics_ttc_threshold_sec: 2.0
+metrics_headway_threshold_m: 15.0
+metrics_flapping_mode: "accel_decel"

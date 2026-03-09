@@ -1,70 +1,43 @@
 import argparse
-import json
-import re
-from collections import Counter
 
-
-ACTION_PATTERN = re.compile(r"Response to user:\s*\#{4}\s*([0-4])\s*$", re.IGNORECASE)
+from fine_tuning.pipeline import profile_dataset_rows, read_jsonl, validate_canonical_row
 
 
 def validate_dataset(path: str, max_examples: int = 5) -> int:
-    total = 0
-    invalid = 0
-    action_counts = Counter()
+    rows = read_jsonl(path)
+    profile = profile_dataset_rows(rows)
     examples = []
 
-    with open(path, "r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            total += 1
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as e:
-                invalid += 1
-                print(f"[line {line_no}] Invalid JSON: {e}")
-                continue
+    for idx, row in enumerate(rows, start=1):
+        ok, _ = validate_canonical_row(row)
+        if ok:
+            examples.append(
+                {
+                    "line": idx,
+                    "output": row["output"].strip().splitlines()[-1],
+                }
+            )
+        if len(examples) >= max_examples:
+            break
 
-            for key in ("instruction", "input", "output"):
-                if key not in row or not isinstance(row[key], str) or not row[key].strip():
-                    invalid += 1
-                    print(f"[line {line_no}] Missing/empty required field: {key}")
-                    break
-            else:
-                output = row["output"].strip()
-                if "Reasoning:" not in output:
-                    invalid += 1
-                    print(f"[line {line_no}] Output missing 'Reasoning:'")
-                    continue
-                match = ACTION_PATTERN.search(output)
-                if not match:
-                    invalid += 1
-                    print(f"[line {line_no}] Output missing final 'Response to user:#### <0-4>'")
-                    continue
-                action = int(match.group(1))
-                action_counts[action] += 1
-                if len(examples) < max_examples:
-                    examples.append({
-                        "line": line_no,
-                        "action": action,
-                        "output": output.splitlines()[-1]
-                    })
+    print(f"Rows checked: {profile['rows']}")
+    print(f"Invalid rows: {profile['invalid_rows']}")
+    print(f"Valid rows: {profile['valid_rows']}")
+    print(f"Action distribution: {profile['action_distribution']}")
+    print(f"Duplicate rate: {profile['duplicate_rate']:.4f}")
+    if profile["invalid_breakdown"]:
+        print(f"Invalid breakdown: {profile['invalid_breakdown']}")
 
-    print(f"Rows checked: {total}")
-    print(f"Invalid rows: {invalid}")
-    print(f"Valid rows: {total - invalid}")
-    print(f"Action distribution: {dict(sorted(action_counts.items()))}")
     if examples:
         print("Sample valid outputs:")
         for ex in examples:
-            print(f"- line {ex['line']}: action={ex['action']} | {ex['output']}")
+            print(f"- line {ex['line']} | {ex['output']}")
 
-    return 1 if invalid else 0
+    return 1 if profile["invalid_rows"] else 0
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate fine-tuning dataset rows and runtime output format.")
+def main():
+    parser = argparse.ArgumentParser(description="Validate fine-tuning dataset schema and output format.")
     parser.add_argument("path", nargs="?", default="data/gold_standard_data_clean.jsonl")
     parser.add_argument("--max-examples", type=int, default=5)
     args = parser.parse_args()
@@ -73,3 +46,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

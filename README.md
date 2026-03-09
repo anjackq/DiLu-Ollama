@@ -124,11 +124,37 @@ Key settings for local runs:
 - `OLLAMA_REFLECTION_MODEL`
 - `OLLAMA_EMBED_MODEL`
 - `memory_path` (embedding dimensions differ across models, so use separate memory DBs)
+- `results_root` / `experiment_id` / `run_id` (structured result layout)
+- `result_folder_override` (optional legacy direct-output override)
 
 Run DiLu with local Ollama:
 
 ```bash
 python run_dilu_ollama.py
+```
+
+By default this now writes to:
+
+```text
+results/experiments/<experiment_id>/models/<model_slug>/runs/<run_id>/
+```
+
+including videos, episode DBs, `log.txt`, and `run_metrics_*.json`.
+
+### Experiment-Oriented Results Layout
+
+```text
+results/
+  experiments/
+    <experiment_id>/
+      manifest.json
+      compare/
+        eval_compare_<timestamp>.json
+      models/
+        <model_slug>/
+          runs/<run_id>/
+          eval/
+          plots/
 ```
 
 ### Fine-Tuning Workflow (Small/Local Models)
@@ -146,10 +172,29 @@ Convert data to the strict instruction/output format used by the training script
 python data/convert_data.py
 ```
 
+Validate the cleaned dataset schema/format before training:
+
+```bash
+python validate_finetune_dataset.py data/gold_standard_data_clean.jsonl
+```
+
 Train and export a merged model for Ollama (Unsloth + TRL):
 
 ```bash
 python fine_tuning/train_dilu_updated.py
+```
+
+Family-aware training examples:
+
+```bash
+python fine_tuning/train_dilu_updated.py --model-name unsloth/Llama-3.1-8B-Instruct --model-family llama3
+python fine_tuning/train_dilu_updated.py --model-name unsloth/Qwen2.5-7B-Instruct --model-family qwen
+```
+
+Run the full pipeline (collect -> convert -> validate -> train):
+
+```bash
+python fine_tuning/run_pipeline.py --all
 ```
 
 Example Ollama Modelfile template is tracked here:
@@ -169,16 +214,104 @@ Run a larger comparison:
 python evaluate_models_ollama.py --models deepseek-r1:14b dilu-llama3_1-8b-v1 --limit 5
 ```
 
-This saves a JSON report in `results/`, for example:
-- `results/eval_compare_YYYYMMDD_HHMMSS.json`
+Structured comparison output options:
+
+```bash
+python evaluate_models_ollama.py --models deepseek-r1:14b dilu-llama3_1-8b-v1 --limit 5 --experiment-id exp_nonthinking_v1
+python evaluate_models_ollama.py --models deepseek-r1:14b dilu-llama3_1-8b-v1 --limit 5 --results-root results/experiments
+python evaluate_models_ollama.py --models deepseek-r1:14b --limit 3 --output results/my_eval_report.json
+```
+
+Optional reasoning-alignment sample collection (for manual or later judge-model scoring):
+
+```bash
+python evaluate_models_ollama.py --models deepseek-r1:14b dilu-llama3_1-8b-v1 --limit 5 --alignment-sample-rate 0.1 --alignment-max-samples 50
+```
+
+By default this saves:
+- Global compare report: `results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json`
+- Per-model summaries:
+  - `.../models/<model_slug>/eval/eval_summary_<timestamp>.json`
+  - `.../models/<model_slug>/eval/eval_episodes_<timestamp>.json`
+- Experiment manifest: `results/experiments/<experiment_id>/manifest.json`
+
+The benchmark report includes:
+- Existing metrics: crash/no-collision rates, avg steps, runtime, response format rates
+- New online safety metrics: TTC danger rate (`TTC < 2.0s`), headway violation rate (`front gap < 15m`)
+- New efficiency/comfort metrics: reward summary, average ego speed, lane-change rate, accel/decel flapping rate (`3↔4`)
+- New system metrics: format failure rate and decision-latency estimate (`ms/step`)
 
 Plot the comparison report:
 
 ```bash
-python plot_eval_compare.py -i results/eval_compare_YYYYMMDD_HHMMSS.json
+python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json
 ```
 
 This generates a PNG chart with crash rate / no-collision rate / average steps / runtime.
+
+Plot extended safety/comfort metrics:
+
+```bash
+python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json --extended
+```
+
+This generates a PNG chart for TTC danger rate / headway violation rate / lane-change rate / accel-decel flap rate.
+
+Emit per-model plots under each model folder:
+
+```bash
+python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json --all-metrics --emit-per-model
+```
+
+### Example Runs
+
+Quick smoke test (single model, 1 seed, zero-shot):
+
+```bash
+python evaluate_models_ollama.py --models deepseek-r1:14b --limit 1 --few-shot-num 0
+```
+
+Two-model comparison on fixed seeds:
+
+```bash
+python evaluate_models_ollama.py --models deepseek-r1:14b dilu-llama3_1-8b-v1 --limit 5
+```
+
+Two-model comparison with alignment sample collection:
+
+```bash
+python evaluate_models_ollama.py --models deepseek-r1:14b dilu-llama3_1-8b-v1 --limit 5 --alignment-sample-rate 0.1 --alignment-max-samples 50
+```
+
+Custom output path:
+
+```bash
+python evaluate_models_ollama.py --models deepseek-r1:14b --limit 3 --output results/my_eval_report.json
+```
+
+Plot default 2x2 metrics:
+
+```bash
+python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json
+```
+
+Plot extended safety/comfort metrics:
+
+```bash
+python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json --extended
+```
+
+Plot all metrics together:
+
+```bash
+python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json --all-metrics
+```
+
+Emit per-model plots into each model folder:
+
+```bash
+python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json --all-metrics --emit-per-model
+```
 
 ### Git Hygiene (What Is Intentionally Not Tracked)
 
