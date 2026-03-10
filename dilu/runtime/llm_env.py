@@ -54,6 +54,9 @@ def configure_runtime_env(config: Dict[str, Any], chat_model_override: Optional[
             raise ValueError("OLLAMA_CHAT_MODEL must be set when OPENAI_API_TYPE is 'ollama'.")
         ollama_api_base = str(config.get("OLLAMA_API_BASE", "http://localhost:11434/v1"))
         ollama_api_key = str(config.get("OLLAMA_API_KEY", "ollama"))
+        ollama_think_mode = str(config.get("OLLAMA_THINK_MODE", "auto"))
+        ollama_use_native_chat = str(config.get("OLLAMA_USE_NATIVE_CHAT", True))
+        ollama_native_chat_timeout_sec = str(config.get("OLLAMA_NATIVE_CHAT_TIMEOUT_SEC", 60))
         os.environ["OPENAI_API_TYPE"] = "ollama"
         os.environ["OLLAMA_API_BASE"] = ollama_api_base
         os.environ["OPENAI_BASE_URL"] = ollama_api_base
@@ -62,6 +65,9 @@ def configure_runtime_env(config: Dict[str, Any], chat_model_override: Optional[
         os.environ["OLLAMA_API_KEY"] = ollama_api_key
         os.environ["OLLAMA_CHAT_MODEL"] = selected_model
         os.environ["OLLAMA_EMBED_MODEL"] = str(config["OLLAMA_EMBED_MODEL"])
+        os.environ["OLLAMA_THINK_MODE"] = ollama_think_mode
+        os.environ["OLLAMA_USE_NATIVE_CHAT"] = ollama_use_native_chat
+        os.environ["OLLAMA_NATIVE_CHAT_TIMEOUT_SEC"] = ollama_native_chat_timeout_sec
         if config.get("OLLAMA_REFLECTION_MODEL"):
             os.environ["OLLAMA_REFLECTION_MODEL"] = str(config["OLLAMA_REFLECTION_MODEL"])
         return selected_model

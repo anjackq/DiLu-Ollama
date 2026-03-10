@@ -24,6 +24,13 @@ OLLAMA_CHAT_MODEL: 'deepseek-r1:14b'
 OLLAMA_REFLECTION_MODEL: 'deepseek-r1:14b'
 OLLAMA_EMBED_MODEL: 'qwen3-embedding:8b'
 OLLAMA_API_KEY: 'ollama'
+# Driver agent reasoning switch for native Ollama chat.
+# Allowed: auto | think | no_think
+OLLAMA_THINK_MODE: 'auto'
+# Use native Ollama /api/chat for driver decisions (supports think switch).
+OLLAMA_USE_NATIVE_CHAT: true
+# Optional timeout for native /api/chat requests (seconds).
+OLLAMA_NATIVE_CHAT_TIMEOUT_SEC: 60
 
 ############### DiLu settings ############
 reflection_module: True # True or False

@@ -127,6 +127,8 @@ Key settings for local runs:
 - `OLLAMA_CHAT_MODEL`
 - `OLLAMA_REFLECTION_MODEL`
 - `OLLAMA_EMBED_MODEL`
+- `OLLAMA_THINK_MODE` (`auto` | `think` | `no_think`)
+- `OLLAMA_USE_NATIVE_CHAT` (`true` recommended; enables native `/api/chat` think switch)
 - `memory_path` (embedding dimensions differ across models, so use separate memory DBs)
 - `results_root` / `experiment_id` / `run_id` (structured result layout)
 - `result_folder_override` (optional legacy direct-output override)
@@ -144,6 +146,12 @@ results/experiments/<experiment_id>/models/<model_slug>/runs/<run_id>/
 ```
 
 including videos, episode DBs, `log.txt`, and `run_metrics_*.json`.
+
+Ollama think/no-think switch:
+- `OLLAMA_THINK_MODE: 'no_think'` can reduce long chain-of-thought latency on reasoning models.
+- `OLLAMA_THINK_MODE: 'think'` enables explicit reasoning mode when supported.
+- `OLLAMA_THINK_MODE: 'auto'` leaves model default behavior.
+- This switch is applied in the **driver agent** path in this phase; reflection behavior is unchanged.
 
 ### Gemini Runtime
 
@@ -238,6 +246,12 @@ If a model hangs or responds very slowly, run with timeout guardrails:
 
 ```bash
 python evaluate_models_ollama.py --models qwen3:0.6b --limit 1 --few-shot-num 0 --decision-timeout-sec 60 --disable-streaming --disable-checker-llm
+```
+
+Force no-think mode in evaluation (Ollama models):
+
+```bash
+python evaluate_models_ollama.py --models qwen3.5:0.8b --limit 1 --few-shot-num 0 --ollama-think-mode no_think --ollama-use-native-chat
 ```
 
 Run a larger comparison:

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -95,6 +96,70 @@ def _slugify(name: str) -> str:
             out.append("_")
     slug = "".join(out).strip("_")
     return slug or "model"
+
+
+def _maybe_patch_phi_tokenizer_config(hf_model_dir: str) -> Optional[tuple[str, str]]:
+    """Patch tokenizer_config for Phi3/Phi4-style exports lacking tokenizer.model.
+
+    Some llama.cpp revisions expect Phi3 models to provide tokenizer.model unless
+    tokenizer_class is GPT2Tokenizer. Unsloth merged exports can contain only
+    tokenizer.json + tokenizer_config.json with tokenizer_class=TokenizersBackend.
+    In that case we patch tokenizer_class temporarily for conversion and restore it.
+    """
+    config_path = os.path.join(hf_model_dir, "config.json")
+    tokenizer_config_path = os.path.join(hf_model_dir, "tokenizer_config.json")
+    tokenizer_json_path = os.path.join(hf_model_dir, "tokenizer.json")
+    tokenizer_model_path = os.path.join(hf_model_dir, "tokenizer.model")
+
+    if not os.path.isfile(config_path):
+        return None
+    if not os.path.isfile(tokenizer_config_path):
+        return None
+    if not os.path.isfile(tokenizer_json_path):
+        return None
+    if os.path.isfile(tokenizer_model_path):
+        return None
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            model_config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    model_type = str(model_config.get("model_type", "")).lower()
+    architectures = model_config.get("architectures", [])
+    is_phi3_family = model_type == "phi3" or any(
+        isinstance(a, str) and a.lower().startswith("phi3") for a in architectures
+    )
+    if not is_phi3_family:
+        return None
+
+    with open(tokenizer_config_path, "r", encoding="utf-8") as f:
+        original_text = f.read()
+    try:
+        tokenizer_config = json.loads(original_text)
+    except json.JSONDecodeError:
+        return None
+
+    tokenizer_class = str(tokenizer_config.get("tokenizer_class", ""))
+    if tokenizer_class == "GPT2Tokenizer":
+        return None
+
+    tokenizer_config["tokenizer_class"] = "GPT2Tokenizer"
+    with open(tokenizer_config_path, "w", encoding="utf-8") as f:
+        json.dump(tokenizer_config, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    print(
+        "[INFO] Applied temporary tokenizer compatibility patch for llama.cpp: "
+        f"{tokenizer_config_path} tokenizer_class={tokenizer_class!r} -> 'GPT2Tokenizer'"
+    )
+    return tokenizer_config_path, original_text
+
+
+def _restore_patched_file(path: str, original_text: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(original_text)
 
 
 def parse_args() -> argparse.Namespace:
@@ -235,19 +300,25 @@ def main() -> None:
 
     base_name = args.name.strip() or _slugify(os.path.basename(hf_model_dir))
     base_gguf = os.path.join(output_dir, f"{base_name}.{args.outtype}.gguf")
-
-    _run(
-        [
-            args.python,
-            convert_script,
-            hf_model_dir,
-            "--outfile",
-            base_gguf,
-            "--outtype",
-            args.outtype,
-        ],
-        cwd=llama_cpp_dir,
-    )
+    patched = _maybe_patch_phi_tokenizer_config(hf_model_dir)
+    try:
+        _run(
+            [
+                args.python,
+                convert_script,
+                hf_model_dir,
+                "--outfile",
+                base_gguf,
+                "--outtype",
+                args.outtype,
+            ],
+            cwd=llama_cpp_dir,
+        )
+    finally:
+        if patched:
+            patched_path, original_text = patched
+            _restore_patched_file(patched_path, original_text)
+            print(f"[INFO] Restored original tokenizer config: {patched_path}")
 
     final_gguf = base_gguf
     quant = args.quantize.strip()

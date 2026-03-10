@@ -1,10 +1,13 @@
 import os
+import json
 import re
 import textwrap
 import time
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from rich import print
 from typing import List
+import requests
 
 # UPDATED IMPORTS
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -61,6 +64,40 @@ def _env_float(name: str, default: float) -> float:
         return value if value > 0 else default
     except Exception:
         return default
+
+
+def _normalize_ollama_think_mode(raw: str) -> str:
+    mode = str(raw or "auto").strip().lower()
+    if mode in {"think", "true", "on", "1"}:
+        return "think"
+    if mode in {"no_think", "nothink", "no-think", "false", "off", "0"}:
+        return "no_think"
+    return "auto"
+
+
+def _ollama_native_chat_url(api_base: str) -> str:
+    base = (api_base or "http://localhost:11434/v1").strip()
+    if base.endswith("/"):
+        base = base[:-1]
+    parsed = urlparse(base)
+    normalized_path = parsed.path.rstrip("/")
+    if normalized_path.endswith("/v1"):
+        root_path = normalized_path[:-3]
+    elif normalized_path == "/v1":
+        root_path = ""
+    else:
+        root_path = normalized_path
+    if not root_path.endswith("/"):
+        root_path += "/"
+    return f"{parsed.scheme}://{parsed.netloc}{root_path}api/chat"
+
+
+def _ollama_role_from_message(msg) -> str:
+    if isinstance(msg, SystemMessage):
+        return "system"
+    if isinstance(msg, AIMessage):
+        return "assistant"
+    return "user"
 # ... (Keep example_message and example_answer variables as they are in original) ...
 example_message = textwrap.dedent(f"""\
         {delimiter} Driving scenario description:
@@ -96,14 +133,20 @@ class DriverAgent:
             temperature: float = 0, verbose: bool = False
     ) -> None:
         self.sce = sce
-        oai_api_type = os.getenv("OPENAI_API_TYPE")
+        self.oai_api_type = os.getenv("OPENAI_API_TYPE")
         self.decision_timeout_sec = _env_float("DILU_DECISION_TIMEOUT_SEC", 60.0)
         # For local Ollama models, invoke mode avoids long stream stalls on small models.
-        default_streaming = oai_api_type != "ollama"
+        default_streaming = self.oai_api_type != "ollama"
         self.use_streaming = _env_bool("DILU_USE_STREAMING", default_streaming)
         self.enable_checker_llm = _env_bool("DILU_ENABLE_CHECKER_LLM", True)
         max_tokens_default = 2000
         self.max_tokens = int(os.getenv("DILU_MAX_OUTPUT_TOKENS", str(max_tokens_default)))
+        self.ollama_use_native_chat = _env_bool("OLLAMA_USE_NATIVE_CHAT", True)
+        self.ollama_think_mode = _normalize_ollama_think_mode(os.getenv("OLLAMA_THINK_MODE", "auto"))
+        self.ollama_native_chat_timeout_sec = _env_float("OLLAMA_NATIVE_CHAT_TIMEOUT_SEC", self.decision_timeout_sec)
+        self.ollama_chat_url = _ollama_native_chat_url(os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1"))
+        self.ollama_model_name = os.getenv("OLLAMA_CHAT_MODEL")
+        self.ollama_api_key = os.getenv("OLLAMA_API_KEY", "ollama")
         self.last_decision_meta = {
             "timed_out": False,
             "used_fallback": False,
@@ -113,7 +156,7 @@ class DriverAgent:
             "selected_action": None,
             "decision_elapsed_sec": 0.0,
         }
-        if oai_api_type == "azure":
+        if self.oai_api_type == "azure":
             print("Using Azure Chat API")
             self.llm = AzureChatOpenAI(
                 callbacks=[
@@ -125,7 +168,7 @@ class DriverAgent:
                 request_timeout=self.decision_timeout_sec,
                 streaming=self.use_streaming,
             )
-        elif oai_api_type == "openai":
+        elif self.oai_api_type == "openai":
             print("Use OpenAI API")
             self.llm = ChatOpenAI(
                 temperature=temperature,
@@ -138,14 +181,21 @@ class DriverAgent:
                 streaming=self.use_streaming,
             )
         # [ADD] Added support for local Ollama models
-        elif oai_api_type == "ollama":
-            model_name = os.getenv("OLLAMA_CHAT_MODEL")
+        elif self.oai_api_type == "ollama":
+            model_name = self.ollama_model_name
             api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
-            api_key = os.getenv("OLLAMA_API_KEY", "ollama")
+            api_key = self.ollama_api_key
+
+            if not model_name:
+                raise ValueError("OLLAMA_CHAT_MODEL is not configured.")
 
             print(f"Using Local Ollama API: {model_name} at {api_base}")
+            if self.ollama_use_native_chat:
+                print(
+                    f"[yellow]DriverAgent Ollama mode: native /api/chat | think_mode={self.ollama_think_mode}[/yellow]"
+                )
 
-            # Use ChatOpenAI to talk to Ollama's OpenAI-compatible endpoint
+            # Keep OpenAI-compatible client as fallback for native failures.
             self.llm = ChatOpenAI(
                 temperature=temperature,
                 model_name=model_name,
@@ -155,7 +205,7 @@ class DriverAgent:
                 request_timeout=self.decision_timeout_sec,
                 streaming=self.use_streaming,
             )
-        elif oai_api_type == "gemini":
+        elif self.oai_api_type == "gemini":
             if ChatGoogleGenerativeAI is None:
                 raise ImportError(
                     "Gemini support requires 'langchain-google-genai'. Install with: pip install langchain-google-genai"
@@ -175,7 +225,7 @@ class DriverAgent:
                 timeout=self.decision_timeout_sec,
             )
         else:
-            raise ValueError(f"Unknown OPENAI_API_TYPE: {oai_api_type}")
+            raise ValueError(f"Unknown OPENAI_API_TYPE: {self.oai_api_type}")
 
     def _run_with_timeout(self, fn, *args):
         executor = ThreadPoolExecutor(max_workers=1)
@@ -189,10 +239,17 @@ class DriverAgent:
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _invoke_response(self, messages) -> str:
+        if self.oai_api_type == "ollama" and self.ollama_use_native_chat:
+            content, _thinking = self._ollama_native_invoke(messages)
+            return content
         response = self._run_with_timeout(self.llm.invoke, messages)
         return _content_to_text(getattr(response, "content", ""))
 
     def _stream_response(self, messages) -> str:
+        if self.oai_api_type == "ollama" and self.ollama_use_native_chat:
+            content, _thinking = self._ollama_native_stream(messages)
+            return content
+
         def _collect_stream(msgs):
             chunks = []
             for chunk in self.llm.stream(msgs):
@@ -203,6 +260,111 @@ class DriverAgent:
             return "".join(chunks)
 
         return self._run_with_timeout(_collect_stream, messages)
+
+    def _to_ollama_messages(self, messages) -> list:
+        payload_messages = []
+        for msg in messages:
+            payload_messages.append(
+                {
+                    "role": _ollama_role_from_message(msg),
+                    "content": _content_to_text(getattr(msg, "content", "")),
+                }
+            )
+        return payload_messages
+
+    def _apply_ollama_think_mode(self, payload: dict) -> dict:
+        mode = self.ollama_think_mode
+        if mode == "think":
+            payload["think"] = True
+        elif mode == "no_think":
+            payload["think"] = False
+        return payload
+
+    def _ollama_native_invoke(self, messages):
+        def _do_request(msgs):
+            payload = {
+                "model": self.ollama_model_name,
+                "messages": self._to_ollama_messages(msgs),
+                "stream": False,
+            }
+            payload = self._apply_ollama_think_mode(payload)
+            headers = {"Authorization": f"Bearer {self.ollama_api_key}"}
+            response = requests.post(
+                self.ollama_chat_url,
+                json=payload,
+                headers=headers,
+                timeout=self.ollama_native_chat_timeout_sec,
+            )
+            response.raise_for_status()
+            data = response.json()
+            msg = data.get("message", {}) or {}
+            return _content_to_text(msg.get("content", "")), _content_to_text(msg.get("thinking", ""))
+
+        try:
+            return self._run_with_timeout(_do_request, messages)
+        except Exception as exc:
+            print(
+                f"[yellow]Native Ollama chat failed ({type(exc).__name__}). Falling back to OpenAI-compatible path.[/yellow]"
+            )
+            response = self._run_with_timeout(self.llm.invoke, messages)
+            return _content_to_text(getattr(response, "content", "")), ""
+
+    def _ollama_native_stream(self, messages):
+        def _do_stream(msgs):
+            payload = {
+                "model": self.ollama_model_name,
+                "messages": self._to_ollama_messages(msgs),
+                "stream": True,
+            }
+            payload = self._apply_ollama_think_mode(payload)
+            headers = {"Authorization": f"Bearer {self.ollama_api_key}"}
+            content_chunks = []
+            thinking_chunks = []
+            with requests.post(
+                self.ollama_chat_url,
+                json=payload,
+                headers=headers,
+                timeout=self.ollama_native_chat_timeout_sec,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                for raw_line in response.iter_lines():
+                    if not raw_line:
+                        continue
+                    try:
+                        line = raw_line.decode("utf-8")
+                        data = json.loads(line)
+                    except Exception:
+                        continue
+                    msg = data.get("message", {}) or {}
+                    chunk_text = _content_to_text(msg.get("content", ""))
+                    chunk_thinking = _content_to_text(msg.get("thinking", ""))
+                    if chunk_text:
+                        content_chunks.append(chunk_text)
+                        print(chunk_text, end="", flush=True)
+                    if chunk_thinking:
+                        thinking_chunks.append(chunk_thinking)
+                    if data.get("done"):
+                        break
+            return "".join(content_chunks), "".join(thinking_chunks)
+
+        try:
+            return self._run_with_timeout(_do_stream, messages)
+        except Exception as exc:
+            print(
+                f"[yellow]Native Ollama stream failed ({type(exc).__name__}). Falling back to OpenAI-compatible stream.[/yellow]"
+            )
+
+            def _collect_stream(msgs):
+                chunks = []
+                for chunk in self.llm.stream(msgs):
+                    chunk_text = _content_to_text(getattr(chunk, "content", ""))
+                    if chunk_text:
+                        chunks.append(chunk_text)
+                        print(chunk_text, end="", flush=True)
+                return "".join(chunks)
+
+            return self._run_with_timeout(_collect_stream, messages), ""
 
     def few_shot_decision(self, scenario_description: str = "Not available", previous_decisions: str = "Not available",
                           available_actions: str = "Not available", driving_intensions: str = "Not available",

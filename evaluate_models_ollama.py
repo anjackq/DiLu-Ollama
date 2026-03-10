@@ -475,6 +475,9 @@ def main() -> None:
     parser.add_argument("--decision-max-output-tokens", type=int, default=None, help="Per-decision max output tokens. Default: config eval_decision_max_output_tokens or 512.")
     parser.add_argument("--disable-streaming", action="store_true", help="Disable streaming inference in evaluation to reduce hangs.")
     parser.add_argument("--disable-checker-llm", action="store_true", help="Disable second checker LLM call; use local parse/fallback only.")
+    parser.add_argument("--ollama-think-mode", choices=["auto", "think", "no_think"], default=None, help="Ollama native think mode override for driver agent.")
+    parser.add_argument("--ollama-use-native-chat", action="store_true", help="Force native Ollama /api/chat driver path.")
+    parser.add_argument("--ollama-disable-native-chat", action="store_true", help="Disable native Ollama /api/chat and use OpenAI-compatible /v1 path.")
     parser.add_argument("--alignment-sample-rate", type=float, default=0.0, help="Sampling probability [0,1] for reasoning-alignment sample collection.")
     parser.add_argument("--alignment-max-samples", type=int, default=0, help="Max alignment samples per model.")
     args = parser.parse_args()
@@ -508,12 +511,25 @@ def main() -> None:
     )
     disable_streaming = bool(config.get("eval_disable_streaming", True)) or bool(args.disable_streaming)
     disable_checker_llm = bool(config.get("eval_disable_checker_llm", True)) or bool(args.disable_checker_llm)
+    ollama_think_mode = str(args.ollama_think_mode or config.get("OLLAMA_THINK_MODE", "auto")).strip().lower()
+    if ollama_think_mode not in {"auto", "think", "no_think"}:
+        ollama_think_mode = "auto"
+    ollama_use_native_chat = bool(config.get("OLLAMA_USE_NATIVE_CHAT", True))
+    if args.ollama_use_native_chat:
+        ollama_use_native_chat = True
+    if args.ollama_disable_native_chat:
+        ollama_use_native_chat = False
+    # Persist overrides into runtime config so configure_runtime_env keeps them.
+    config["OLLAMA_THINK_MODE"] = ollama_think_mode
+    config["OLLAMA_USE_NATIVE_CHAT"] = bool(ollama_use_native_chat)
 
     # Evaluation-safe inference defaults so one model cannot block the whole benchmark run.
     os.environ["DILU_DECISION_TIMEOUT_SEC"] = str(max(1.0, decision_timeout_sec))
     os.environ["DILU_MAX_OUTPUT_TOKENS"] = str(max(32, decision_max_output_tokens))
     os.environ["DILU_USE_STREAMING"] = "0" if disable_streaming else "1"
     os.environ["DILU_ENABLE_CHECKER_LLM"] = "0" if disable_checker_llm else "1"
+    os.environ["OLLAMA_THINK_MODE"] = ollama_think_mode
+    os.environ["OLLAMA_USE_NATIVE_CHAT"] = "1" if ollama_use_native_chat else "0"
 
     results_root = (
         args.results_root
@@ -564,6 +580,8 @@ def main() -> None:
             "decision_max_output_tokens": int(max(32, decision_max_output_tokens)),
             "disable_streaming": bool(disable_streaming),
             "disable_checker_llm": bool(disable_checker_llm),
+            "ollama_think_mode": ollama_think_mode,
+            "ollama_use_native_chat": bool(ollama_use_native_chat),
             "alignment_sample_rate": alignment_sample_rate,
             "alignment_max_samples": alignment_max_samples,
         },
