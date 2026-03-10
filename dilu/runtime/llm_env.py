@@ -9,6 +9,8 @@ def _pick_model(config: Dict[str, Any], api_type: str, chat_model_override: Opti
         model = config.get("OPENAI_CHAT_MODEL")
     elif api_type == "ollama":
         model = config.get("OLLAMA_CHAT_MODEL")
+    elif api_type == "gemini":
+        model = config.get("GEMINI_CHAT_MODEL")
     else:
         return None
     if model is None:
@@ -62,6 +64,27 @@ def configure_runtime_env(config: Dict[str, Any], chat_model_override: Optional[
         os.environ["OLLAMA_EMBED_MODEL"] = str(config["OLLAMA_EMBED_MODEL"])
         if config.get("OLLAMA_REFLECTION_MODEL"):
             os.environ["OLLAMA_REFLECTION_MODEL"] = str(config["OLLAMA_REFLECTION_MODEL"])
+        return selected_model
+
+    if api_type == "gemini":
+        if not selected_model:
+            raise ValueError("GEMINI_CHAT_MODEL must be set when OPENAI_API_TYPE is 'gemini'.")
+        gemini_api_key = str(config.get("GEMINI_API_KEY", "")).strip()
+        if not gemini_api_key:
+            raise ValueError("GEMINI_API_KEY must be set when OPENAI_API_TYPE is 'gemini'.")
+        os.environ["OPENAI_API_TYPE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = gemini_api_key
+        os.environ["GEMINI_CHAT_MODEL"] = selected_model
+        if config.get("GEMINI_REFLECTION_MODEL"):
+            os.environ["GEMINI_REFLECTION_MODEL"] = str(config["GEMINI_REFLECTION_MODEL"])
+        # Gemini mode reuses existing embedding backends (no native Gemini embeddings in this phase).
+        # If Ollama embedding settings exist in config, expose them as env vars for DrivingMemory.
+        if config.get("OLLAMA_API_BASE"):
+            os.environ["OLLAMA_API_BASE"] = str(config["OLLAMA_API_BASE"])
+        if config.get("OLLAMA_API_KEY"):
+            os.environ["OLLAMA_API_KEY"] = str(config["OLLAMA_API_KEY"])
+        if config.get("OLLAMA_EMBED_MODEL"):
+            os.environ["OLLAMA_EMBED_MODEL"] = str(config["OLLAMA_EMBED_MODEL"])
         return selected_model
 
     raise ValueError(f"Unsupported OPENAI_API_TYPE: {config['OPENAI_API_TYPE']}")

@@ -2,20 +2,65 @@ import os
 import re
 import textwrap
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from rich import print
 from typing import List
 
 # UPDATED IMPORTS
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:
+    ChatGoogleGenerativeAI = None
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_community.callbacks import get_openai_callback, OpenAICallbackHandler
-from langchain_core.callbacks import StreamingStdOutCallbackHandler
+from langchain_community.callbacks import OpenAICallbackHandler
 
 from dilu.scenario.envScenario import EnvScenario
 
 delimiter = "####"
 ACTION_RECOVERY_PATTERN = re.compile(r"Response to user:\s*\#{4}\s*(?:<[^>]+>\s*)?([0-4])\s*$", re.IGNORECASE | re.MULTILINE)
 ACTION_ANYWHERE_PATTERN = re.compile(r"\b([0-4])\b")
+
+
+def _content_to_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if text is not None:
+                    chunks.append(str(text))
+                else:
+                    chunks.append(str(part))
+            else:
+                text = getattr(part, "text", None)
+                chunks.append(str(text) if text is not None else str(part))
+        return "".join(chunks)
+    return str(content)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+        return value if value > 0 else default
+    except Exception:
+        return default
 # ... (Keep example_message and example_answer variables as they are in original) ...
 example_message = textwrap.dedent(f"""\
         {delimiter} Driving scenario description:
@@ -52,6 +97,22 @@ class DriverAgent:
     ) -> None:
         self.sce = sce
         oai_api_type = os.getenv("OPENAI_API_TYPE")
+        self.decision_timeout_sec = _env_float("DILU_DECISION_TIMEOUT_SEC", 60.0)
+        # For local Ollama models, invoke mode avoids long stream stalls on small models.
+        default_streaming = oai_api_type != "ollama"
+        self.use_streaming = _env_bool("DILU_USE_STREAMING", default_streaming)
+        self.enable_checker_llm = _env_bool("DILU_ENABLE_CHECKER_LLM", True)
+        max_tokens_default = 2000
+        self.max_tokens = int(os.getenv("DILU_MAX_OUTPUT_TOKENS", str(max_tokens_default)))
+        self.last_decision_meta = {
+            "timed_out": False,
+            "used_fallback": False,
+            "fallback_reason": None,
+            "parse_mode": "unknown",
+            "checker_used": False,
+            "selected_action": None,
+            "decision_elapsed_sec": 0.0,
+        }
         if oai_api_type == "azure":
             print("Using Azure Chat API")
             self.llm = AzureChatOpenAI(
@@ -60,9 +121,9 @@ class DriverAgent:
                 ],
                 deployment_name=os.getenv("AZURE_CHAT_DEPLOY_NAME"),
                 temperature=temperature,
-                max_tokens=2000,
-                request_timeout=60,
-                streaming=True,
+                max_tokens=self.max_tokens,
+                request_timeout=self.decision_timeout_sec,
+                streaming=self.use_streaming,
             )
         elif oai_api_type == "openai":
             print("Use OpenAI API")
@@ -72,9 +133,9 @@ class DriverAgent:
                     OpenAICallbackHandler()
                 ],
                 model_name=os.getenv("OPENAI_CHAT_MODEL"),
-                max_tokens=2000,
-                request_timeout=60,
-                streaming=True,
+                max_tokens=self.max_tokens,
+                request_timeout=self.decision_timeout_sec,
+                streaming=self.use_streaming,
             )
         # [ADD] Added support for local Ollama models
         elif oai_api_type == "ollama":
@@ -90,12 +151,58 @@ class DriverAgent:
                 model_name=model_name,
                 openai_api_base=api_base,  # or base_url for newer langchain versions
                 openai_api_key=api_key,
-                max_tokens=2000,
-                request_timeout=60,
-                streaming=True,
+                max_tokens=self.max_tokens,
+                request_timeout=self.decision_timeout_sec,
+                streaming=self.use_streaming,
+            )
+        elif oai_api_type == "gemini":
+            if ChatGoogleGenerativeAI is None:
+                raise ImportError(
+                    "Gemini support requires 'langchain-google-genai'. Install with: pip install langchain-google-genai"
+                )
+            model_name = os.getenv("GEMINI_CHAT_MODEL")
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not model_name:
+                raise ValueError("GEMINI_CHAT_MODEL is not configured.")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY is not configured.")
+            print(f"Using Gemini API: {model_name}")
+            self.llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                google_api_key=api_key,
+                temperature=temperature,
+                max_output_tokens=self.max_tokens,
+                timeout=self.decision_timeout_sec,
             )
         else:
             raise ValueError(f"Unknown OPENAI_API_TYPE: {oai_api_type}")
+
+    def _run_with_timeout(self, fn, *args):
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(fn, *args)
+        try:
+            return future.result(timeout=self.decision_timeout_sec)
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(f"Decision timeout after {self.decision_timeout_sec:.1f}s") from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _invoke_response(self, messages) -> str:
+        response = self._run_with_timeout(self.llm.invoke, messages)
+        return _content_to_text(getattr(response, "content", ""))
+
+    def _stream_response(self, messages) -> str:
+        def _collect_stream(msgs):
+            chunks = []
+            for chunk in self.llm.stream(msgs):
+                chunk_text = _content_to_text(getattr(chunk, "content", ""))
+                if chunk_text:
+                    chunks.append(chunk_text)
+                    print(chunk_text, end="", flush=True)
+            return "".join(chunks)
+
+        return self._run_with_timeout(_collect_stream, messages)
 
     def few_shot_decision(self, scenario_description: str = "Not available", previous_decisions: str = "Not available",
                           available_actions: str = "Not available", driving_intensions: str = "Not available",
@@ -165,6 +272,15 @@ class DriverAgent:
         )
         # print("fewshot number:", (len(messages) - 2)/2)
         start_time = time.time()
+        decision_meta = {
+            "timed_out": False,
+            "used_fallback": False,
+            "fallback_reason": None,
+            "parse_mode": "direct",
+            "checker_used": False,
+            "selected_action": None,
+            "decision_elapsed_sec": 0.0,
+        }
 
         # NOTE: get_openai_callback might return 0 for Ollama
         # with get_openai_callback() as cb:
@@ -172,11 +288,29 @@ class DriverAgent:
 
         print("[cyan]Agent answer:[/cyan]")
         response_content = ""
-        # .stream() is widely supported in newer langchain versions
-        for chunk in self.llm.stream(messages):
-            response_content += chunk.content
-            print(chunk.content, end="", flush=True)
-        print("\n")
+        try:
+            if self.use_streaming:
+                response_content = self._stream_response(messages)
+            else:
+                response_content = self._invoke_response(messages)
+                print(response_content, end="", flush=True)
+            print("\n")
+        except TimeoutError:
+            response_content = f"Decision timeout. Response to user:{delimiter} 4"
+            print(f"\n[red]Decision timeout after {self.decision_timeout_sec:.1f}s. Fallback action: 4[/red]")
+            decision_meta["timed_out"] = True
+            decision_meta["used_fallback"] = True
+            decision_meta["fallback_reason"] = "decision_timeout"
+            decision_meta["parse_mode"] = "timeout_fallback"
+            decision_meta["selected_action"] = 4
+            decision_meta["decision_elapsed_sec"] = round(time.time() - start_time, 3)
+            self.last_decision_meta = decision_meta
+            few_shot_answers_store = ""
+            for i in range(len(fewshot_messages)):
+                few_shot_answers_store += fewshot_answers[i] + "\n---------------\n"
+            print("Result:", 4)
+            return 4, response_content, human_message, few_shot_answers_store
+
         decision_action = response_content.split(delimiter)[-1]
         try:
             result = int(decision_action.strip())
@@ -188,58 +322,86 @@ class DriverAgent:
             matches = ACTION_RECOVERY_PATTERN.findall(response_content)
             if matches:
                 result = int(matches[-1])
+                decision_meta["parse_mode"] = "regex_recovered"
                 print(f"[yellow]Recovered action via regex parse:[/yellow] {result}")
             else:
-                print("Output is not a int number, checking the output...")
-                check_message = f"""
-                You are a output checking assistant who is responsible for checking the output of another agent.
-
-                The output you received is: {decision_action}
-
-                Your should just output the right int type of action_id, with no other characters or delimiters.
-                i.e. :
-                | Action_id | Action Description                                     |
-                |--------|--------------------------------------------------------|
-                | 0      | Turn-left: change lane to the left of the current lane |
-                | 1      | IDLE: remain in the current lane with current speed   |
-                | 2      | Turn-right: change lane to the right of the current lane|
-                | 3      | Acceleration: accelerate the vehicle                 |
-                | 4      | Deceleration: decelerate the vehicle                 |
-
-
-                You answer format would be:
-                {delimiter} <correct action_id within 0-4>
-                """
-                messages = [
-                    HumanMessage(content=check_message),
-                ]
-                with get_openai_callback() as cb:
-                    check_response = self.llm.invoke(messages)  # Changed from self.llm(messages)
-
-                check_text = (check_response.content or "").strip()
-                tail = check_text.split(delimiter)[-1].strip() if delimiter in check_text else check_text
-                try:
-                    result = int(tail)
-                    if result < 0 or result > 4:
-                        raise ValueError
-                except ValueError:
-                    matches = ACTION_RECOVERY_PATTERN.findall(check_text)
-                    if matches:
-                        result = int(matches[-1])
-                        print(f"[yellow]Recovered action from checker output:[/yellow] {result}")
+                if not self.enable_checker_llm:
+                    any_matches = ACTION_ANYWHERE_PATTERN.findall(response_content)
+                    if any_matches:
+                        result = int(any_matches[-1])
+                        decision_meta["parse_mode"] = "loose_recovered"
+                        print(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
                     else:
-                        any_matches = ACTION_ANYWHERE_PATTERN.findall(check_text)
-                        if any_matches:
-                            result = int(any_matches[-1])
-                            print(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
+                        result = 4
+                        decision_meta["used_fallback"] = True
+                        decision_meta["fallback_reason"] = "parse_fallback"
+                        decision_meta["parse_mode"] = "parse_fallback"
+                        print("[red]Output parse failed. Checker disabled; fallback to action 4.[/red]")
+                else:
+                    decision_meta["checker_used"] = True
+                    print("Output is not a int number, checking the output...")
+                    check_message = f"""
+                    You are a output checking assistant who is responsible for checking the output of another agent.
+
+                    The output you received is: {decision_action}
+
+                    Your should just output the right int type of action_id, with no other characters or delimiters.
+                    i.e. :
+                    | Action_id | Action Description                                     |
+                    |--------|--------------------------------------------------------|
+                    | 0      | Turn-left: change lane to the left of the current lane |
+                    | 1      | IDLE: remain in the current lane with current speed   |
+                    | 2      | Turn-right: change lane to the right of the current lane|
+                    | 3      | Acceleration: accelerate the vehicle                 |
+                    | 4      | Deceleration: decelerate the vehicle                 |
+
+
+                    You answer format would be:
+                    {delimiter} <correct action_id within 0-4>
+                    """
+                    messages = [
+                        HumanMessage(content=check_message),
+                    ]
+                    try:
+                        check_response = self._run_with_timeout(self.llm.invoke, messages)
+                        check_text = _content_to_text(getattr(check_response, "content", "")).strip()
+                    except TimeoutError:
+                        check_text = ""
+                        decision_meta["timed_out"] = True
+                        print("[yellow]Checker timed out. Applying safe fallback parse.[/yellow]")
+
+                    tail = check_text.split(delimiter)[-1].strip() if delimiter in check_text else check_text
+                    try:
+                        result = int(tail)
+                        if result < 0 or result > 4:
+                            raise ValueError
+                        decision_meta["parse_mode"] = "checker_direct"
+                    except ValueError:
+                        matches = ACTION_RECOVERY_PATTERN.findall(check_text)
+                        if matches:
+                            result = int(matches[-1])
+                            decision_meta["parse_mode"] = "checker_regex_recovered"
+                            print(f"[yellow]Recovered action from checker output:[/yellow] {result}")
                         else:
-                            # Safety-first fallback for driving.
-                            result = 4
-                            print("[red]Checker output parse failed. Falling back to safe action 4 (Deceleration).[/red]")
+                            any_matches = ACTION_ANYWHERE_PATTERN.findall(check_text)
+                            if any_matches:
+                                result = int(any_matches[-1])
+                                decision_meta["parse_mode"] = "checker_loose_recovered"
+                                print(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
+                            else:
+                                # Safety-first fallback for driving.
+                                result = 4
+                                decision_meta["used_fallback"] = True
+                                decision_meta["fallback_reason"] = "checker_fallback"
+                                decision_meta["parse_mode"] = "checker_fallback"
+                                print("[red]Checker output parse failed. Falling back to safe action 4 (Deceleration).[/red]")
 
         few_shot_answers_store = ""
         for i in range(len(fewshot_messages)):
             few_shot_answers_store += fewshot_answers[i] + \
                                       "\n---------------\n"
+        decision_meta["selected_action"] = int(result)
+        decision_meta["decision_elapsed_sec"] = round(time.time() - start_time, 3)
+        self.last_decision_meta = decision_meta
         print("Result:", result)
         return result, response_content, human_message, few_shot_answers_store

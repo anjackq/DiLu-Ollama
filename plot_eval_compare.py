@@ -97,6 +97,10 @@ def plot_aggregates(report: dict, output_path: str, extended: bool = False, all_
             {"values": [_safe_value(row.get("avg_ego_speed_mps")) for row in aggregates], "title": "Average Ego Speed (m/s)", "ylim": None, "color": "#f781bf"},
             {"values": [_safe_value(row.get("format_failure_rate_mean")) for row in aggregates], "title": "Format Failure Rate", "ylim": (0, 1), "color": "#999999"},
             {"values": [_safe_value(row.get("decision_latency_ms_avg")) for row in aggregates], "title": "Decision Latency (ms)", "ylim": None, "color": "#17becf"},
+            {"values": [_safe_value(row.get("decision_timeout_rate_mean")) for row in aggregates], "title": "Decision Timeout Rate", "ylim": (0, 1), "color": "#e7298a"},
+            {"values": [_safe_value(row.get("timeout_episode_rate")) for row in aggregates], "title": "Timeout Episode Rate", "ylim": (0, 1), "color": "#a6761d"},
+            {"values": [_safe_value(row.get("fallback_action_rate_mean")) for row in aggregates], "title": "Fallback Action Rate", "ylim": (0, 1), "color": "#666666"},
+            {"values": [_safe_value(row.get("timeout_episode_count")) for row in aggregates], "title": "Timeout Episodes (count)", "ylim": None, "color": "#1f78b4"},
         ]
         _plot_grid(models, charts, f"{title_prefix} (All Metrics)", output_path)
         return
@@ -112,12 +116,12 @@ def plot_aggregates(report: dict, output_path: str, extended: bool = False, all_
         return
 
     charts = [
+        {"values": [_safe_value(row.get("decision_timeout_rate_mean")) for row in aggregates], "title": "Decision Timeout Rate", "ylim": (0, 1), "color": "#e7298a"},
+        {"values": [_safe_value(row.get("timeout_episode_rate")) for row in aggregates], "title": "Timeout Episode Rate", "ylim": (0, 1), "color": "#a6761d"},
+        {"values": [_safe_value(row.get("fallback_action_rate_mean")) for row in aggregates], "title": "Fallback Action Rate", "ylim": (0, 1), "color": "#666666"},
         {"values": [_safe_value(row.get("ttc_danger_rate_mean")) for row in aggregates], "title": "TTC Danger Rate", "ylim": (0, 1), "color": "#e41a1c"},
-        {"values": [_safe_value(row.get("headway_violation_rate_mean")) for row in aggregates], "title": "Headway Violation Rate", "ylim": (0, 1), "color": "#ff7f00"},
-        {"values": [_safe_value(row.get("lane_change_rate_mean")) for row in aggregates], "title": "Lane Change Rate", "ylim": (0, 1), "color": "#377eb8"},
-        {"values": [_safe_value(row.get("flap_accel_decel_rate_mean")) for row in aggregates], "title": "Accel/Decel Flap Rate", "ylim": (0, 1), "color": "#984ea3"},
     ]
-    _plot_grid(models, charts, f"{title_prefix} (Extended Safety/Comfort)", output_path)
+    _plot_grid(models, charts, f"{title_prefix} (Extended Runtime/Safety)", output_path)
 
 
 def emit_per_model_plots(report: dict, all_metrics: bool, extended: bool) -> list:
@@ -181,7 +185,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Plot aggregate metrics from evaluate_models_ollama.py JSON output.")
     parser.add_argument("-i", "--input", required=True, help="Path to comparison JSON report")
     parser.add_argument("-o", "--output", default=None, help="Output image path (PNG). Defaults next to input file.")
-    parser.add_argument("--extended", action="store_true", help="Plot extended metrics (TTC/headway/lane-change/flapping).")
+    parser.add_argument("--extended", action="store_true", help="Plot extended runtime+safety metrics (timeout/fallback/TTC).")
     parser.add_argument("--all-metrics", action="store_true", help="Plot all available aggregate metrics in one figure.")
     parser.add_argument("--emit-per-model", action="store_true", help="Emit one plot per model under experiment model plot folders.")
     args = parser.parse_args()

@@ -149,7 +149,12 @@ def run_episode(
     terminated = False
     steps = 0
     final_info = {}
+    episode_stop_reason = "completed"
     decisions_made = 0
+    decision_calls_total = 0
+    decision_timeout_count = 0
+    fallback_action_count = 0
+    first_timeout_step = None
     responses_with_delimiter = 0
     responses_strict_format = 0
     responses_direct_parseable = 0
@@ -195,7 +200,16 @@ def run_episode(
                 fewshot_answers=fewshot_answers,
             )
             prev_action = action
+            decision_calls_total += 1
             decisions_made += 1
+            decision_meta = getattr(agent, "last_decision_meta", {}) or {}
+            timed_out = bool(decision_meta.get("timed_out", False))
+            used_fallback = bool(decision_meta.get("used_fallback", False))
+            decision_timeout_count += int(timed_out)
+            fallback_action_count += int(used_fallback)
+            if timed_out and first_timeout_step is None:
+                first_timeout_step = int(frame_id)
+
             fmt = _response_format_metrics(response)
             responses_with_delimiter += int(fmt["has_delimiter"])
             responses_strict_format += int(fmt["strict_format_match"])
@@ -242,6 +256,7 @@ def run_episode(
 
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
+        episode_stop_reason = "error"
     finally:
         if env is not None:
             try:
@@ -263,6 +278,19 @@ def run_episode(
     flap_accel_decel_rate = flap_accel_decel_count / max(steps, 1)
     decision_latency_ms_avg = (duration_sec / max(steps, 1)) * 1000.0
     format_failure_rate = format_failure_count / max(decisions_made, 1)
+    decision_timeout_rate = decision_timeout_count / max(decision_calls_total, 1)
+    fallback_action_rate = fallback_action_count / max(decision_calls_total, 1)
+    timeout_triggered = decision_timeout_count > 0
+
+    if episode_stop_reason != "error":
+        if crashed:
+            episode_stop_reason = "crash"
+        elif truncated:
+            episode_stop_reason = "truncated"
+        elif terminated:
+            episode_stop_reason = "terminated"
+        else:
+            episode_stop_reason = "completed"
 
     return {
         "seed": seed,
@@ -274,6 +302,14 @@ def run_episode(
         "success_no_collision": (error is None and not crashed),
         "episode_runtime_sec": round(duration_sec, 3),
         "avg_step_runtime_sec": round(duration_sec / max(steps, 1), 3),
+        "episode_stop_reason": episode_stop_reason,
+        "timeout_triggered": bool(timeout_triggered),
+        "first_timeout_step": first_timeout_step,
+        "decision_calls_total": decision_calls_total,
+        "decision_timeout_count": decision_timeout_count,
+        "decision_timeout_rate": round(decision_timeout_rate, 4),
+        "fallback_action_count": fallback_action_count,
+        "fallback_action_rate": round(fallback_action_rate, 4),
         "decisions_made": decisions_made,
         "responses_with_delimiter": responses_with_delimiter,
         "responses_strict_format": responses_strict_format,
@@ -308,6 +344,11 @@ def aggregate_results(model_name: str, episodes: List[Dict]) -> Dict:
     total_steps = sum(e["steps"] for e in episodes)
     total_runtime = sum(e["episode_runtime_sec"] for e in episodes)
     total_decisions = sum(e.get("decisions_made", 0) for e in episodes)
+    total_decision_calls = sum(e.get("decision_calls_total", e.get("decisions_made", 0)) for e in episodes)
+    total_decision_timeouts = sum(e.get("decision_timeout_count", 0) for e in episodes)
+    timeout_episode_count = sum(1 for e in episodes if e.get("timeout_triggered", False))
+    total_fallback_actions = sum(e.get("fallback_action_count", 0) for e in episodes)
+    timeout_cap_stops = sum(1 for e in episodes if e.get("episode_stop_reason") == "episode_timeout_cap")
     total_delimiters = sum(e.get("responses_with_delimiter", 0) for e in episodes)
     total_strict = sum(e.get("responses_strict_format", 0) for e in episodes)
     total_direct = sum(e.get("responses_direct_parseable", 0) for e in episodes)
@@ -335,6 +376,14 @@ def aggregate_results(model_name: str, episodes: List[Dict]) -> Dict:
         "avg_episode_runtime_sec": round(total_runtime / total, 3) if total else None,
         "avg_step_runtime_sec": round(total_runtime / max(total_steps, 1), 3),
         "decisions_total": total_decisions,
+        "decision_calls_total": total_decision_calls,
+        "decision_timeouts_total": total_decision_timeouts,
+        "decision_timeout_rate_mean": round(total_decision_timeouts / max(total_decision_calls, 1), 4),
+        "timeout_episode_count": timeout_episode_count,
+        "timeout_episode_rate": round(timeout_episode_count / total, 4) if total else None,
+        "fallback_actions_total": total_fallback_actions,
+        "fallback_action_rate_mean": round(total_fallback_actions / max(total_decision_calls, 1), 4),
+        "episodes_stopped_by_timeout_cap": timeout_cap_stops,
         "response_delimiter_rate": round(total_delimiters / total_decisions, 4) if total_decisions else None,
         "response_strict_format_rate": round(total_strict / total_decisions, 4) if total_decisions else None,
         "response_direct_parseable_rate": round(total_direct / total_decisions, 4) if total_decisions else None,
@@ -422,6 +471,10 @@ def main() -> None:
     parser.add_argument("--results-root", default=None, help="Structured results root. Defaults to config or results/experiments.")
     parser.add_argument("--output-root", default=None, help="Optional compare-output folder override.")
     parser.add_argument("--no-structured-output", action="store_true", help="Disable structured experiment/model outputs.")
+    parser.add_argument("--decision-timeout-sec", type=float, default=None, help="Hard timeout per model decision call. Default: config eval_decision_timeout_sec or 60.")
+    parser.add_argument("--decision-max-output-tokens", type=int, default=None, help="Per-decision max output tokens. Default: config eval_decision_max_output_tokens or 512.")
+    parser.add_argument("--disable-streaming", action="store_true", help="Disable streaming inference in evaluation to reduce hangs.")
+    parser.add_argument("--disable-checker-llm", action="store_true", help="Disable second checker LLM call; use local parse/fallback only.")
     parser.add_argument("--alignment-sample-rate", type=float, default=0.0, help="Sampling probability [0,1] for reasoning-alignment sample collection.")
     parser.add_argument("--alignment-max-samples", type=int, default=0, help="Max alignment samples per model.")
     args = parser.parse_args()
@@ -443,6 +496,24 @@ def main() -> None:
     alignment_sample_rate = max(0.0, min(1.0, float(args.alignment_sample_rate)))
     alignment_max_samples = max(0, int(args.alignment_max_samples))
     structured_output = not args.no_structured_output
+    decision_timeout_sec = float(
+        args.decision_timeout_sec
+        if args.decision_timeout_sec is not None
+        else config.get("eval_decision_timeout_sec", 60.0)
+    )
+    decision_max_output_tokens = int(
+        args.decision_max_output_tokens
+        if args.decision_max_output_tokens is not None
+        else config.get("eval_decision_max_output_tokens", 512)
+    )
+    disable_streaming = bool(config.get("eval_disable_streaming", True)) or bool(args.disable_streaming)
+    disable_checker_llm = bool(config.get("eval_disable_checker_llm", True)) or bool(args.disable_checker_llm)
+
+    # Evaluation-safe inference defaults so one model cannot block the whole benchmark run.
+    os.environ["DILU_DECISION_TIMEOUT_SEC"] = str(max(1.0, decision_timeout_sec))
+    os.environ["DILU_MAX_OUTPUT_TOKENS"] = str(max(32, decision_max_output_tokens))
+    os.environ["DILU_USE_STREAMING"] = "0" if disable_streaming else "1"
+    os.environ["DILU_ENABLE_CHECKER_LLM"] = "0" if disable_checker_llm else "1"
 
     results_root = (
         args.results_root
@@ -489,6 +560,10 @@ def main() -> None:
             "ttc_threshold_sec": ttc_threshold_sec,
             "headway_threshold_m": headway_threshold_m,
             "flapping_mode": "accel_decel",
+            "decision_timeout_sec": round(max(1.0, decision_timeout_sec), 3),
+            "decision_max_output_tokens": int(max(32, decision_max_output_tokens)),
+            "disable_streaming": bool(disable_streaming),
+            "disable_checker_llm": bool(disable_checker_llm),
             "alignment_sample_rate": alignment_sample_rate,
             "alignment_max_samples": alignment_max_samples,
         },
@@ -525,10 +600,10 @@ def main() -> None:
                 sample["model"] = model_name
                 model_alignment_samples.append(sample)
             episodes.append(episode_result)
-            status = "CRASH" if episode_result["crashed"] else ("ERROR" if episode_result["error"] else "OK")
+            status = "CRASH" if episode_result["crashed"] else ("ERROR" if episode_result["error"] else ("TIMEOUT" if episode_result.get("timeout_triggered") else "OK"))
             print(
                 f"    -> {status} | steps={episode_result['steps']}/{episode_result['max_steps']} "
-                f"| t={episode_result['episode_runtime_sec']}s"
+                f"| t={episode_result['episode_runtime_sec']}s | timeout_steps={episode_result.get('decision_timeout_count', 0)}"
             )
             if episode_result["error"]:
                 print(f"    -> [red]{episode_result['error']}[/red]")
@@ -607,6 +682,8 @@ def main() -> None:
             f"(rate={row['crash_rate']}), no_collision_rate={row['no_collision_rate']}, "
             f"avg_steps={row['avg_steps']}, strict_format_rate={row['response_strict_format_rate']}, "
             f"ttc_danger_rate={row['ttc_danger_rate_mean']}, headway_violation_rate={row['headway_violation_rate_mean']}, "
+            f"decision_timeout_rate={row.get('decision_timeout_rate_mean')}, "
+            f"fallback_action_rate={row.get('fallback_action_rate_mean')}, "
             f"avg_episode_runtime_sec={row['avg_episode_runtime_sec']}"
         )
     print(f"\nSaved report: [bold]{out_path}[/bold]")

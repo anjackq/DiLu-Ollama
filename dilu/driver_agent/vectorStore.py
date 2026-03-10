@@ -20,15 +20,16 @@ class DrivingMemory:
             raise ValueError("encode_type sce_encode is deprecated for now.")
 
         elif encode_type == 'sce_language':
+            api_type = os.environ.get("OPENAI_API_TYPE")
             # --- 1. Handle Azure ---
-            if os.environ.get("OPENAI_API_TYPE") == 'azure':
+            if api_type == 'azure':
                 self.embedding = OpenAIEmbeddings(
                     deployment=os.environ['AZURE_EMBED_DEPLOY_NAME'],
                     chunk_size=1
                 )
 
             # --- 2. Handle OpenAI & Ollama ---
-            elif os.environ.get("OPENAI_API_TYPE") == 'openai':
+            elif api_type == 'openai':
                 base_url = os.environ.get("OPENAI_API_BASE", "")
 
                 # Check if we are running locally (Ollama)
@@ -50,7 +51,7 @@ class DrivingMemory:
                     self.embedding = OpenAIEmbeddings()
 
             # --- ADDED OLLAMA SUPPORT ---
-            elif os.environ.get("OPENAI_API_TYPE") == 'ollama':
+            elif api_type == 'ollama':
                 model_name = os.getenv('OLLAMA_EMBED_MODEL')
                 print(f"[green]Using Ollama Embeddings[/green] with model: {model_name}")
                 # Note: We use the OpenAI-compatible endpoint provided by Ollama
@@ -60,9 +61,44 @@ class DrivingMemory:
                     openai_api_key=os.getenv("OLLAMA_API_KEY"),  # 'ollama'
                     check_embedding_ctx_length=False  # Necessary for some local models
                 )
+            elif api_type == "gemini":
+                openai_embed_base = str(os.getenv("OPENAI_API_BASE", "")).strip()
+                openai_embed_key = str(os.getenv("OPENAI_API_KEY", "")).strip()
+                if openai_embed_base and openai_embed_key:
+                    model_name = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+                    print(
+                        f"[green]Gemini mode:[/green] using OpenAI-compatible embeddings "
+                        f"at {openai_embed_base} with model: {model_name}"
+                    )
+                    self.embedding = OpenAIEmbeddings(
+                        model=model_name,
+                        openai_api_base=openai_embed_base,
+                        openai_api_key=openai_embed_key,
+                        check_embedding_ctx_length=False
+                    )
+                else:
+                    ollama_base = str(os.getenv("OLLAMA_API_BASE", "")).strip()
+                    ollama_key = str(os.getenv("OLLAMA_API_KEY", "")).strip()
+                    ollama_model = str(os.getenv("OLLAMA_EMBED_MODEL", "")).strip()
+                    if ollama_base and ollama_key and ollama_model:
+                        print(
+                            f"[green]Gemini mode:[/green] using Ollama embeddings "
+                            f"with model: {ollama_model}"
+                        )
+                        self.embedding = OpenAIEmbeddings(
+                            model=ollama_model,
+                            openai_api_base=ollama_base,
+                            openai_api_key=ollama_key,
+                            check_embedding_ctx_length=False
+                        )
+                    else:
+                        raise ValueError(
+                            "Gemini mode requires an embedding backend. Set OPENAI_API_BASE + OPENAI_API_KEY "
+                            "(and optional OPENAI_EMBED_MODEL), or set OLLAMA_API_BASE + OLLAMA_API_KEY + OLLAMA_EMBED_MODEL."
+                        )
 
             else:
-                raise ValueError("Unknown OPENAI_API_TYPE: should be azure, openai, or ollama")
+                raise ValueError("Unknown OPENAI_API_TYPE: should be azure, openai, ollama, or gemini")
 
             # Define DB path
             db_path = os.path.join('./db', 'chroma_5_shot_20_mem/') if db_path is None else db_path

@@ -13,6 +13,8 @@ config = yaml.load(open('config.yaml'), Loader=yaml.FullLoader)
 selected_model = configure_runtime_env(config)
 if config['OPENAI_API_TYPE'] == 'ollama':
     print(f"[bold yellow]Visualizer Configured for Local Ollama: {selected_model}[/bold yellow]")
+elif config['OPENAI_API_TYPE'] == 'gemini':
+    print(f"[bold yellow]Visualizer Configured for Gemini API: {selected_model}[/bold yellow]")
 
 TAMDTemplate = """
 # Thoughts and Actions

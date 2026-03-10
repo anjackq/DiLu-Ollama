@@ -67,11 +67,32 @@ def ensure_experiment_layout(experiment_root: str, model_names: List[str]) -> Di
     return model_roots
 
 
+def _json_default(obj):
+    # Handle numpy scalars/arrays without taking a hard dependency at import-time.
+    if hasattr(obj, "item"):
+        try:
+            return obj.item()
+        except Exception:
+            pass
+    if hasattr(obj, "tolist"):
+        try:
+            return obj.tolist()
+        except Exception:
+            pass
+
+    if isinstance(obj, set):
+        return list(obj)
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+
+    return str(obj)
+
+
 def write_json_atomic(path: str, payload: Dict) -> str:
     ensure_parent_dir(path)
     folder = os.path.dirname(path) or "."
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=folder, suffix=".tmp") as tf:
-        json.dump(payload, tf, indent=2)
+        json.dump(payload, tf, indent=2, default=_json_default)
         tmp_path = tf.name
     os.replace(tmp_path, path)
     return path

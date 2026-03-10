@@ -51,11 +51,11 @@ pip install -r requirements.txt
 
 All configurable parameters are located in `config.yaml`.
 
-Before running DiLu, set up your OpenAI API keys. DiLu supports both OpenAI and Azure Openai APIs. 
+Before running DiLu, set up your API keys. DiLu supports OpenAI, Azure OpenAI, Ollama, and Gemini.
 
 Configure as below in `config.yaml`:
 ```yaml
-OPENAI_API_TYPE: # 'openai' or 'azure'
+OPENAI_API_TYPE: # 'openai' or 'azure' or 'ollama' or 'gemini'
 # below are for Openai
 OPENAI_KEY: # 'sk-xxxxxx' 
 OPENAI_CHAT_MODEL: 'gpt-4-1106-preview' # Alternative models: 'gpt-3.5-turbo-16k-0613' (note: performance may vary)
@@ -65,6 +65,10 @@ AZURE_API_VERSION: "2023-07-01-preview"
 AZURE_API_KEY: #'xxxxxxx'
 AZURE_CHAT_DEPLOY_NAME: # chat model deployment name
 AZURE_EMBED_DEPLOY_NAME: # text embed model deployment name  
+# below are for Gemini (AI Studio)
+GEMINI_API_KEY: # 'AIza...'
+GEMINI_CHAT_MODEL: 'gemini-2.0-flash'
+GEMINI_REFLECTION_MODEL: null
 ```
 
 
@@ -141,6 +145,28 @@ results/experiments/<experiment_id>/models/<model_slug>/runs/<run_id>/
 
 including videos, episode DBs, `log.txt`, and `run_metrics_*.json`.
 
+### Gemini Runtime
+
+Set `config.yaml`:
+
+- `OPENAI_API_TYPE: 'gemini'`
+- `GEMINI_API_KEY`
+- `GEMINI_CHAT_MODEL`
+- `GEMINI_REFLECTION_MODEL` (optional, defaults to `GEMINI_CHAT_MODEL`)
+
+Run:
+
+```bash
+python run_dilu_ollama.py
+```
+
+Important for memory embeddings in Gemini mode:
+- Gemini chat is supported natively.
+- Embeddings are still non-Gemini in this phase.
+- Configure either:
+  - OpenAI-compatible embedding backend via env vars `OPENAI_API_BASE` + `OPENAI_API_KEY` (optional `OPENAI_EMBED_MODEL`), or
+  - Ollama embedding backend via `OLLAMA_API_BASE` + `OLLAMA_API_KEY` + `OLLAMA_EMBED_MODEL`.
+
 ### Experiment-Oriented Results Layout
 
 ```text
@@ -208,6 +234,12 @@ Run a small smoke comparison:
 python evaluate_models_ollama.py --models deepseek-r1:14b dilu-llama3_1-8b-v1 --limit 1 --few-shot-num 0
 ```
 
+If a model hangs or responds very slowly, run with timeout guardrails:
+
+```bash
+python evaluate_models_ollama.py --models qwen3:0.6b --limit 1 --few-shot-num 0 --decision-timeout-sec 60 --disable-streaming --disable-checker-llm
+```
+
 Run a larger comparison:
 
 ```bash
@@ -240,6 +272,13 @@ The benchmark report includes:
 - New online safety metrics: TTC danger rate (`TTC < 2.0s`), headway violation rate (`front gap < 15m`)
 - New efficiency/comfort metrics: reward summary, average ego speed, lane-change rate, accel/decel flapping rate (`3↔4`)
 - New system metrics: format failure rate and decision-latency estimate (`ms/step`)
+- Timeout reliability metrics: decision timeout rate, timeout episode rate, fallback action rate, timeout episode count
+
+Timeout Reliability Metrics:
+- `decision_timeout_rate_mean`: primary runtime reliability metric (`decision_timeouts_total / decision_calls_total`)
+- `timeout_episode_rate`: episodes with at least one timeout over total episodes
+- `fallback_action_rate_mean`: share of decisions that required safety fallback (`action 4` via timeout/parse fallback)
+- Interpretation: lower timeout/fallback rates indicate a more stable inference pipeline
 
 Plot the comparison report:
 
@@ -249,13 +288,13 @@ python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_
 
 This generates a PNG chart with crash rate / no-collision rate / average steps / runtime.
 
-Plot extended safety/comfort metrics:
+Plot extended runtime+safety metrics:
 
 ```bash
 python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json --extended
 ```
 
-This generates a PNG chart for TTC danger rate / headway violation rate / lane-change rate / accel-decel flap rate.
+This generates a PNG chart for decision timeout rate / timeout episode rate / fallback action rate / TTC danger rate.
 
 Emit per-model plots under each model folder:
 
@@ -295,7 +334,7 @@ Plot default 2x2 metrics:
 python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json
 ```
 
-Plot extended safety/comfort metrics:
+Plot extended runtime+safety metrics:
 
 ```bash
 python plot_eval_compare.py -i results/experiments/<experiment_id>/compare/eval_compare_<timestamp>.json --extended
@@ -325,6 +364,13 @@ This fork ignores local/generated artifacts such as:
 - IDE files (e.g. `.idea/`)
 
 Use `config.example.yaml` as the versioned template and keep your real `config.yaml` local.
+
+### Troubleshooting (Gemini)
+
+- `GEMINI_API_KEY must be set`: add `GEMINI_API_KEY` in `config.yaml`.
+- `GEMINI_CHAT_MODEL must be set`: set a valid Gemini model (for example `gemini-2.0-flash`).
+- Memory init error in Gemini mode: configure an embedding backend (OpenAI-compatible or Ollama) as described above.
+- Provider/model not found errors: verify model name availability and API key project access.
 
 
 ## 🔖 Citation

@@ -492,8 +492,11 @@ def print_ego_telemetry(step_idx: int, telemetry: dict):
 
 def setup_env(config):
     selected_model = configure_runtime_env(config)
-    if config['OPENAI_API_TYPE'] == 'ollama':
+    provider = str(config.get("OPENAI_API_TYPE", "")).strip().lower()
+    if provider == 'ollama':
         print(f"[bold yellow]Configured for Local Ollama: {selected_model}[/bold yellow]")
+    elif provider == "gemini":
+        print(f"[bold yellow]Configured for Gemini API: {selected_model}[/bold yellow]")
 
     env_cfg = build_highway_env_config(
         config,

@@ -1,9 +1,10 @@
 ############ Large language model config ############
-OPENAI_API_TYPE: 'ollama' # 'openai' or 'azure' or 'ollama'
+OPENAI_API_TYPE: 'gemini' # 'openai' or 'azure' or 'ollama' or 'gemini'
 
 # OpenAI settings
 OPENAI_KEY: 'ollama'
 OPENAI_CHAT_MODEL: null
+OPENAI_REFLECTION_MODEL: null
 
 # Azure OpenAI settings
 AZURE_API_BASE: # https://xxxxxxx.openai.azure.com/
@@ -11,6 +12,11 @@ AZURE_API_VERSION: "2023-07-01-preview"
 AZURE_API_KEY: #'xxxxxxx'
 AZURE_CHAT_DEPLOY_NAME: # chat model deployment name
 AZURE_EMBED_DEPLOY_NAME: # text embed model deployment name
+
+############# Gemini API settings ###############
+GEMINI_API_KEY: '' # AI Studio key
+GEMINI_CHAT_MODEL: 'gemini-2.0-flash'
+GEMINI_REFLECTION_MODEL: null
 
 ############# Local model / Ollama config ###############
 OLLAMA_API_BASE: 'http://localhost:11434/v1'
@@ -47,3 +53,9 @@ vehicles_density: 2.0
 metrics_ttc_threshold_sec: 2.0
 metrics_headway_threshold_m: 15.0
 metrics_flapping_mode: "accel_decel"
+
+############ Evaluation runtime guardrails ############
+eval_decision_timeout_sec: 60
+eval_decision_max_output_tokens: 512
+eval_disable_streaming: true
+eval_disable_checker_llm: true

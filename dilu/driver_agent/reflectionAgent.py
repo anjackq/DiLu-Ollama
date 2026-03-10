@@ -5,7 +5,34 @@ from rich import print
 
 # UPDATED IMPORTS
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:
+    ChatGoogleGenerativeAI = None
 from langchain_core.messages import HumanMessage, SystemMessage
+
+
+def _content_to_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if text is not None:
+                    chunks.append(str(text))
+                else:
+                    chunks.append(str(part))
+            else:
+                text = getattr(part, "text", None)
+                chunks.append(str(text) if text is not None else str(part))
+        return "".join(chunks)
+    return str(content)
 
 
 class ReflectionAgent:
@@ -65,6 +92,25 @@ class ReflectionAgent:
                 max_tokens=1000,
                 request_timeout=60,
             )
+        elif oai_api_type == "gemini":
+            if ChatGoogleGenerativeAI is None:
+                raise ImportError(
+                    "Gemini support requires 'langchain-google-genai'. Install with: pip install langchain-google-genai"
+                )
+            model_name = os.getenv("GEMINI_REFLECTION_MODEL") or os.getenv("GEMINI_CHAT_MODEL")
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not model_name:
+                raise ValueError("GEMINI_REFLECTION_MODEL or GEMINI_CHAT_MODEL must be configured for reflection.")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY is not configured.")
+            print(f"[yellow]Reflection Agent using Gemini: {model_name}[/yellow]")
+            self.llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                google_api_key=api_key,
+                temperature=temperature,
+                max_output_tokens=1000,
+                timeout=60,
+            )
         else:
             raise ValueError(f"Unknown OPENAI_API_TYPE: {oai_api_type}")
 
@@ -108,18 +154,19 @@ class ReflectionAgent:
 
         # UPDATED: Use .invoke() instead of __call__
         response = self.llm.invoke(messages)
+        response_text = _content_to_text(getattr(response, "content", ""))
 
         # [UPDATED] The target phrase must match the new prompt exactly!
         target_phrase = f"{delimiter} What should be done to avoid such errors in the future:"
 
         # Add safety check if target phrase is missing (common with smaller local models)
-        if target_phrase in response.content:
-            substring = response.content[response.content.find(
+        if target_phrase in response_text:
+            substring = response_text[response_text.find(
                 target_phrase) + len(target_phrase):].strip()
         else:
             # Fallback if model didn't follow strict formatting
             print("[yellow]Warning: Reflection checkpoints format mismatch. Saving full content.[/yellow]")
-            substring = response.content
+            substring = response_text
 
         corrected_memory = f"{delimiter} I have made a misake before and below is my self-reflection:\n{substring}"
         print("Reflection done. Time taken: {:.2f}s".format(

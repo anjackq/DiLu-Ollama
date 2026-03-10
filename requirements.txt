@@ -3,6 +3,7 @@ highway-env==1.8.2
 langchain>=0.1.0
 langchain-community
 langchain-openai
+langchain-google-genai
 openai>=1.10.0         # Critical: Allows "client = OpenAI()" syntax
 chromadb>=0.4.22       # Critical: Fixes the build error you saw
 matplotlib

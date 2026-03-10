@@ -14,6 +14,8 @@ except FileNotFoundError:
 selected_model = configure_runtime_env(config)
 if config['OPENAI_API_TYPE'] == 'ollama':
     print(f"[yellow]Configured for Local Ollama: {selected_model}[/yellow]")
+elif config['OPENAI_API_TYPE'] == 'gemini':
+    print(f"[yellow]Configured for Gemini API: {selected_model}[/yellow]")
 
 # 3. Initialize and Check Memory
 try:
