@@ -56,6 +56,10 @@ vehicle_count: 15
 other_vehicle_type: "highway_env.vehicle.behavior.IDMVehicle"
 vehicles_density: 2.0
 
+# RL environment parity settings (used by evaluate_rl_policy.py and collect_data.py in RL mode).
+rl_env_id: "highway-fast-v0"
+rl_use_native_env_defaults: true
+
 ############ Evaluation metrics defaults ############
 metrics_ttc_threshold_sec: 2.0
 metrics_headway_threshold_m: 15.0
