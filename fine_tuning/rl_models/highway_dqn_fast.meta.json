@@ -1,0 +1,72 @@
+{
+  "model_path": ".\\fine_tuning\\rl_models\\highway_dqn_fast.zip",
+  "config_path": "config.yaml",
+  "timesteps": 1000000,
+  "seed": 42,
+  "algorithm": "dqn",
+  "train_profile": "dqn_repo",
+  "train_env_id": "highway-fast-v0",
+  "device_requested": "cuda",
+  "device_effective": "cuda",
+  "eval_episodes": 50,
+  "vectorization": {
+    "requested": {
+      "vec_env": "dummy",
+      "n_envs": 1
+    },
+    "effective": {
+      "vec_env": "dummy",
+      "n_envs": 1
+    }
+  },
+  "subproc_fallback_used": false,
+  "training_budget_warning": null,
+  "is_short_budget_run": false,
+  "ignored_legacy_reward_flags": [],
+  "reward_curve_summary": {
+    "count": 43860,
+    "mean": 21.008186756748756,
+    "max": 29.912168,
+    "min": 0.932711,
+    "last10_mean": 19.076597800000002
+  },
+  "evaluation_train_env": {
+    "episodes": 50,
+    "avg_reward": 27.652997976650013,
+    "avg_episode_length": 29.24,
+    "crash_rate": 0.04,
+    "success_rate": 0.96,
+    "avg_speed_mps": 28.650461771234692,
+    "avg_progress_m": 834.4232389907602,
+    "first5_brake_rate": 0.020161290322580645,
+    "action_histogram": {
+      "0": 211,
+      "1": 184,
+      "2": 545,
+      "3": 419,
+      "4": 103
+    }
+  },
+  "evaluation_observation_alignment": {
+    "requested_vehicle_count": null,
+    "effective_vehicle_count": null,
+    "adjusted_for_model_observation": false
+  },
+  "evaluation": {
+    "episodes": 50,
+    "avg_reward": 27.652997976650013,
+    "avg_episode_length": 29.24,
+    "crash_rate": 0.04,
+    "success_rate": 0.96,
+    "avg_speed_mps": 28.650461771234692,
+    "avg_progress_m": 834.4232389907602,
+    "first5_brake_rate": 0.020161290322580645,
+    "action_histogram": {
+      "0": 211,
+      "1": 184,
+      "2": 545,
+      "3": 419,
+      "4": 103
+    }
+  }
+}

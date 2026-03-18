@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+import logging
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -25,6 +25,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from adjustText import adjust_text
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+from matplotlib.ticker import PercentFormatter
 
 REQUIRED_REPORT_KEYS = ("aggregates", "per_model", "metrics_config", "seeds")
 EXPECTED_SLICES = tuple((f"tier{i}", mode) for i in (1, 2, 3) for mode in ("instruct", "thinking"))
@@ -71,6 +75,24 @@ PRACTICAL_MEDIAN_DIFF_THRESHOLD = 10.0
 
 SAFE_COLOR = "#1b9e77"
 RISK_COLOR = "#d95f02"
+FAMILY_COLORS = {
+    "qwen": "#d62728",
+    "llama": "#1f77b4",
+    "deepseek": "#2ca02c",
+    "phi": "#9467bd",
+    "other": "#7f7f7f",
+}
+MODE_MARKERS = {
+    "instruct": "o",
+    "thinking": "^",
+}
+MODE_BAR_COLORS = {
+    "instruct": "#4c78a8",
+    "thinking": "#f58518",
+}
+PLOT_JITTER_SEED = 20260312
+
+logging.getLogger("adjustText").setLevel(logging.ERROR)
 
 BLOCKING_PROXY_SPEED_THRESHOLD_MPS = 8.5
 BLOCKING_PROXY_TTC_RATE_MAX = 0.03
@@ -997,10 +1019,15 @@ def _figure_style() -> None:
             "figure.facecolor": "white",
             "axes.facecolor": "#f8faf9",
             "axes.edgecolor": "#d0d7d5",
-            "axes.labelsize": 10,
-            "axes.titlesize": 12,
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans", "sans-serif"],
+            "axes.labelsize": 12,
+            "axes.titlesize": 14,
             "axes.titleweight": "bold",
-            "font.size": 10,
+            "font.size": 11,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "lines.linewidth": 1.2,
             "grid.color": "#dfe6e3",
             "grid.linestyle": "--",
             "grid.alpha": 0.6,
@@ -1010,6 +1037,220 @@ def _figure_style() -> None:
 
 def _short_label(record: ModelRecord) -> str:
     return f"{record.model} ({record.tier}-{record.mode[0]})"
+
+
+def _ranked_label(record: ModelRecord) -> str:
+    rank_text = f"R{record.rank}" if record.rank is not None else "R?"
+    return f"{rank_text} | {_short_label(record)}"
+
+
+def _family_color(family: str) -> str:
+    return FAMILY_COLORS.get(family, FAMILY_COLORS["other"])
+
+
+def _mode_marker(mode: str) -> str:
+    return MODE_MARKERS.get(mode, "o")
+
+
+def _gate_edge_color(gate_pass: bool) -> str:
+    return SAFE_COLOR if gate_pass else RISK_COLOR
+
+
+def _choose_label_indices(
+    points: Sequence[Dict[str, Any]],
+    all_points_threshold: int = 30,
+    top_rank_count: int = 12,
+    top_risk_count: int = 12,
+    max_labels: int = 26,
+) -> set[int]:
+    if len(points) <= all_points_threshold:
+        return set(range(len(points)))
+
+    ranked = sorted(
+        range(len(points)),
+        key=lambda i: (
+            _safe_sort_number(float(points[i]["record"].rank or 1e9), 1e9),
+            points[i]["record"].model,
+        ),
+    )
+    risky = sorted(
+        range(len(points)),
+        key=lambda i: (
+            _safe_sort_number(points[i].get("risk", float("nan")), -1e9),
+            _safe_sort_number(points[i].get("y", float("nan")), -1e9),
+            _safe_sort_number(points[i].get("x", float("nan")), -1e9),
+            points[i]["record"].model,
+        ),
+        reverse=True,
+    )
+
+    extrema: List[int] = []
+    if points:
+        extrema.append(max(range(len(points)), key=lambda i: _safe_sort_number(points[i].get("x", float("nan")), -1e9)))
+        extrema.append(max(range(len(points)), key=lambda i: _safe_sort_number(points[i].get("y", float("nan")), -1e9)))
+        extrema.append(min(range(len(points)), key=lambda i: _safe_sort_number(points[i].get("x", float("nan")), 1e9)))
+
+    selected: List[int] = []
+    seen: set[int] = set()
+    candidate_order = ranked[:top_rank_count] + risky[:top_risk_count] + extrema
+    for idx in candidate_order:
+        if idx in seen:
+            continue
+        selected.append(idx)
+        seen.add(idx)
+        if len(selected) >= max_labels:
+            break
+    return set(selected)
+
+
+def _seed_label_position(x: float, y: float, seed_index: int, x_scale: str = "linear") -> Tuple[float, float]:
+    if x_scale == "log":
+        x_shifted = x * (1.0 + 0.008 * ((seed_index % 5) - 2))
+    else:
+        x_shifted = x + max(abs(x), 1.0) * 0.004 * ((seed_index % 5) - 2)
+    y_shifted = y + 0.0035 * ((seed_index % 7) - 3)
+    return x_shifted, y_shifted
+
+
+def _deterministic_jitter_xy(
+    x: float,
+    y: float,
+    seed_index: int,
+    *,
+    x_scale: str = "linear",
+    x_jitter: float = 0.006,
+    y_jitter: float = 0.006,
+) -> Tuple[float, float]:
+    rng = np.random.default_rng(PLOT_JITTER_SEED + 7919 * (seed_index + 1))
+    if x_scale == "log":
+        x_factor = 1.0 + float(rng.uniform(-x_jitter, x_jitter))
+        x_out = max(x * x_factor, 1e-6)
+    else:
+        x_out = x + float(rng.uniform(-x_jitter, x_jitter))
+    y_out = y + float(rng.uniform(-y_jitter, y_jitter))
+    return x_out, y_out
+
+
+def _cluster_points(
+    points: Sequence[Dict[str, Any]],
+    *,
+    x_quant: float,
+    y_quant: float,
+    x_scale: str = "linear",
+) -> List[Dict[str, Any]]:
+    if not points:
+        return []
+
+    grouped: Dict[Tuple[int, int], List[Dict[str, Any]]] = defaultdict(list)
+    for point in points:
+        x = _as_float(point.get("x"), float("nan"))
+        y = _as_float(point.get("y"), float("nan"))
+        if not np.isfinite(x) or not np.isfinite(y):
+            continue
+        if x_scale == "log":
+            qx = int(round(np.log10(max(x, 1e-6)) / max(x_quant, 1e-9)))
+        else:
+            qx = int(round(x / max(x_quant, 1e-9)))
+        qy = int(round(y / max(y_quant, 1e-9)))
+        grouped[(qx, qy)].append(point)
+
+    clusters: List[Dict[str, Any]] = []
+    for members in grouped.values():
+        x_center = float(np.mean([_as_float(item["x"], 0.0) for item in members]))
+        y_center = float(np.mean([_as_float(item["y"], 0.0) for item in members]))
+        risk_values = [_as_float(item.get("risk"), float("nan")) for item in members]
+        top_models = sorted(
+            {_short_label(item["record"]) for item in members},
+            key=lambda label: label.lower(),
+        )
+        clusters.append(
+            {
+                "x": x_center,
+                "y": y_center,
+                "risk": max(_finite(risk_values)) if _finite(risk_values) else float("nan"),
+                "count": len(members),
+                "models": top_models,
+                "members": members,
+            }
+        )
+    return clusters
+
+
+def _cluster_label_text(cluster: Dict[str, Any], max_names: int = 2) -> str:
+    models = list(cluster.get("models", []))
+    count = int(cluster.get("count", 0))
+    if count <= 1:
+        return models[0] if models else "Model"
+    shown = models[:max_names]
+    tail = f" +{max(0, count - len(shown))} more" if count > len(shown) else ""
+    return f"x{count}: {', '.join(shown)}{tail}"
+
+
+def _apply_text_repulsion(ax: plt.Axes, texts: Sequence[Any]) -> None:
+    if not texts:
+        return
+    adjust_text(
+        list(texts),
+        ax=ax,
+        force_text=0.3,
+        force_points=0.2,
+        expand_text=(1.02, 1.16),
+        expand_points=(1.05, 1.2),
+        only_move={"points": "y", "text": "xy"},
+        lim=250,
+        arrowprops={"arrowstyle": "-", "color": "#4d5966", "lw": 0.6, "alpha": 0.7},
+    )
+
+
+def _add_encoding_legends(ax: plt.Axes) -> None:
+    family_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=_family_color(family),
+            markeredgecolor="#303030",
+            linestyle="None",
+            label=family.title(),
+            markersize=7,
+        )
+        for family in ("qwen", "llama", "deepseek", "phi", "other")
+    ]
+    mode_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=_mode_marker(mode),
+            color="#303030",
+            markerfacecolor="#d9dfe6",
+            linestyle="None",
+            label=mode.title(),
+            markersize=7,
+        )
+        for mode in ("instruct", "thinking")
+    ]
+    gate_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="white",
+            markeredgecolor=_gate_edge_color(gate_pass),
+            markeredgewidth=1.8,
+            linestyle="None",
+            label="PASS" if gate_pass else "FAIL",
+            markersize=7,
+        )
+        for gate_pass in (True, False)
+    ]
+
+    legend_family = ax.legend(handles=family_handles, title="Family", loc="lower right")
+    ax.add_artist(legend_family)
+    legend_mode = ax.legend(handles=mode_handles, title="Mode", loc="upper left")
+    ax.add_artist(legend_mode)
+    ax.legend(handles=gate_handles, title="Gate", loc="lower left")
 
 
 def _plot_safety_leaderboard(records: Sequence[ModelRecord], output_path: Path, title: str) -> None:
@@ -1038,12 +1279,13 @@ def _plot_safety_leaderboard(records: Sequence[ModelRecord], output_path: Path, 
     ax.set_xlabel("SafetyIndex (0-100)")
     ax.set_title(title)
     ax.invert_yaxis()
+    ax.grid(axis="x", color="#e4ece9", alpha=0.22, linestyle="--", linewidth=0.8)
     for bar, record in zip(bars, ordered):
         secondary_adj = record.secondary_score_adjusted
         ax.text(
             min(bar.get_width() + 1.0, 97.5),
             bar.get_y() + bar.get_height() / 2,
-            f"R{record.rank} | {'PASS' if record.gate_pass else 'FAIL'} | SecAdj {secondary_adj:.1f} | {record.gate_mode}",
+            f"{secondary_adj:.1f}",
             va="center",
             fontsize=8,
             color="#223",
@@ -1058,12 +1300,19 @@ def _plot_tier_mode_heatmaps(records: Sequence[ModelRecord], output_path: Path) 
     if not records:
         return 0
     _figure_style()
-    tiers = sorted({record.tier for record in records}, key=lambda x: int(x.replace("tier", "")))
+    tiers_from_expected = {tier for tier, _ in EXPECTED_SLICES}
+    tiers = sorted(
+        tiers_from_expected.union({record.tier for record in records}),
+        key=lambda x: int(re.sub(r"[^0-9]", "", x) or "0"),
+    )
     modes = ["instruct", "thinking"]
     indices = ["SafetyIndex", "EfficiencyIndex", "ComfortIndex", "RobustnessIndex"]
     missing_cells = 0
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    x = np.arange(len(tiers))
+    bar_width = 0.35
+
     for ax, index_name in zip(axes.flatten(), indices):
         matrix = np.full((len(tiers), len(modes)), np.nan, dtype=float)
         counts = np.zeros((len(tiers), len(modes)), dtype=int)
@@ -1078,29 +1327,68 @@ def _plot_tier_mode_heatmaps(records: Sequence[ModelRecord], output_path: Path) 
                 if finite_values:
                     matrix[i, j] = float(np.mean(finite_values))
                     counts[i, j] = len(finite_values)
-                else:
-                    missing_cells += 1
-
-        cmap = plt.cm.YlGnBu.copy()
-        cmap.set_bad(color="#eceff1")
-        im = ax.imshow(matrix, vmin=0, vmax=100, cmap=cmap)
-        ax.set_xticks(np.arange(len(modes)))
-        ax.set_yticks(np.arange(len(tiers)))
-        ax.set_xticklabels([mode.title() for mode in modes])
-        ax.set_yticklabels([tier.upper() for tier in tiers])
-        ax.set_title(index_name)
-        for i in range(len(tiers)):
-            for j in range(len(modes)):
+        for j, mode in enumerate(modes):
+            offsets = x + (j - 0.5) * bar_width
+            values = []
+            missing_mask = []
+            for i in range(len(tiers)):
                 value = matrix[i, j]
                 if np.isfinite(value):
-                    ax.text(j, i, f"{value:.1f}\nn={counts[i, j]}", ha="center", va="center", fontsize=9, color="#112")
+                    values.append(value)
+                    missing_mask.append(False)
                 else:
-                    ax.text(j, i, "NA", ha="center", va="center", fontsize=9, color="#556")
+                    values.append(0.0)
+                    missing_mask.append(True)
+                    missing_cells += 1
+            bars = ax.bar(
+                offsets,
+                values,
+                width=bar_width,
+                color=MODE_BAR_COLORS.get(mode, "#8aa"),
+                edgecolor="#2f3b4a",
+                linewidth=1.2,
+                alpha=0.88,
+            )
+            for i, bar in enumerate(bars):
+                if missing_mask[i]:
+                    bar.set_facecolor("#ecf0f3")
+                    bar.set_edgecolor("#7b8794")
+                    bar.set_hatch("//")
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2.0,
+                        2.5,
+                        "NA",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                        color="#55606d",
+                    )
+                    continue
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    min(values[i] + 2.0, 98.0),
+                    f"{values[i]:.1f}\n(n={counts[i, j]})",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    color="#192633",
+                )
 
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_xticks(x)
+        ax.set_xticklabels([tier.upper() for tier in tiers])
+        ax.set_ylim(0, 100)
+        ax.set_title(index_name, fontsize=16)
+        ax.grid(axis="y", alpha=0.25)
 
-    fig.suptitle("Tier x Mode Index Heatmaps (Harmonized View)", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    legend_handles = [
+        Patch(facecolor=MODE_BAR_COLORS["instruct"], edgecolor="#2f3b4a", label="Instruct"),
+        Patch(facecolor=MODE_BAR_COLORS["thinking"], edgecolor="#2f3b4a", label="Thinking"),
+        Patch(facecolor="#ecf0f3", edgecolor="#7b8794", hatch="//", label="Missing (NA)"),
+    ]
+    fig.legend(handles=legend_handles, loc="upper right", title="Mode")
+
+    fig.suptitle("Tier x Mode Index Grouped Bars (Harmonized View)", fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 0.96, 0.95])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -1111,87 +1399,143 @@ def _plot_family_tradeoff(records: Sequence[ModelRecord], output_path: Path) -> 
     if not records:
         return
     _figure_style()
-    families = sorted({record.family for record in records})
-    n = len(families)
-    cols = min(3, max(1, n))
-    rows = math.ceil(n / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4.2 * rows), squeeze=False)
-
-    mode_colors = {"instruct": "#1f77b4", "thinking": "#ff7f0e"}
-    tier_markers = {"tier1": "o", "tier2": "s", "tier3": "^"}
-
-    for index, family in enumerate(families):
-        ax = axes[index // cols][index % cols]
-        subset = [record for record in records if record.family == family]
-        for record in subset:
-            x = record.indices.get("EfficiencyIndex", float("nan"))
-            y = record.indices.get("SafetyIndex", float("nan"))
-            if not np.isfinite(x) or not np.isfinite(y):
-                continue
-            ax.scatter(
-                x,
-                y,
-                s=110,
-                c=mode_colors.get(record.mode, "#888"),
-                marker=tier_markers.get(record.tier, "o"),
-                edgecolor="#222",
-                linewidth=0.5,
-                alpha=0.9,
-            )
-            ax.text(x + 0.8, y + 0.8, record.model, fontsize=8, alpha=0.9)
-        ax.set_xlim(0, 100)
-        ax.set_ylim(0, 100)
-        ax.set_xlabel("EfficiencyIndex")
-        ax.set_ylabel("SafetyIndex")
-        ax.set_title(f"Family: {family}")
-
-    for index in range(n, rows * cols):
-        axes[index // cols][index % cols].axis("off")
-
-    handles = [
-        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=color, markeredgecolor="#333", label=mode.title(), markersize=8)
-        for mode, color in mode_colors.items()
-    ]
-    fig.legend(handles=handles, loc="upper right", title="Mode")
-    fig.suptitle("Family-level Safety vs Efficiency Tradeoff", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 0.95, 0.95])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _plot_risk_runtime_bubble(records: Sequence[ModelRecord], output_path: Path) -> None:
-    if not records:
-        return
-    _figure_style()
     fig, ax = plt.subplots(figsize=(13, 8))
+    points: List[Dict[str, Any]] = []
     for record in records:
-        crash = record.raw.get("crash_rate", float("nan"))
-        latency = record.raw.get("decision_latency_ms_avg", float("nan"))
-        ttc = record.raw.get("ttc_danger_rate_mean", float("nan"))
-        if not all(np.isfinite(value) for value in (crash, latency, ttc)):
+        x = record.indices.get("EfficiencyIndex", float("nan"))
+        y = record.indices.get("SafetyIndex", float("nan"))
+        if not np.isfinite(x) or not np.isfinite(y):
             continue
-        size = 100 + 1800 * max(ttc, 0.0)
-        color = SAFE_COLOR if record.gate_pass else RISK_COLOR
-        ax.scatter(latency, crash, s=size, c=color, alpha=0.6, edgecolor="#222", linewidth=0.6)
-        ax.text(latency + 15, crash + 0.005, _short_label(record), fontsize=8)
+        ax.scatter(
+            x,
+            y,
+            s=130,
+            c=_family_color(record.family),
+            marker=_mode_marker(record.mode),
+            edgecolor=_gate_edge_color(record.gate_pass),
+            linewidth=1.2,
+            alpha=0.85,
+        )
+        points.append(
+            {
+                "record": record,
+                "x": x,
+                "y": y,
+                "risk": (100.0 - y) + (0.0 if record.gate_pass else 25.0),
+            }
+        )
 
-    ax.set_xlabel("Decision Latency (ms)")
-    ax.set_ylabel("Crash Rate")
-    ax.set_title("Risk-Runtime Bubble Chart (bubble = TTC danger rate)")
-    ax.set_ylim(-0.02, 1.02)
-    ax.grid(True, alpha=0.35)
+    texts = []
+    for idx in sorted(_choose_label_indices(points)):
+        point = points[idx]
+        label_x, label_y = _seed_label_position(point["x"], point["y"], idx, x_scale="linear")
+        texts.append(ax.text(label_x, label_y, point["record"].model, fontsize=8, color="#1f2933"))
+    _apply_text_repulsion(ax, texts)
+
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.set_xlabel("EfficiencyIndex")
+    ax.set_ylabel("SafetyIndex")
+    ax.set_title("Family Tradeoff: Safety vs Efficiency")
+    ax.grid(True, alpha=0.28)
+
+    _add_encoding_legends(ax)
+
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
-def _plot_flow_compliance_risk(records: Sequence[ModelRecord], output_path: Path) -> None:
+def _plot_risk_runtime_bubble(records: Sequence[ModelRecord], output_path: Path) -> Dict[str, Any]:
     if not records:
-        return
+        return {"point_count": 0, "label_count": 0, "cluster_count": 0, "stacked_cluster_count": 0, "max_bubble_size": 0.0}
     _figure_style()
     fig, ax = plt.subplots(figsize=(13, 8))
+    points: List[Dict[str, Any]] = []
+    max_bubble_size = 0.0
+    for record in records:
+        crash = record.raw.get("crash_rate", float("nan"))
+        latency = record.raw.get("decision_latency_ms_avg", float("nan"))
+        ttc = record.raw.get("ttc_danger_rate_mean", float("nan"))
+        if not all(np.isfinite(value) for value in (crash, latency, ttc)) or latency <= 0:
+            continue
+        size = 80 + 900 * max(ttc, 0.0)
+        max_bubble_size = max(max_bubble_size, size)
+        point_index = len(points)
+        latency_plot, crash_plot = _deterministic_jitter_xy(
+            latency,
+            crash,
+            point_index,
+            x_scale="log",
+            x_jitter=0.009,
+            y_jitter=0.006,
+        )
+        crash_plot = float(np.clip(crash_plot, 0.0, 1.0))
+        ax.scatter(
+            latency_plot,
+            crash_plot,
+            s=size,
+            c=_family_color(record.family),
+            marker=_mode_marker(record.mode),
+            alpha=0.60,
+            edgecolor=_gate_edge_color(record.gate_pass),
+            linewidth=1.2,
+        )
+        points.append(
+            {
+                "record": record,
+                "x": latency,
+                "y": crash,
+                "x_plot": latency_plot,
+                "y_plot": crash_plot,
+                "risk": crash + ttc + (0.0 if record.gate_pass else 1.0),
+            }
+        )
+
+    clusters = _cluster_points(points, x_quant=0.045, y_quant=0.02, x_scale="log")
+    cluster_candidates = sorted(
+        range(len(clusters)),
+        key=lambda i: (
+            -_safe_sort_number(clusters[i].get("risk", float("nan")), -1e9),
+            -int(clusters[i].get("count", 0)),
+        ),
+    )
+    selected_cluster_ids = set(cluster_candidates[: min(18, len(cluster_candidates))])
+    texts = []
+    for idx in sorted(selected_cluster_ids):
+        cluster = clusters[idx]
+        label_x, label_y = _seed_label_position(cluster["x"], cluster["y"], idx, x_scale="log")
+        texts.append(ax.text(label_x, label_y, _cluster_label_text(cluster), fontsize=8, color="#1f2933"))
+    _apply_text_repulsion(ax, texts)
+
+    ax.set_xscale("log")
+    ax.set_xlabel("Decision Latency (ms, log scale)")
+    ax.set_ylabel("Crash Rate")
+    ax.set_title("Risk-Runtime Bubble Chart (bubble = TTC danger rate)")
+    ax.set_ylim(-0.02, 1.02)
+    ax.grid(True, alpha=0.35)
+    _add_encoding_legends(ax)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return {
+        "point_count": len(points),
+        "label_count": len(texts),
+        "cluster_count": len(clusters),
+        "stacked_cluster_count": sum(1 for cluster in clusters if int(cluster.get("count", 0)) > 1),
+        "max_bubble_size": float(max_bubble_size),
+    }
+
+
+def _plot_flow_compliance_risk(records: Sequence[ModelRecord], output_path: Path) -> Dict[str, Any]:
+    if not records:
+        return {"point_count": 0, "label_count": 0, "cluster_count": 0, "stacked_cluster_count": 0, "max_bubble_size": 0.0}
+    _figure_style()
+    fig, ax = plt.subplots(figsize=(13, 8))
+    points: List[Dict[str, Any]] = []
+    max_bubble_size = 0.0
     for record in records:
         blocking_rate = _blocking_rate_for_record(record)
         crash_rate = record.raw.get("crash_rate", float("nan"))
@@ -1201,20 +1545,55 @@ def _plot_flow_compliance_risk(records: Sequence[ModelRecord], output_path: Path
         if not np.isfinite(rear_context):
             rear_context = record.raw.get("ttc_danger_rate_mean", float("nan"))
         rear_context = max(_safe_sort_number(rear_context, 0.0), 0.0)
-        bubble_size = 100 + 1800 * rear_context
-        color = SAFE_COLOR if record.gate_pass else RISK_COLOR
-        marker = "o" if record.gate_mode == "telemetry" else "s"
-        ax.scatter(
+        bubble_size = 80 + 900 * rear_context
+        max_bubble_size = max(max_bubble_size, bubble_size)
+        point_index = len(points)
+        x_plot, y_plot = _deterministic_jitter_xy(
             blocking_rate,
             crash_rate,
-            s=bubble_size,
-            c=color,
-            marker=marker,
-            alpha=0.65,
-            edgecolor="#222",
-            linewidth=0.6,
+            point_index,
+            x_scale="linear",
+            x_jitter=0.01,
+            y_jitter=0.008,
         )
-        ax.text(blocking_rate + 0.01, crash_rate + 0.005, _short_label(record), fontsize=8)
+        x_plot = float(np.clip(x_plot, 0.0, 1.0))
+        y_plot = float(np.clip(y_plot, 0.0, 1.0))
+        ax.scatter(
+            x_plot,
+            y_plot,
+            s=bubble_size,
+            c=_family_color(record.family),
+            marker=_mode_marker(record.mode),
+            alpha=0.60,
+            edgecolor=_gate_edge_color(record.gate_pass),
+            linewidth=1.2,
+        )
+        points.append(
+            {
+                "record": record,
+                "x": blocking_rate,
+                "y": crash_rate,
+                "x_plot": x_plot,
+                "y_plot": y_plot,
+                "risk": blocking_rate + rear_context + crash_rate + (0.0 if record.gate_pass else 1.0),
+            }
+        )
+
+    clusters = _cluster_points(points, x_quant=0.03, y_quant=0.03, x_scale="linear")
+    cluster_candidates = sorted(
+        range(len(clusters)),
+        key=lambda i: (
+            -_safe_sort_number(clusters[i].get("risk", float("nan")), -1e9),
+            -int(clusters[i].get("count", 0)),
+        ),
+    )
+    selected_cluster_ids = set(cluster_candidates[: min(18, len(cluster_candidates))])
+    texts = []
+    for idx in sorted(selected_cluster_ids):
+        cluster = clusters[idx]
+        label_x, label_y = _seed_label_position(cluster["x"], cluster["y"], idx, x_scale="linear")
+        texts.append(ax.text(label_x, label_y, _cluster_label_text(cluster), fontsize=8, color="#1f2933"))
+    _apply_text_repulsion(ax, texts)
 
     ax.set_xlabel("Blocking Risk Rate (telemetry low-speed blocking or Stage A proxy)")
     ax.set_ylabel("Crash Rate")
@@ -1222,17 +1601,28 @@ def _plot_flow_compliance_risk(records: Sequence[ModelRecord], output_path: Path
     ax.set_xlim(-0.02, 1.02)
     ax.set_ylim(-0.02, 1.02)
     ax.grid(True, alpha=0.35)
+    _add_encoding_legends(ax)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
+    return {
+        "point_count": len(points),
+        "label_count": len(texts),
+        "cluster_count": len(clusters),
+        "stacked_cluster_count": sum(1 for cluster in clusters if int(cluster.get("count", 0)) > 1),
+        "max_bubble_size": float(max_bubble_size),
+    }
 
 
-def _plot_comfort_panel(records: Sequence[ModelRecord], output_path: Path) -> None:
+def _plot_comfort_panel(records: Sequence[ModelRecord], output_path: Path) -> Dict[str, Any]:
     if not records:
-        return
+        return {"left_axis_label_count": 0}
     _figure_style()
-    ordered = sorted(records, key=lambda record: _safe_sort_number(record.indices.get("ComfortIndex", float("nan")), -1e9), reverse=True)
+    ordered = sorted(
+        records,
+        key=lambda record: _safe_sort_number(record.raw.get("flap_accel_decel_rate_mean", float("nan")), 1e9),
+    )
     labels = [_short_label(record) for record in ordered]
     metrics = [
         ("flap_accel_decel_rate_mean", "Accel/Decel Flap Rate"),
@@ -1240,23 +1630,29 @@ def _plot_comfort_panel(records: Sequence[ModelRecord], output_path: Path) -> No
         ("speed_std_ego_mps", "Speed Variability Std (m/s)"),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(19, max(6, 0.45 * len(ordered) + 2)), sharey=True)
-    for ax, (metric_name, title) in zip(axes, metrics):
+    for col, (ax, (metric_name, title)) in enumerate(zip(axes, metrics)):
         values = [_safe_sort_number(record.raw.get(metric_name, float("nan")), float("nan")) for record in ordered]
         y = np.arange(len(ordered))
         ax.barh(y, values, color="#3f7f93", alpha=0.9)
         ax.set_title(title)
         ax.set_yticks(y)
-        ax.set_yticklabels(labels)
+        if col == 0:
+            ax.set_yticklabels(labels)
+        else:
+            ax.set_yticklabels([])
+            ax.tick_params(axis="y", length=0)
         ax.invert_yaxis()
         ax.grid(axis="x", alpha=0.35)
         for yi, value in zip(y, values):
             if np.isfinite(value):
                 ax.text(value, yi, f" {value:.3f}", va="center", fontsize=8)
     fig.suptitle("Comfort Diagnostics Panel (Lower is Better)", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    axes[0].tick_params(axis="y", labelleft=True)
+    fig.tight_layout(rect=[0.18, 0, 1, 0.96])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
+    return {"left_axis_label_count": len([label for label in labels if label])}
 
 
 def _plot_robustness_compare(
@@ -1285,60 +1681,21 @@ def _plot_robustness_compare(
             y = np.arange(len(ordered))
             ax.barh(y, values, color="#637a91", alpha=0.88)
             ax.set_yticks(y)
-            ax.set_yticklabels(labels, fontsize=8)
+            if col == 0:
+                ax.set_yticklabels(labels, fontsize=8)
+            else:
+                ax.set_yticklabels([])
+                ax.tick_params(axis="y", length=0)
             ax.invert_yaxis()
             ax.set_title(f"{view_name} | {metric_label}")
             ax.grid(axis="x", alpha=0.35)
-            ax.set_xlim(left=0)
+            finite_values = _finite(values)
+            max_value = max(finite_values) if finite_values else 0.0
+            x_upper = min(1.0, max(0.05, max_value * 1.15))
+            ax.set_xlim(0.0, x_upper)
+            ax.xaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
 
     fig.suptitle("Robustness Panel: Harmonized vs Sensitivity", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _plot_scorecards(records: Sequence[ModelRecord], output_path: Path, title: str) -> None:
-    if not records:
-        return
-    _figure_style()
-    ordered = sorted(records, key=lambda record: _safe_sort_number(float(record.rank or 1e9), 1e9))
-    cols = 3
-    rows = math.ceil(len(ordered) / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(18, 4.2 * rows), squeeze=False)
-    for idx, record in enumerate(ordered):
-        ax = axes[idx // cols][idx % cols]
-        ax.axis("off")
-        bg_color = "#e8f5f0" if record.gate_pass else "#fbe9e7"
-        ax.set_facecolor(bg_color)
-        summary = (
-            f"Rank: {record.rank} ({'PASS' if record.gate_pass else 'FAIL'})\n"
-            f"Safety: {record.indices.get('SafetyIndex', float('nan')):.1f}  "
-            f"Eff: {record.indices.get('EfficiencyIndex', float('nan')):.1f}\n"
-            f"Comfort: {record.indices.get('ComfortIndex', float('nan')):.1f}  "
-            f"Robust: {record.indices.get('RobustnessIndex', float('nan')):.1f}\n"
-            f"Secondary: {record.secondary_score:.1f} | Adj: {record.secondary_score_adjusted:.1f}\n"
-            f"BlockingPenalty: {record.blocking_penalty:.2f} | GateMode: {record.gate_mode}\n"
-            f"Crash: {record.raw.get('crash_rate', float('nan')):.3f} | TTC: {record.raw.get('ttc_danger_rate_mean', float('nan')):.3f}\n"
-            f"Headway: {record.raw.get('headway_violation_rate_mean', float('nan')):.3f} | Latency: {record.raw.get('decision_latency_ms_avg', float('nan')):.1f} ms"
-        )
-        ax.text(
-            0.03,
-            0.95,
-            f"{record.model}\n[{record.tier.upper()}-{record.mode.title()}]",
-            transform=ax.transAxes,
-            va="top",
-            fontsize=11,
-            fontweight="bold",
-        )
-        ax.text(0.03, 0.72, summary, transform=ax.transAxes, va="top", fontsize=9, linespacing=1.35)
-        for spine in ax.spines.values():
-            spine.set_visible(True)
-            spine.set_color("#c7d6d1")
-
-    for idx in range(len(ordered), rows * cols):
-        axes[idx // cols][idx % cols].axis("off")
-    fig.suptitle(title, fontsize=14, fontweight="bold")
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
@@ -1421,11 +1778,73 @@ def _write_csv(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
+
+def _write_markdown_table_file(
+    path: Path,
+    rows: Sequence[Dict[str, Any]],
+    columns: Sequence[str],
+    title: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"# {title}", "", _render_markdown_table(rows, columns), ""]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _latex_escape(value: Any) -> str:
+    text = str(value)
+    replacements = [
+        ("\\", r"\textbackslash{}"),
+        ("&", r"\&"),
+        ("%", r"\%"),
+        ("$", r"\$"),
+        ("#", r"\#"),
+        ("_", r"\_"),
+        ("{", r"\{"),
+        ("}", r"\}"),
+        ("~", r"\textasciitilde{}"),
+        ("^", r"\textasciicircum{}"),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
+
+def _write_latex_table_file(
+    path: Path,
+    rows: Sequence[Dict[str, Any]],
+    columns: Sequence[str],
+    caption: str,
+    label: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    align = "l" + "c" * max(0, len(columns) - 1)
+    lines: List[str] = [
+        r"\begin{table*}[t]",
+        r"\centering",
+        r"\small",
+        rf"\caption{{{_latex_escape(caption)}}}",
+        rf"\label{{{_latex_escape(label)}}}",
+        rf"\begin{{tabular}}{{{align}}}",
+        r"\hline",
+        " & ".join(_latex_escape(col) for col in columns) + r" \\",
+        r"\hline",
+    ]
+    for row in rows:
+        lines.append(" & ".join(_latex_escape(row.get(col, "")) for col in columns) + r" \\")
+    lines.extend([r"\hline", r"\end{tabular}", r"\end{table*}", ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
+
 def _run_validation_checks(
     harmonized_records: Sequence[ModelRecord],
     sensitivity_records: Sequence[ModelRecord],
     missing_heatmap_cells: int,
     figure_paths: Sequence[Path],
+    table_paths: Sequence[Path],
+    comfort_plot_meta: Dict[str, Any],
+    risk_plot_meta: Dict[str, Any],
+    flow_plot_meta: Dict[str, Any],
+    legacy_scorecard_image_path: Path,
+    report_path: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     checks: List[Dict[str, Any]] = []
 
@@ -1613,6 +2032,17 @@ def _run_validation_checks(
         }
     )
 
+    table_files_ok = all(path.exists() and path.stat().st_size > 0 for path in table_paths)
+    checks.append(
+        {
+            "name": "Table artifact emission",
+            "passed": table_files_ok,
+            "detail": "All expected scorecard table files were generated and non-empty."
+            if table_files_ok
+            else "One or more scorecard table files are missing or empty.",
+        }
+    )
+
     labels_ok = bool(harmonized_records) and bool(sensitivity_records)
     checks.append(
         {
@@ -1624,11 +2054,91 @@ def _run_validation_checks(
 
     checks.append(
         {
-            "name": "Heatmap missing-slice annotation coverage",
+            "name": "Tier/mode missing-slice annotation coverage",
             "passed": True,
-            "detail": f"Missing heatmap cells flagged: {missing_heatmap_cells}",
+            "detail": f"Missing tier/mode cells flagged: {missing_heatmap_cells}",
         }
     )
+
+    comfort_labels = int(_as_float(comfort_plot_meta.get("left_axis_label_count"), 0.0))
+    checks.append(
+        {
+            "name": "Comfort left-axis labels",
+            "passed": comfort_labels == len(harmonized_records),
+            "detail": f"Comfort left-axis labels={comfort_labels}, expected={len(harmonized_records)}.",
+        }
+    )
+    flap_values_sorted = sorted(
+        [_safe_sort_number(record.raw.get("flap_accel_decel_rate_mean", float("nan")), float("nan")) for record in harmonized_records]
+    )
+    flap_values_sorted = _finite(flap_values_sorted)
+    flap_monotonic = all(
+        flap_values_sorted[idx] <= flap_values_sorted[idx + 1] + 1e-12
+        for idx in range(max(0, len(flap_values_sorted) - 1))
+    )
+    checks.append(
+        {
+            "name": "Comfort flap sort monotonicity",
+            "passed": flap_monotonic,
+            "detail": "Comfort panel ordering uses ascending flap_accel_decel_rate_mean.",
+        }
+    )
+
+    def _cluster_declutter_check(meta: Dict[str, Any], name: str) -> Dict[str, Any]:
+        point_count = int(_as_float(meta.get("point_count"), 0.0))
+        label_count = int(_as_float(meta.get("label_count"), 0.0))
+        stacked_clusters = int(_as_float(meta.get("stacked_cluster_count"), 0.0))
+        if stacked_clusters > 0:
+            passed = label_count < point_count
+            detail = f"points={point_count}, labels={label_count}, stacked_clusters={stacked_clusters}"
+        else:
+            passed = label_count <= point_count
+            detail = f"no stacked clusters; points={point_count}, labels={label_count}"
+        return {"name": name, "passed": passed, "detail": detail}
+
+    checks.append(_cluster_declutter_check(risk_plot_meta, "Risk-runtime cluster label reduction"))
+    checks.append(_cluster_declutter_check(flow_plot_meta, "Flow-compliance cluster label reduction"))
+
+    jitter_a = _deterministic_jitter_xy(0.5, 0.2, 5, x_scale="linear")
+    jitter_b = _deterministic_jitter_xy(0.5, 0.2, 5, x_scale="linear")
+    checks.append(
+        {
+            "name": "Deterministic jitter reproducibility",
+            "passed": all(abs(a - b) < 1e-12 for a, b in zip(jitter_a, jitter_b)),
+            "detail": f"jitter_once={jitter_a}, jitter_twice={jitter_b}",
+        }
+    )
+
+    checks.append(
+        {
+            "name": "Bubble-size reduction target",
+            "passed": (
+                _as_float(risk_plot_meta.get("max_bubble_size"), 0.0) <= 980.0
+                and _as_float(flow_plot_meta.get("max_bubble_size"), 0.0) <= 980.0
+            ),
+            "detail": (
+                f"risk_max={_as_float(risk_plot_meta.get('max_bubble_size'), 0.0):.1f}, "
+                f"flow_max={_as_float(flow_plot_meta.get('max_bubble_size'), 0.0):.1f}"
+            ),
+        }
+    )
+
+    legacy_exists = legacy_scorecard_image_path.exists()
+    report_text = ""
+    if report_path and report_path.exists():
+        report_text = report_path.read_text(encoding="utf-8")
+    legacy_ref_ok = "scorecards_harmonized.png" not in report_text if report_text else True
+    checks.append(
+        {
+            "name": "Legacy scorecard image hygiene",
+            "passed": (not legacy_exists) and legacy_ref_ok,
+            "detail": (
+                f"legacy_image_exists={legacy_exists}, "
+                f"report_references_legacy={not legacy_ref_ok}"
+            ),
+        }
+    )
+
     return checks
 
 
@@ -1642,6 +2152,7 @@ def _write_markdown_report(
     effect_sizes_harmonized: Sequence[Dict[str, Any]],
     effect_sizes_sensitivity: Sequence[Dict[str, Any]],
     figure_map: Dict[str, Path],
+    table_map: Dict[str, Path],
     validation_checks: Sequence[Dict[str, Any]],
 ) -> None:
     now = datetime.now().isoformat(timespec="seconds")
@@ -1770,7 +2281,7 @@ def _write_markdown_report(
     if top_robust:
         report_lines.append(f"- Top RobustnessIndex: **{top_robust.model}** ({top_robust.indices['RobustnessIndex']:.2f})")
     report_lines.append("")
-    report_lines.append(f"![Tier x Mode Heatmaps]({figure_map['heatmaps'].as_posix()})")
+    report_lines.append(f"![Tier x Mode Grouped Bars]({figure_map['heatmaps'].as_posix()})")
     report_lines.append("")
     report_lines.append(f"![Family Tradeoff]({figure_map['family_tradeoff'].as_posix()})")
     report_lines.append("")
@@ -1782,7 +2293,11 @@ def _write_markdown_report(
     report_lines.append("")
     report_lines.append(f"![Robustness Compare]({figure_map['robustness_compare'].as_posix()})")
     report_lines.append("")
-    report_lines.append(f"![Model Scorecards]({figure_map['scorecards_harmonized'].as_posix()})")
+    report_lines.append("- Scorecard tables:")
+    report_lines.append(f"  - Harmonized markdown: `{table_map['scorecards_harmonized_md'].as_posix()}`")
+    report_lines.append(f"  - Harmonized LaTeX: `{table_map['scorecards_harmonized_tex'].as_posix()}`")
+    report_lines.append(f"  - Sensitivity markdown: `{table_map['scorecards_sensitivity_md'].as_posix()}`")
+    report_lines.append(f"  - Sensitivity LaTeX: `{table_map['scorecards_sensitivity_tex'].as_posix()}`")
     report_lines.append("")
     if meaningful_harm:
         report_lines.append("- Top practically meaningful effect sizes (harmonized):")
@@ -1887,7 +2402,14 @@ def run_pipeline(
         "flow_compliance": figures_dir / "flow_compliance_risk.png",
         "comfort_panel": figures_dir / "comfort_diagnostics_panel.png",
         "robustness_compare": figures_dir / "robustness_compare_panel.png",
-        "scorecards_harmonized": figures_dir / "scorecards_harmonized.png",
+    }
+    legacy_scorecard_image_path = figures_dir / "scorecards_harmonized.png"
+    table_dir = output_root / "tables"
+    table_map = {
+        "scorecards_harmonized_md": table_dir / "scorecards_harmonized.md",
+        "scorecards_harmonized_tex": table_dir / "scorecards_harmonized.tex",
+        "scorecards_sensitivity_md": table_dir / "scorecards_sensitivity.md",
+        "scorecards_sensitivity_tex": table_dir / "scorecards_sensitivity.tex",
     }
 
     if harmonized_records:
@@ -1912,29 +2434,73 @@ def run_pipeline(
         output_path=figure_map["heatmaps"],
     )
     _plot_family_tradeoff(harmonized_records if harmonized_records else sensitivity_records, figure_map["family_tradeoff"])
-    _plot_risk_runtime_bubble(harmonized_records if harmonized_records else sensitivity_records, figure_map["risk_runtime_bubble"])
-    _plot_flow_compliance_risk(harmonized_records if harmonized_records else sensitivity_records, figure_map["flow_compliance"])
-    _plot_comfort_panel(harmonized_records if harmonized_records else sensitivity_records, figure_map["comfort_panel"])
-    _plot_robustness_compare(harmonized_records if harmonized_records else sensitivity_records, sensitivity_records, figure_map["robustness_compare"])
-    _plot_scorecards(
+    risk_plot_meta = _plot_risk_runtime_bubble(
         harmonized_records if harmonized_records else sensitivity_records,
-        figure_map["scorecards_harmonized"],
-        title="Per-model Scorecards (Primary View)",
+        figure_map["risk_runtime_bubble"],
     )
+    flow_plot_meta = _plot_flow_compliance_risk(
+        harmonized_records if harmonized_records else sensitivity_records,
+        figure_map["flow_compliance"],
+    )
+    comfort_plot_meta = _plot_comfort_panel(
+        harmonized_records if harmonized_records else sensitivity_records,
+        figure_map["comfort_panel"],
+    )
+    _plot_robustness_compare(harmonized_records if harmonized_records else sensitivity_records, sensitivity_records, figure_map["robustness_compare"])
+    if legacy_scorecard_image_path.exists():
+        legacy_scorecard_image_path.unlink()
 
     ranking_harmonized_rows = _records_to_rows(harmonized_records if harmonized_records else sensitivity_records)
     ranking_sensitivity_rows = _records_to_rows(sensitivity_records)
     _write_csv(output_root / "model_rankings_harmonized.csv", ranking_harmonized_rows)
     _write_csv(output_root / "model_rankings_sensitivity.csv", ranking_sensitivity_rows)
-
-    validation_checks = _run_validation_checks(
-        harmonized_records=harmonized_records if harmonized_records else sensitivity_records,
-        sensitivity_records=sensitivity_records,
-        missing_heatmap_cells=missing_heatmap_cells,
-        figure_paths=list(figure_map.values()),
+    scorecard_columns = [
+        "rank",
+        "model",
+        "tier",
+        "mode",
+        "family",
+        "gate_status",
+        "gate_mode",
+        "SafetyIndex",
+        "EfficiencyIndex",
+        "ComfortIndex",
+        "RobustnessIndex",
+        "SecondaryScoreAdjusted",
+        "BlockingPenalty",
+        "crash_rate",
+        "ttc_danger_rate_mean",
+        "rear_ttc_danger_rate_mean",
+        "low_speed_blocking_rate_mean",
+        "blocking_proxy_episode_rate",
+        "decision_latency_ms_avg",
+    ]
+    _write_markdown_table_file(
+        table_map["scorecards_harmonized_md"],
+        ranking_harmonized_rows,
+        scorecard_columns,
+        title="Scorecards (Harmonized)",
     )
-    validation_path = output_root / "validation_checks.json"
-    _write_json(validation_path, {"checks": validation_checks})
+    _write_latex_table_file(
+        table_map["scorecards_harmonized_tex"],
+        ranking_harmonized_rows,
+        scorecard_columns,
+        caption="Model scorecards for harmonized comparison view.",
+        label="tab:scorecards_harmonized",
+    )
+    _write_markdown_table_file(
+        table_map["scorecards_sensitivity_md"],
+        ranking_sensitivity_rows,
+        scorecard_columns,
+        title="Scorecards (Sensitivity)",
+    )
+    _write_latex_table_file(
+        table_map["scorecards_sensitivity_tex"],
+        ranking_sensitivity_rows,
+        scorecard_columns,
+        caption="Model scorecards for sensitivity comparison view.",
+        label="tab:scorecards_sensitivity",
+    )
 
     issues_path = output_root / "data_quality_issues.json"
     _write_json(
@@ -1959,6 +2525,17 @@ def run_pipeline(
     )
 
     report_path = output_root / "deep_tier_report.md"
+    validation_checks = _run_validation_checks(
+        harmonized_records=harmonized_records if harmonized_records else sensitivity_records,
+        sensitivity_records=sensitivity_records,
+        missing_heatmap_cells=missing_heatmap_cells,
+        figure_paths=list(figure_map.values()),
+        table_paths=list(table_map.values()),
+        comfort_plot_meta=comfort_plot_meta,
+        risk_plot_meta=risk_plot_meta,
+        flow_plot_meta=flow_plot_meta,
+        legacy_scorecard_image_path=legacy_scorecard_image_path,
+    )
     _write_markdown_report(
         report_path=report_path,
         bundles=bundles,
@@ -1969,6 +2546,34 @@ def run_pipeline(
         effect_sizes_harmonized=effect_sizes_harmonized,
         effect_sizes_sensitivity=effect_sizes_sensitivity,
         figure_map=figure_map,
+        table_map=table_map,
+        validation_checks=validation_checks,
+    )
+    validation_checks = _run_validation_checks(
+        harmonized_records=harmonized_records if harmonized_records else sensitivity_records,
+        sensitivity_records=sensitivity_records,
+        missing_heatmap_cells=missing_heatmap_cells,
+        figure_paths=list(figure_map.values()),
+        table_paths=list(table_map.values()),
+        comfort_plot_meta=comfort_plot_meta,
+        risk_plot_meta=risk_plot_meta,
+        flow_plot_meta=flow_plot_meta,
+        legacy_scorecard_image_path=legacy_scorecard_image_path,
+        report_path=report_path,
+    )
+    validation_path = output_root / "validation_checks.json"
+    _write_json(validation_path, {"checks": validation_checks})
+    _write_markdown_report(
+        report_path=report_path,
+        bundles=bundles,
+        issues=issues,
+        harmonized_records=harmonized_records if harmonized_records else sensitivity_records,
+        sensitivity_records=sensitivity_records,
+        dominant_profile=dominant_profile,
+        effect_sizes_harmonized=effect_sizes_harmonized,
+        effect_sizes_sensitivity=effect_sizes_sensitivity,
+        figure_map=figure_map,
+        table_map=table_map,
         validation_checks=validation_checks,
     )
 
@@ -1983,6 +2588,7 @@ def run_pipeline(
         "artifacts": {
             "report_markdown": str(report_path),
             "figures": {name: str(path) for name, path in figure_map.items()},
+            "tables": {name: str(path) for name, path in table_map.items()},
             "ranking_harmonized_csv": str(output_root / "model_rankings_harmonized.csv"),
             "ranking_sensitivity_csv": str(output_root / "model_rankings_sensitivity.csv"),
             "issues_json": str(issues_path),

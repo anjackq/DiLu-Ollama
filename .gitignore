@@ -218,3 +218,7 @@ gold_standard_data.jsonl
 # Optional local reports / plots (results/ is already ignored, these keep root clean)
 *_plot.png
 eval_compare_*.json
+
+# Large local datasets
+data/gold_standard_data_rl_*.jsonl
+
