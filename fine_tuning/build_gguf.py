@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import shutil
@@ -8,6 +9,27 @@ from typing import Optional
 
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+ENHANCED_SYSTEM_PROMPT = """You are an autonomous driving decision engine.
+Choose exactly one Action_id from 0..4 for the given scenario.
+
+Allowed actions:
+0 = Turn-left
+1 = IDLE
+2 = Turn-right
+3 = Acceleration
+4 = Deceleration
+
+Output requirements (strict):
+1) Exactly two lines.
+2) Line 1: Reasoning: <one short sentence, max 20 words>
+3) Line 2: Response to user:#### <0|1|2|3|4>
+4) No markdown, no bullet lists, no extra sections, no chain-of-thought.
+
+Safety fallback:
+If uncertain or constraints conflict, choose Deceleration (4)."""
+
+SYSTEM_BLOCK_RE = re.compile(r'(?ims)^\s*SYSTEM\s+"""(.*?)"""[ \t]*\n?')
 
 
 def _abs_path(path: str) -> str:
@@ -162,6 +184,86 @@ def _restore_patched_file(path: str, original_text: str) -> None:
         f.write(original_text)
 
 
+def _extract_first_system_prompt(text: str) -> Optional[str]:
+    matches = SYSTEM_BLOCK_RE.findall(text or "")
+    if not matches:
+        return None
+    candidate = matches[0].strip()
+    return candidate or None
+
+
+def _remove_system_blocks(text: str) -> str:
+    return SYSTEM_BLOCK_RE.sub("", text or "")
+
+
+def _resolve_system_prompt(explicit_prompt: str, template_prompt: Optional[str]) -> str:
+    if explicit_prompt.strip():
+        return explicit_prompt.strip()
+    if template_prompt and template_prompt.strip():
+        return template_prompt.strip()
+    return ENHANCED_SYSTEM_PROMPT.strip()
+
+
+def _has_system_prompt(text: str) -> bool:
+    return bool(SYSTEM_BLOCK_RE.search(text or ""))
+
+
+def _backfill_missing_system_prompts(output_dir: str, fallback_prompt: str) -> int:
+    patched_count = 0
+    fallback_prompt = fallback_prompt.strip()
+    if not fallback_prompt:
+        return patched_count
+
+    for filename in sorted(os.listdir(output_dir)):
+        if not filename.endswith(".gguf.Modelfile"):
+            continue
+        path = os.path.join(output_dir, filename)
+        if not os.path.isfile(path):
+            continue
+
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        if _has_system_prompt(content):
+            continue
+
+        updated = content.rstrip() + f'\n\nSYSTEM """{fallback_prompt}"""\n'
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+        patched_count += 1
+
+    return patched_count
+
+
+def _find_auto_template_modelfile(base_name: str) -> str:
+    """Locate a template Modelfile for GGUF generation.
+
+    Preferred order:
+    1) fine_tuning/template_modelfile/<base_name>.Modelfile
+    2) fine_tuning/modelfiles/<base_name>.Modelfile (legacy location)
+    3) fine_tuning/template_modelfile/dilu-reasoning.Modelfile or dilu-instruct.Modelfile
+       selected by model-name heuristic
+    """
+    lowered = base_name.lower()
+    looks_reasoning = any(token in lowered for token in ["-r1", "_r1", "reason", "qwq"])
+
+    candidates = [
+        os.path.join(ROOT_DIR, "fine_tuning", "template_modelfile", f"{base_name}.Modelfile"),
+        os.path.join(ROOT_DIR, "fine_tuning", "modelfiles", f"{base_name}.Modelfile"),
+        os.path.join(
+            ROOT_DIR,
+            "fine_tuning",
+            "template_modelfile",
+            "dilu-reasoning.Modelfile" if looks_reasoning else "dilu-instruct.Modelfile",
+        ),
+        os.path.join(ROOT_DIR, "fine_tuning", "template_modelfile", "dilu-instruct.Modelfile"),
+        os.path.join(ROOT_DIR, "fine_tuning", "template_modelfile", "dilu-reasoning.Modelfile"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return ""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert merged HF model exports to GGUF, optionally quantize, and optionally create an Ollama model."
@@ -206,7 +308,8 @@ def parse_args() -> argparse.Namespace:
         "--template-modelfile",
         default="",
         help="Optional template Modelfile to inherit PARAMETER/SYSTEM sections from. "
-             "If omitted, auto-uses fine_tuning/modelfiles/<name>.Modelfile when present.",
+             "If omitted, auto-uses fine_tuning/template_modelfile/<name>.Modelfile "
+             "(fallback: fine_tuning/modelfiles/<name>.Modelfile).",
     )
     parser.add_argument(
         "--ollama-model",
@@ -239,11 +342,15 @@ def _write_modelfile(
 
     template_path = template_modelfile.strip()
     lines = []
+    template_system_prompt = None
     if template_path:
         if not os.path.exists(template_path):
             raise FileNotFoundError(f"Template Modelfile not found: {template_path}")
         with open(template_path, "r", encoding="utf-8") as f:
-            template_lines = f.read().splitlines()
+            template_text = f.read()
+
+        template_system_prompt = _extract_first_system_prompt(template_text)
+        template_lines = _remove_system_blocks(template_text).splitlines()
 
         from_replaced = False
         for line in template_lines:
@@ -267,12 +374,8 @@ def _write_modelfile(
             "PARAMETER temperature 0.1",
             "PARAMETER num_ctx 4096",
         ]
-        if system_prompt.strip():
-            lines.extend(["", f'SYSTEM """{system_prompt.strip()}"""'])
-
-    # If caller explicitly sets --system-prompt, override by appending explicit SYSTEM.
-    if system_prompt.strip() and template_path:
-        lines.extend(["", f'SYSTEM """{system_prompt.strip()}"""'])
+    resolved_system_prompt = _resolve_system_prompt(system_prompt, template_system_prompt)
+    lines.extend(["", f'SYSTEM """{resolved_system_prompt}"""'])
 
     with open(modelfile_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -338,17 +441,22 @@ def main() -> None:
     if template_modelfile:
         template_modelfile = _abs_path(template_modelfile)
     else:
-        auto_template = os.path.join(ROOT_DIR, "fine_tuning", "modelfiles", f"{base_name}.Modelfile")
-        if os.path.exists(auto_template):
-            template_modelfile = auto_template
+        template_modelfile = _find_auto_template_modelfile(base_name)
+    if template_modelfile:
+        print(f"- Template Modelfile: {template_modelfile}")
+    else:
+        print("- Template Modelfile: <none> (using enhanced fallback SYSTEM prompt)")
 
     _write_modelfile(modelfile_path, final_gguf, args.system_prompt, template_modelfile=template_modelfile)
+    patched_modelfiles = _backfill_missing_system_prompts(output_dir, ENHANCED_SYSTEM_PROMPT)
 
     print("\n[OK] GGUF build complete")
     print(f"- Base GGUF: {base_gguf}")
     if quant:
         print(f"- Quantized GGUF: {final_gguf}")
     print(f"- Modelfile: {modelfile_path}")
+    if patched_modelfiles:
+        print(f"- Backfilled SYSTEM prompt in {patched_modelfiles} existing GGUF Modelfile(s)")
 
     ollama_model = args.ollama_model.strip()
     if args.create_ollama or ollama_model:

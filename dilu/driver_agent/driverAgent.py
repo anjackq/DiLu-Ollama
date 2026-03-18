@@ -163,6 +163,8 @@ class DriverAgent:
             temperature: float = 0, verbose: bool = False
     ) -> None:
         self.sce = sce
+        self.verbose = bool(verbose)
+        self.quiet_mode = _env_bool("DILU_QUIET_MODE", False)
         self.oai_api_type = os.getenv("OPENAI_API_TYPE")
         self.decision_timeout_sec = _env_float("DILU_DECISION_TIMEOUT_SEC", 60.0)
         # For local Ollama models, invoke mode avoids long stream stalls on small models.
@@ -202,7 +204,7 @@ class DriverAgent:
             "ollama_native_timeout_short_circuit": False,
         }
         if self.oai_api_type == "azure":
-            print("Using Azure Chat API")
+            self._log_info("Using Azure Chat API")
             self.llm = AzureChatOpenAI(
                 callbacks=[
                     OpenAICallbackHandler()
@@ -214,7 +216,7 @@ class DriverAgent:
                 streaming=self.use_streaming,
             )
         elif self.oai_api_type == "openai":
-            print("Use OpenAI API")
+            self._log_info("Use OpenAI API")
             self.llm = ChatOpenAI(
                 temperature=temperature,
                 callbacks=[
@@ -234,10 +236,10 @@ class DriverAgent:
             if not model_name:
                 raise ValueError("OLLAMA_CHAT_MODEL is not configured.")
 
-            print(f"Using Local Ollama API: {model_name} at {api_base}")
+            self._log_info(f"Using Local Ollama API: {model_name} at {api_base}")
             if self.ollama_use_native_chat:
                 effective_mode = self._get_ollama_effective_think_mode()
-                print(
+                self._log_info(
                     f"[yellow]DriverAgent Ollama mode: native /api/chat | think_mode={self.ollama_think_mode} | effective={effective_mode}[/yellow]"
                 )
 
@@ -262,7 +264,7 @@ class DriverAgent:
                 raise ValueError("GEMINI_CHAT_MODEL is not configured.")
             if not api_key:
                 raise ValueError("GEMINI_API_KEY is not configured.")
-            print(f"Using Gemini API: {model_name}")
+            self._log_info(f"Using Gemini API: {model_name}")
             self.llm = ChatGoogleGenerativeAI(
                 model=model_name,
                 google_api_key=api_key,
@@ -272,6 +274,45 @@ class DriverAgent:
             )
         else:
             raise ValueError(f"Unknown OPENAI_API_TYPE: {self.oai_api_type}")
+
+    @property
+    def _step_logs_enabled(self) -> bool:
+        return self.verbose and (not self.quiet_mode)
+
+    def _log_info(self, message: str) -> None:
+        if not self.quiet_mode:
+            print(message)
+
+    def _log_step(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
+        if self._step_logs_enabled:
+            print(message, end=end, flush=flush)
+
+    def _log_warn(self, message: str) -> None:
+        print(message)
+
+    def _log_error(self, message: str) -> None:
+        print(message)
+
+    def set_ollama_native_chat_timeout_sec(self, timeout_sec: float) -> float:
+        timeout_sec = max(1.0, float(timeout_sec))
+        self.ollama_native_chat_timeout_sec = timeout_sec
+        os.environ["OLLAMA_NATIVE_CHAT_TIMEOUT_SEC"] = str(timeout_sec)
+        # Allow the next decision to re-attempt native chat using the updated timeout.
+        self.ollama_native_timed_out = False
+        return timeout_sec
+
+    def set_decision_timeout_sec(self, timeout_sec: float) -> float:
+        timeout_sec = max(1.0, float(timeout_sec))
+        self.decision_timeout_sec = timeout_sec
+        os.environ["DILU_DECISION_TIMEOUT_SEC"] = str(timeout_sec)
+        try:
+            if hasattr(self.llm, "request_timeout"):
+                setattr(self.llm, "request_timeout", timeout_sec)
+            if hasattr(self.llm, "timeout"):
+                setattr(self.llm, "timeout", timeout_sec)
+        except Exception:
+            pass
+        return timeout_sec
 
     def _run_with_timeout(self, fn, *args):
         executor = ThreadPoolExecutor(max_workers=1)
@@ -302,7 +343,7 @@ class DriverAgent:
                 chunk_text = _content_to_text(getattr(chunk, "content", ""))
                 if chunk_text:
                     chunks.append(chunk_text)
-                    print(chunk_text, end="", flush=True)
+                    self._log_step(chunk_text, end="", flush=True)
             return "".join(chunks)
 
         return self._run_with_timeout(_collect_stream, messages)
@@ -329,7 +370,7 @@ class DriverAgent:
         if not self.ollama_model_think_heuristic:
             self.ollama_native_think_supported = False
             if not self.ollama_think_downgrade_noted:
-                print(
+                self._log_warn(
                     f"[yellow]Native Ollama think flag is likely unsupported for {self.ollama_model_name}. "
                     "Using effective think_mode=auto.[/yellow]"
                 )
@@ -348,6 +389,10 @@ class DriverAgent:
     def _ollama_request_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.ollama_api_key}"}
 
+    def _effective_ollama_native_timeout_sec(self) -> float:
+        # Decision timeout is the hard cap in timeout-only policy mode.
+        return max(1.0, min(float(self.decision_timeout_sec), float(self.ollama_native_chat_timeout_sec)))
+
     def _ollama_native_invoke_once(self, messages, think_mode: str):
         payload = {
             "model": self.ollama_model_name,
@@ -359,7 +404,7 @@ class DriverAgent:
             self.ollama_chat_url,
             json=payload,
             headers=self._ollama_request_headers(),
-            timeout=self.ollama_native_chat_timeout_sec,
+            timeout=self._effective_ollama_native_timeout_sec(),
         )
         response.raise_for_status()
         data = response.json()
@@ -379,7 +424,7 @@ class DriverAgent:
             self.ollama_chat_url,
             json=payload,
             headers=self._ollama_request_headers(),
-            timeout=self.ollama_native_chat_timeout_sec,
+            timeout=self._effective_ollama_native_timeout_sec(),
             stream=True,
         ) as response:
             response.raise_for_status()
@@ -396,7 +441,7 @@ class DriverAgent:
                 chunk_thinking = _content_to_text(msg.get("thinking", ""))
                 if chunk_text:
                     content_chunks.append(chunk_text)
-                    print(chunk_text, end="", flush=True)
+                    self._log_step(chunk_text, end="", flush=True)
                 if chunk_thinking:
                     thinking_chunks.append(chunk_thinking)
                 if data.get("done"):
@@ -430,7 +475,7 @@ class DriverAgent:
                 self.ollama_native_timed_out = True
                 self.last_ollama_transport = "native_timeout"
                 self.last_ollama_native_timeout = True
-                print(
+                self._log_warn(
                     f"[yellow]Native Ollama chat timed out for {self.ollama_model_name}. "
                     "Skipping /v1 retry and using timeout safety fallback.[/yellow]"
                 )
@@ -439,14 +484,14 @@ class DriverAgent:
                 self.ollama_native_think_supported = False
                 self.last_ollama_native_retry_used = True
                 self.last_ollama_effective_think_mode = "auto"
-                print(
+                self._log_warn(
                     f"[yellow]Native Ollama rejected think=true for {self.ollama_model_name}. "
                     "Retrying without think flag.[/yellow]"
                 )
                 try:
                     result = self._run_with_timeout(self._ollama_native_invoke_once, messages, "auto")
                     if not self.ollama_think_downgrade_noted:
-                        print(
+                        self._log_warn(
                             f"[yellow]Native Ollama continuing with effective think_mode=auto for "
                             f"{self.ollama_model_name}.[/yellow]"
                         )
@@ -457,20 +502,20 @@ class DriverAgent:
                         self.ollama_native_timed_out = True
                         self.last_ollama_transport = "native_timeout"
                         self.last_ollama_native_timeout = True
-                        print(
+                        self._log_warn(
                             f"[yellow]Native Ollama retry without think timed out for {self.ollama_model_name}. "
                             "Skipping /v1 retry and using timeout safety fallback.[/yellow]"
                         )
                         raise TimeoutError(str(retry_exc))
                     self.last_ollama_transport = "openai_compat_fallback"
-                    print(
+                    self._log_warn(
                         f"[yellow]Native Ollama retry without think failed ({type(retry_exc).__name__}). "
                         "Falling back to OpenAI-compatible path.[/yellow]"
                     )
                     response = self._run_with_timeout(self.llm.invoke, messages)
                     return _content_to_text(getattr(response, "content", "")), ""
             self.last_ollama_transport = "openai_compat_fallback"
-            print(
+            self._log_warn(
                 f"[yellow]Native Ollama chat failed ({type(exc).__name__}). Falling back to OpenAI-compatible path.[/yellow]"
             )
             response = self._run_with_timeout(self.llm.invoke, messages)
@@ -503,7 +548,7 @@ class DriverAgent:
                 self.ollama_native_timed_out = True
                 self.last_ollama_transport = "native_timeout"
                 self.last_ollama_native_timeout = True
-                print(
+                self._log_warn(
                     f"[yellow]Native Ollama stream timed out for {self.ollama_model_name}. "
                     "Skipping /v1 retry and using timeout safety fallback.[/yellow]"
                 )
@@ -512,14 +557,14 @@ class DriverAgent:
                 self.ollama_native_think_supported = False
                 self.last_ollama_native_retry_used = True
                 self.last_ollama_effective_think_mode = "auto"
-                print(
+                self._log_warn(
                     f"[yellow]Native Ollama rejected think=true for {self.ollama_model_name}. "
                     "Retrying without think flag.[/yellow]"
                 )
                 try:
                     result = self._run_with_timeout(self._ollama_native_stream_once, messages, "auto")
                     if not self.ollama_think_downgrade_noted:
-                        print(
+                        self._log_warn(
                             f"[yellow]Native Ollama continuing with effective think_mode=auto for "
                             f"{self.ollama_model_name}.[/yellow]"
                         )
@@ -530,13 +575,13 @@ class DriverAgent:
                         self.ollama_native_timed_out = True
                         self.last_ollama_transport = "native_timeout"
                         self.last_ollama_native_timeout = True
-                        print(
+                        self._log_warn(
                             f"[yellow]Native Ollama stream retry without think timed out for {self.ollama_model_name}. "
                             "Skipping /v1 retry and using timeout safety fallback.[/yellow]"
                         )
                         raise TimeoutError(str(retry_exc))
                     self.last_ollama_transport = "openai_compat_fallback"
-                    print(
+                    self._log_warn(
                         f"[yellow]Native Ollama retry without think failed ({type(retry_exc).__name__}). "
                         "Falling back to OpenAI-compatible stream.[/yellow]"
                     )
@@ -547,12 +592,12 @@ class DriverAgent:
                             chunk_text = _content_to_text(getattr(chunk, "content", ""))
                             if chunk_text:
                                 chunks.append(chunk_text)
-                                print(chunk_text, end="", flush=True)
+                                self._log_step(chunk_text, end="", flush=True)
                         return "".join(chunks)
 
                     return self._run_with_timeout(_collect_stream, messages), ""
             self.last_ollama_transport = "openai_compat_fallback"
-            print(
+            self._log_warn(
                 f"[yellow]Native Ollama stream failed ({type(exc).__name__}). Falling back to OpenAI-compatible stream.[/yellow]"
             )
 
@@ -562,7 +607,7 @@ class DriverAgent:
                     chunk_text = _content_to_text(getattr(chunk, "content", ""))
                     if chunk_text:
                         chunks.append(chunk_text)
-                        print(chunk_text, end="", flush=True)
+                        self._log_step(chunk_text, end="", flush=True)
                 return "".join(chunks)
 
             return self._run_with_timeout(_collect_stream, messages), ""
@@ -655,18 +700,18 @@ class DriverAgent:
         # with get_openai_callback() as cb:
         # response = self.llm.invoke(messages) # invoke instead of __call__
 
-        print("[cyan]Agent answer:[/cyan]")
+        self._log_step("[cyan]Agent answer:[/cyan]")
         response_content = ""
         try:
             if self.use_streaming:
                 response_content = self._stream_response(messages)
             else:
                 response_content = self._invoke_response(messages)
-                print(response_content, end="", flush=True)
-            print("\n")
+                self._log_step(response_content, end="", flush=True)
+            self._log_step("\n")
         except TimeoutError:
             response_content = f"Decision timeout. Response to user:{delimiter} 4"
-            print(f"\n[red]Decision timeout after {self.decision_timeout_sec:.1f}s. Fallback action: 4[/red]")
+            self._log_error(f"\n[red]Decision timeout after {self.decision_timeout_sec:.1f}s. Fallback action: 4[/red]")
             decision_meta["timed_out"] = True
             decision_meta["used_fallback"] = True
             decision_meta["fallback_reason"] = "decision_timeout"
@@ -683,7 +728,7 @@ class DriverAgent:
             few_shot_answers_store = ""
             for i in range(len(fewshot_messages)):
                 few_shot_answers_store += fewshot_answers[i] + "\n---------------\n"
-            print("Result:", 4)
+            self._log_step("Result: 4")
             return 4, response_content, human_message, few_shot_answers_store
 
         decision_action = response_content.split(delimiter)[-1]
@@ -698,23 +743,23 @@ class DriverAgent:
             if matches:
                 result = int(matches[-1])
                 decision_meta["parse_mode"] = "regex_recovered"
-                print(f"[yellow]Recovered action via regex parse:[/yellow] {result}")
+                self._log_step(f"[yellow]Recovered action via regex parse:[/yellow] {result}")
             else:
                 if not self.enable_checker_llm:
                     any_matches = ACTION_ANYWHERE_PATTERN.findall(response_content)
                     if any_matches:
                         result = int(any_matches[-1])
                         decision_meta["parse_mode"] = "loose_recovered"
-                        print(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
+                        self._log_step(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
                     else:
                         result = 4
                         decision_meta["used_fallback"] = True
                         decision_meta["fallback_reason"] = "parse_fallback"
                         decision_meta["parse_mode"] = "parse_fallback"
-                        print("[red]Output parse failed. Checker disabled; fallback to action 4.[/red]")
+                        self._log_step("[red]Output parse failed. Checker disabled; fallback to action 4.[/red]")
                 else:
                     decision_meta["checker_used"] = True
-                    print("Output is not a int number, checking the output...")
+                    self._log_step("Output is not a int number, checking the output...")
                     check_message = f"""
                     You are a output checking assistant who is responsible for checking the output of another agent.
 
@@ -743,7 +788,7 @@ class DriverAgent:
                     except TimeoutError:
                         check_text = ""
                         decision_meta["timed_out"] = True
-                        print("[yellow]Checker timed out. Applying safe fallback parse.[/yellow]")
+                        self._log_step("[yellow]Checker timed out. Applying safe fallback parse.[/yellow]")
 
                     tail = check_text.split(delimiter)[-1].strip() if delimiter in check_text else check_text
                     try:
@@ -756,20 +801,20 @@ class DriverAgent:
                         if matches:
                             result = int(matches[-1])
                             decision_meta["parse_mode"] = "checker_regex_recovered"
-                            print(f"[yellow]Recovered action from checker output:[/yellow] {result}")
+                            self._log_step(f"[yellow]Recovered action from checker output:[/yellow] {result}")
                         else:
                             any_matches = ACTION_ANYWHERE_PATTERN.findall(check_text)
                             if any_matches:
                                 result = int(any_matches[-1])
                                 decision_meta["parse_mode"] = "checker_loose_recovered"
-                                print(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
+                                self._log_step(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
                             else:
                                 # Safety-first fallback for driving.
                                 result = 4
                                 decision_meta["used_fallback"] = True
                                 decision_meta["fallback_reason"] = "checker_fallback"
                                 decision_meta["parse_mode"] = "checker_fallback"
-                                print("[red]Checker output parse failed. Falling back to safe action 4 (Deceleration).[/red]")
+                                self._log_step("[red]Checker output parse failed. Falling back to safe action 4 (Deceleration).[/red]")
 
         few_shot_answers_store = ""
         for i in range(len(fewshot_messages)):
@@ -784,5 +829,5 @@ class DriverAgent:
             decision_meta["ollama_native_timeout"] = bool(self.last_ollama_native_timeout)
             decision_meta["ollama_native_timeout_short_circuit"] = bool(self.last_ollama_native_timeout_short_circuit)
         self.last_decision_meta = decision_meta
-        print("Result:", result)
+        self._log_step(f"Result: {result}")
         return result, response_content, human_message, few_shot_answers_store

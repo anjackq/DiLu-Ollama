@@ -7,9 +7,11 @@ langchain-google-genai
 openai>=1.10.0         # Critical: Allows "client = OpenAI()" syntax
 chromadb>=0.4.22       # Critical: Fixes the build error you saw
 matplotlib
+adjustText
 numpy<2.0.0            # Prevents breaking older libraries
 PyYAML
 gradio                 # Let it pick a stable modern version
 rich
 moviepy
 tiktoken
+stable-baselines3

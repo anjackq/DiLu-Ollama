@@ -1,0 +1,28 @@
+{
+  "output_path": "data/gold_standard_data_rl_5000eps.jsonl",
+  "summary_path": "data/gold_standard_data_rl_5000eps_collection_summary.json",
+  "controller": "rl",
+  "env_name": "highway-fast-v0",
+  "rl_algorithm_requested": "auto",
+  "rl_algorithm_resolved": "dqn",
+  "rl_native_env_defaults": true,
+  "episodes_target": 5000,
+  "attempts": 5643,
+  "successes": 5000,
+  "crashes": 643,
+  "rows_collected": 150000,
+  "success_rate": 0.886053517632465,
+  "curriculum_enabled": false,
+  "max_attempts": 100000,
+  "rl_quality_gate_enabled": true,
+  "rl_quality_gate_thresholds": {
+    "max_early_brake_ratio": 0.6,
+    "min_avg_speed": 18.0,
+    "min_progress_floor": 40.0,
+    "dynamic_progress_multiplier": 2.5
+  },
+  "rl_quality_gate_rejection_counts": {
+    "crashed": 643
+  },
+  "rl_quality_gate_rejected_attempts": 643
+}

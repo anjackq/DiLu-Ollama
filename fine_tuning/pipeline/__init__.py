@@ -5,7 +5,7 @@ from .config import (
     resolve_family_config,
 )
 from .io import read_jsonl, write_jsonl, save_json
-from .policy import expert_decision_v2_left_pass_preferred
+from .policy import expert_decision_v2_left_pass_preferred, expert_decision_v3_balanced, init_expert_state
 from .quality import (
     action_distribution,
     duplicate_rate,
@@ -24,6 +24,8 @@ __all__ = [
     "write_jsonl",
     "save_json",
     "expert_decision_v2_left_pass_preferred",
+    "expert_decision_v3_balanced",
+    "init_expert_state",
     "action_distribution",
     "duplicate_rate",
     "profile_dataset_rows",
