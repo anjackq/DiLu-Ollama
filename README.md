@@ -36,6 +36,12 @@ ollama list
 
 ## Simulation / Evaluation (Primary)
 
+Environment alignment defaults (global across RL + LLM paths):
+- `sim_env_id: "highway-fast-v0"`
+- `sim_use_native_env_defaults: true`
+- Deprecated aliases still read for transition: `rl_env_id`, `rl_use_native_env_defaults`.
+- CLI overrides on simulation entrypoints: `--env-id`, `--native-env-defaults`, `--no-native-env-defaults`.
+
 Main script:
 
 ```bash

@@ -37,7 +37,7 @@ from dilu.runtime import (
     build_decision_timeout_penalty_state,
     update_decision_timeout_penalty_state,
     decision_timeout_penalty_snapshot,
-    build_highway_env_config,
+    resolve_simulation_env_bundle,
     DEFAULT_DILU_SEEDS,
     ensure_dir,
     timestamped_results_path,
@@ -126,6 +126,18 @@ def _is_interactive_output() -> bool:
         return bool(getattr(sys.stdout, "isatty", lambda: False)())
     except Exception:
         return False
+
+
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 STRICT_RESPONSE_PATTERN = re.compile(r"Response to user:\s*\#{4}\s*([0-4])\s*$", re.IGNORECASE)
@@ -585,7 +597,13 @@ def print_ego_telemetry(step_idx: int, telemetry: dict):
     print(table)
 
 
-def setup_env(config, quiet_override: Optional[bool] = None, progress_override: Optional[bool] = None):
+def setup_env(
+    config,
+    quiet_override: Optional[bool] = None,
+    progress_override: Optional[bool] = None,
+    env_id_override: Optional[str] = None,
+    native_env_defaults_override: Optional[bool] = None,
+):
     selected_model = configure_runtime_env(
         config,
         mode="runtime",
@@ -625,12 +643,16 @@ def setup_env(config, quiet_override: Optional[bool] = None, progress_override: 
             f"{', '.join(policy_meta['deprecated_policy_fields_ignored'])}"
         )
 
-    env_cfg = build_highway_env_config(
+    env_bundle = resolve_simulation_env_bundle(
         config,
         show_trajectories=True,
         render_agent=True,
+        env_id_override=env_id_override,
+        native_env_defaults_override=native_env_defaults_override,
     )
-    return env_cfg, selected_model, resolved_policy
+    for warning_msg in env_bundle.get("warnings", []):
+        print(f"[yellow]{warning_msg}[/yellow]")
+    return env_bundle, selected_model, resolved_policy
 
 
 if __name__ == '__main__':
@@ -643,6 +665,21 @@ if __name__ == '__main__':
     parser.add_argument("--no-quiet", action="store_true", help="Force step/decision logs on even if config quiet mode is enabled.")
     parser.add_argument("--progress", action="store_true", help="Show CLI progress bars.")
     parser.add_argument("--no-progress", action="store_true", help="Disable CLI progress bars.")
+    parser.add_argument("--env-id", default=None, help="Simulation env id override (default: config sim_env_id -> rl_env_id alias -> highway-fast-v0).")
+    env_native_group = parser.add_mutually_exclusive_group()
+    env_native_group.add_argument(
+        "--native-env-defaults",
+        dest="native_env_defaults",
+        action="store_true",
+        help="Use native env defaults with top-level config overrides (default).",
+    )
+    env_native_group.add_argument(
+        "--no-native-env-defaults",
+        dest="native_env_defaults",
+        action="store_false",
+        help="Use legacy DiLu env builder behavior.",
+    )
+    parser.set_defaults(native_env_defaults=None)
     parser.add_argument(
         "--progress-replies",
         choices=["off", "compact", "full"],
@@ -661,11 +698,16 @@ if __name__ == '__main__':
     progress_override = True if args.progress else (False if args.no_progress else None)
     resolved_runtime_progress_mode = _resolve_progress_mode(config, progress_override, mode="runtime")
     runtime_progress_enabled = bool(resolved_runtime_progress_mode and _is_interactive_output())
-    env_config, selected_model, resolved_model_policy = setup_env(
+    env_bundle, selected_model, resolved_model_policy = setup_env(
         config,
         quiet_override=quiet_override,
         progress_override=runtime_progress_enabled,
+        env_id_override=args.env_id,
+        native_env_defaults_override=args.native_env_defaults,
     )
+    env_config = env_bundle["env_config_map"]
+    envType = env_bundle["env_id"]
+    resolved_env_snapshot = env_bundle["env_config_snapshot"]
     runtime_quiet_mode = _to_bool(os.getenv("DILU_QUIET_MODE"), default=False)
     resolved_runtime_progress_reply_mode = _resolve_progress_reply_mode(
         config,
@@ -784,6 +826,15 @@ if __name__ == '__main__':
         "run_dir": result_folder,
         "model_runtime_policy": copy.deepcopy(resolved_model_policy),
         "metrics_config": {
+            "env_id": str(envType),
+            "native_env_defaults": bool(env_bundle.get("use_native_env_defaults")),
+            "requested_env_id": str(env_bundle.get("requested_env_id")),
+            "env_resolution_sources": {
+                "env_id": env_bundle.get("env_source"),
+                "native_env_defaults": env_bundle.get("native_source"),
+            },
+            "env_resolution_warnings": list(env_bundle.get("warnings", [])),
+            "env_config_snapshot": _json_safe(copy.deepcopy(resolved_env_snapshot)),
             "ttc_threshold_sec": ttc_threshold_sec,
             "headway_threshold_m": headway_threshold_m,
             "flapping_mode": "accel_decel",
@@ -814,7 +865,18 @@ if __name__ == '__main__':
     log_path = os.path.join(result_folder, "log.txt")
     with open(log_path, 'w') as f:
         f.write("memory_path {} | result_folder {} | few_shot_num: {} | lanes_count: {} \n".format(
-            memory_path, result_folder, few_shot_num, env_config['highway-v0']['lanes_count']))
+            memory_path, result_folder, few_shot_num, env_config[envType]['lanes_count']))
+        f.write(
+            "env_id {} | native_env_defaults {} | requested_env_id {} | env_source {} | native_source {} \n".format(
+                envType,
+                bool(env_bundle.get("use_native_env_defaults")),
+                env_bundle.get("requested_env_id"),
+                env_bundle.get("env_source"),
+                env_bundle.get("native_source"),
+            )
+        )
+        if env_bundle.get("warnings"):
+            f.write("env_resolution_warnings {} \n".format("; ".join(env_bundle["warnings"])))
         f.write("reflection_module {} | reflection_interactive {} | reflection_auto_add {} | reflection_add_every_n {} \n".format(
             REFLECTION, reflection_interactive, reflection_auto_add, reflection_add_every_n
         ))
@@ -874,9 +936,8 @@ if __name__ == '__main__':
                 completed=0,
             )
         # setup highway-env
-        envType = 'highway-v0'
         env = gym.make(envType, render_mode="rgb_array")
-        env.configure(env_config[envType])
+        env.unwrapped.configure(env_config[envType])
         env = TelemetryHUDWrapper(env)
         result_prefix = f"highway_{episode}"
         env = RecordVideo(env, result_folder, name_prefix=result_prefix)

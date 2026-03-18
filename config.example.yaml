@@ -56,7 +56,11 @@ vehicle_count: 15
 other_vehicle_type: "highway_env.vehicle.behavior.IDMVehicle"
 vehicles_density: 2.0
 
-# RL environment parity settings (used by evaluate_rl_policy.py and collect_data.py in RL mode).
+# Global simulation environment resolver (used by RL + LLM runtime/eval + collection).
+sim_env_id: "highway-fast-v0"
+sim_use_native_env_defaults: true
+
+# Deprecated aliases (transition only; lower precedence than sim_* keys).
 rl_env_id: "highway-fast-v0"
 rl_use_native_env_defaults: true
 

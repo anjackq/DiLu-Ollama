@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich import print
 
-from dilu.runtime import DEFAULT_DILU_SEEDS, build_highway_env_config, ensure_dir, ensure_parent_dir
+from dilu.runtime import DEFAULT_DILU_SEEDS, ensure_dir, ensure_parent_dir, resolve_simulation_env_bundle
 from dilu.scenario.envScenario import EnvScenario
 from fine_tuning.pipeline import expert_decision_v2_left_pass_preferred, expert_decision_v3_balanced, init_expert_state, write_jsonl
 
@@ -37,22 +37,6 @@ CURRICULUM_STAGES = [
     ("B", 200, 30, 2.6),
     ("C", 300, 40, 3.5),
 ]
-
-
-def setup_env(config):
-    return build_highway_env_config(
-        config,
-        show_trajectories=True,
-        render_agent=False,
-    )
-
-
-def _to_bool(value, default: bool) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _infer_algorithm_from_metadata(model_path: str) -> str:
@@ -96,37 +80,6 @@ def load_rl_model(model_path: str, algorithm: str):
     raise RuntimeError(f"Unable to load RL model with auto mode. Tried PPO and DQN. Details: {detail}")
 
 
-def build_native_env_cfg(env_name: str, config_data: dict, stage_cfg: dict) -> dict:
-    probe = gym.make(env_name)
-    env_cfg = dict(probe.unwrapped.config)
-    probe.close()
-
-    env_cfg["duration"] = int(stage_cfg["simulation_duration"])
-    env_cfg["vehicles_count"] = int(stage_cfg["vehicle_count"])
-    env_cfg["vehicles_density"] = float(stage_cfg["vehicles_density"])
-    if "other_vehicle_type" in config_data:
-        env_cfg["other_vehicles_type"] = config_data["other_vehicle_type"]
-
-    for key in [
-        "lanes_count",
-        "simulation_frequency",
-        "policy_frequency",
-        "collision_reward",
-        "high_speed_reward",
-        "right_lane_reward",
-        "lane_change_reward",
-        "normalize_reward",
-        "offroad_terminal",
-        "ego_spacing",
-    ]:
-        if key in config_data and config_data[key] is not None:
-            env_cfg[key] = config_data[key]
-    if "reward_speed_range" in config_data and config_data["reward_speed_range"] is not None:
-        env_cfg["reward_speed_range"] = config_data["reward_speed_range"]
-
-    return env_cfg
-
-
 def build_collect_config(
     config: dict,
     collect_simulation_duration: int,
@@ -138,6 +91,21 @@ def build_collect_config(
     cfg["vehicle_count"] = int(collect_vehicle_count)
     cfg["vehicles_density"] = float(collect_vehicles_density)
     return cfg
+
+
+def build_aligned_rl_collect_config(config: dict) -> dict:
+    """
+    Build collection config that is aligned with RL training environment settings.
+    """
+    duration = int(config.get("simulation_duration", 30))
+    vehicle_count = int(config.get("vehicle_count", 20))
+    vehicles_density = float(config.get("vehicles_density", 1.0))
+    return build_collect_config(
+        config=config,
+        collect_simulation_duration=max(1, duration),
+        collect_vehicle_count=max(1, vehicle_count),
+        collect_vehicles_density=max(0.1, vehicles_density),
+    )
 
 
 def collect_episode(
@@ -304,6 +272,21 @@ def parse_args():
     parser.add_argument("--episodes", type=int, default=50, help="Number of successful episodes to collect.")
     parser.add_argument("--output", default="data/gold_standard_data.jsonl", help="Output JSONL path.")
     parser.add_argument("--save-every", type=int, default=5, help="Incremental save cadence.")
+    parser.add_argument("--env-id", default="", help="Simulation env id override (default: config sim_env_id -> rl_env_id alias -> highway-fast-v0).")
+    native_group = parser.add_mutually_exclusive_group()
+    native_group.add_argument(
+        "--native-env-defaults",
+        dest="native_env_defaults",
+        action="store_true",
+        help="Use native env defaults with top-level config overrides (default).",
+    )
+    native_group.add_argument(
+        "--no-native-env-defaults",
+        dest="native_env_defaults",
+        action="store_false",
+        help="Use legacy DiLu env builder behavior.",
+    )
+    parser.set_defaults(native_env_defaults=None)
     parser.add_argument(
         "--collect-simulation-duration",
         type=int,
@@ -342,14 +325,14 @@ def parse_args():
     parser.add_argument(
         "--rl-env-id",
         default="",
-        help="Gym env id for RL collection (default: config rl_env_id or highway-v0).",
+        help="Deprecated alias for --env-id.",
     )
     native_group = parser.add_mutually_exclusive_group()
     native_group.add_argument(
         "--rl-native-env-defaults",
         dest="rl_native_env_defaults",
         action="store_true",
-        help="Use native env defaults + top-level scenario overrides for RL collection.",
+        help="Use native env defaults + aligned config settings for RL collection (also disables curriculum).",
     )
     native_group.add_argument(
         "--no-rl-native-env-defaults",
@@ -415,7 +398,7 @@ def main():
         collect_vehicles_density=max(0.1, float(args.collect_vehicles_density)),
     )
 
-    env_name = "highway-v0"
+    env_name = "highway-fast-v0"
     ensure_parent_dir(args.output)
     temp_dir = ensure_dir("temp_dbs")
     samples = []
@@ -431,7 +414,24 @@ def main():
     rl_algorithm_resolved = None
     rl_expected_obs_shape = None
     rl_expected_vehicle_count = None
-    rl_native_env_defaults = False
+    if str(args.rl_env_id or "").strip() and not str(args.env_id or "").strip():
+        print("[yellow]Deprecated CLI flag `--rl-env-id` is in use. Prefer `--env-id`.[/yellow]")
+    if args.rl_native_env_defaults is not None and args.native_env_defaults is None:
+        print("[yellow]Deprecated CLI flag `--rl-native-env-defaults/--no-rl-native-env-defaults` is in use. Prefer `--native-env-defaults/--no-native-env-defaults`.[/yellow]")
+    env_id_override = str(args.env_id or args.rl_env_id or "").strip() or None
+    native_env_override = args.native_env_defaults if args.native_env_defaults is not None else args.rl_native_env_defaults
+    mode_bundle = resolve_simulation_env_bundle(
+        collect_cfg,
+        show_trajectories=True,
+        render_agent=False,
+        env_id_override=env_id_override,
+        native_env_defaults_override=native_env_override,
+    )
+    for warning_msg in mode_bundle.get("warnings", []):
+        print(f"[yellow]{warning_msg}[/yellow]")
+    env_name = str(mode_bundle["env_id"])
+    native_env_defaults = bool(mode_bundle["use_native_env_defaults"])
+
     if args.collect_controller == "rl":
         if not args.rl_model_path.strip():
             raise ValueError("--rl-model-path is required when --collect-controller rl")
@@ -442,15 +442,36 @@ def main():
                 "stable-baselines3 is required for RL collection. Install it with `pip install stable-baselines3`."
             ) from exc
         rl_model, rl_algorithm_resolved = load_rl_model(args.rl_model_path, args.rl_algorithm)
-        env_name = str(args.rl_env_id or config_data.get("rl_env_id", "highway-v0")).strip() or "highway-v0"
-        if args.rl_native_env_defaults is None:
-            rl_native_env_defaults = _to_bool(config_data.get("rl_use_native_env_defaults", False), default=False)
-        else:
-            rl_native_env_defaults = bool(args.rl_native_env_defaults)
+        if native_env_defaults:
+            # Keep RL collection strictly aligned to training env defaults/settings.
+            aligned_cfg = build_aligned_rl_collect_config(config_data)
+            requested_overrides = (
+                int(args.collect_simulation_duration),
+                int(args.collect_vehicle_count),
+                float(args.collect_vehicles_density),
+            )
+            aligned_overrides = (
+                int(aligned_cfg["simulation_duration"]),
+                int(aligned_cfg["vehicle_count"]),
+                float(aligned_cfg["vehicles_density"]),
+            )
+            if requested_overrides != aligned_overrides:
+                print(
+                    "[yellow]RL native env alignment is enabled; overriding collection settings "
+                    f"to config values duration={aligned_overrides[0]}, vehicle_count={aligned_overrides[1]}, "
+                    f"vehicles_density={aligned_overrides[2]:.2f}.[/yellow]"
+                )
+            collect_cfg = aligned_cfg
+            if curriculum_enabled:
+                print(
+                    "[yellow]RL native env alignment is enabled; disabling curriculum to keep collection "
+                    "consistent with RL training environment.[/yellow]"
+                )
+            curriculum_enabled = False
         rl_expected_obs_shape = tuple(int(x) for x in rl_model.observation_space.shape)
         if len(rl_expected_obs_shape) >= 2:
             rl_expected_vehicle_count = int(rl_expected_obs_shape[0])
-        if rl_expected_vehicle_count is not None and not rl_native_env_defaults:
+        if rl_expected_vehicle_count is not None and not native_env_defaults:
             requested_count = int(collect_cfg["vehicle_count"])
             if requested_count != rl_expected_vehicle_count:
                 print(
@@ -509,7 +530,7 @@ def main():
     print(f"[dim]Max attempts: {max_attempts}[/dim]")
     if args.collect_controller == "rl":
         print(
-            f"[dim]RL model: algo={rl_algorithm_resolved or args.rl_algorithm}, native_env_defaults={rl_native_env_defaults}[/dim]"
+            f"[dim]RL model: algo={rl_algorithm_resolved or args.rl_algorithm}, native_env_defaults={native_env_defaults}[/dim]"
         )
         print(
             "[dim]RL quality gate: {enabled} | max_early_brake_ratio={ebr:.2f}, min_avg_speed={spd:.1f}, "
@@ -549,21 +570,20 @@ def main():
                     collect_vehicle_count=int(stage_meta["vehicle_count"]),
                     collect_vehicles_density=float(stage_meta["vehicles_density"]),
                 )
-                if args.collect_controller == "rl" and rl_expected_vehicle_count is not None and not rl_native_env_defaults:
+                if args.collect_controller == "rl" and rl_expected_vehicle_count is not None and not native_env_defaults:
                     stage_cfg["vehicle_count"] = int(rl_expected_vehicle_count)
                 max_steps = int(stage_cfg["simulation_duration"])
-                if args.collect_controller == "rl" and rl_native_env_defaults:
-                    env_cfg = build_native_env_cfg(env_name, config_data, stage_cfg)
-                    if rl_expected_vehicle_count is not None and "observation" in env_cfg:
-                        env_cfg["observation"]["vehicles_count"] = int(rl_expected_vehicle_count)
-                else:
-                    env_cfg_map = setup_env(stage_cfg)
-                    if env_name not in env_cfg_map:
-                        raise ValueError(
-                            f"Environment '{env_name}' is not supported by DiLu builder mode. "
-                            "Use --rl-native-env-defaults for non-highway-v0 RL envs."
-                        )
-                    env_cfg = env_cfg_map[env_name]
+                stage_bundle = resolve_simulation_env_bundle(
+                    stage_cfg,
+                    show_trajectories=True,
+                    render_agent=False,
+                    env_id_override=env_name,
+                    native_env_defaults_override=native_env_defaults,
+                )
+                env_name_stage = str(stage_bundle["env_id"])
+                env_cfg = dict(stage_bundle["env_config_map"][env_name_stage])
+                if args.collect_controller == "rl" and rl_expected_vehicle_count is not None and "observation" in env_cfg:
+                    env_cfg["observation"]["vehicles_count"] = int(rl_expected_vehicle_count)
                 seed = random.choice(DEFAULT_DILU_SEEDS)
                 temp_db_path = os.path.join(temp_dir, f"temp_collect_{success_count}_{random.randint(1000, 9999)}.db")
                 env = None
@@ -571,13 +591,13 @@ def main():
                 progress.update(step_task, description=f"[magenta]Attempt {attempt_count} steps (stage {stage_meta['name']})")
 
                 try:
-                    env = gym.make(env_name, render_mode="rgb_array")
+                    env = gym.make(env_name_stage, render_mode="rgb_array")
                     env.unwrapped.configure(env_cfg)
                     obs, _ = env.reset(seed=seed)
                     rule_state = init_expert_state() if args.collect_controller == "rule" else None
                     episode = collect_episode(
                         env=env,
-                        env_name=env_name,
+                        env_name=env_name_stage,
                         seed=seed,
                         temp_db_path=temp_db_path,
                         max_steps=max_steps,
@@ -650,32 +670,31 @@ def main():
                 collect_vehicle_count=int(stage_meta["vehicle_count"]),
                 collect_vehicles_density=float(stage_meta["vehicles_density"]),
             )
-            if args.collect_controller == "rl" and rl_expected_vehicle_count is not None and not rl_native_env_defaults:
+            if args.collect_controller == "rl" and rl_expected_vehicle_count is not None and not native_env_defaults:
                 stage_cfg["vehicle_count"] = int(rl_expected_vehicle_count)
             max_steps = int(stage_cfg["simulation_duration"])
-            if args.collect_controller == "rl" and rl_native_env_defaults:
-                env_cfg = build_native_env_cfg(env_name, config_data, stage_cfg)
-                if rl_expected_vehicle_count is not None and "observation" in env_cfg:
-                    env_cfg["observation"]["vehicles_count"] = int(rl_expected_vehicle_count)
-            else:
-                env_cfg_map = setup_env(stage_cfg)
-                if env_name not in env_cfg_map:
-                    raise ValueError(
-                        f"Environment '{env_name}' is not supported by DiLu builder mode. "
-                        "Use --rl-native-env-defaults for non-highway-v0 RL envs."
-                    )
-                env_cfg = env_cfg_map[env_name]
+            stage_bundle = resolve_simulation_env_bundle(
+                stage_cfg,
+                show_trajectories=True,
+                render_agent=False,
+                env_id_override=env_name,
+                native_env_defaults_override=native_env_defaults,
+            )
+            env_name_stage = str(stage_bundle["env_id"])
+            env_cfg = dict(stage_bundle["env_config_map"][env_name_stage])
+            if args.collect_controller == "rl" and rl_expected_vehicle_count is not None and "observation" in env_cfg:
+                env_cfg["observation"]["vehicles_count"] = int(rl_expected_vehicle_count)
             seed = random.choice(DEFAULT_DILU_SEEDS)
             temp_db_path = os.path.join(temp_dir, f"temp_collect_{success_count}_{random.randint(1000, 9999)}.db")
             env = None
             try:
-                env = gym.make(env_name, render_mode="rgb_array")
+                env = gym.make(env_name_stage, render_mode="rgb_array")
                 env.unwrapped.configure(env_cfg)
                 obs, _ = env.reset(seed=seed)
                 rule_state = init_expert_state() if args.collect_controller == "rule" else None
                 episode = collect_episode(
                     env=env,
-                    env_name=env_name,
+                    env_name=env_name_stage,
                     seed=seed,
                     temp_db_path=temp_db_path,
                     max_steps=max_steps,
@@ -769,9 +788,16 @@ def main():
         "summary_path": summary_path,
         "controller": args.collect_controller,
         "env_name": env_name,
+        "requested_env_id": str(mode_bundle.get("requested_env_id")),
+        "env_resolution_sources": {
+            "env_id": mode_bundle.get("env_source"),
+            "native_env_defaults": mode_bundle.get("native_source"),
+        },
+        "env_resolution_warnings": list(mode_bundle.get("warnings", [])),
         "rl_algorithm_requested": str(args.rl_algorithm),
         "rl_algorithm_resolved": rl_algorithm_resolved,
-        "rl_native_env_defaults": bool(rl_native_env_defaults),
+        "native_env_defaults": bool(native_env_defaults),
+        "rl_native_env_defaults": bool(native_env_defaults),
         "episodes_target": int(args.episodes),
         "attempts": int(attempt_count),
         "successes": int(success_count),

@@ -34,7 +34,7 @@ from dilu.runtime import (
     build_decision_timeout_penalty_state,
     update_decision_timeout_penalty_state,
     decision_timeout_penalty_snapshot,
-    build_highway_env_config,
+    resolve_simulation_env_bundle,
     DEFAULT_DILU_SEEDS,
     ensure_dir,
     ensure_parent_dir,
@@ -54,11 +54,17 @@ from dilu.scenario.envScenario import EnvScenario
 STRICT_RESPONSE_PATTERN = re.compile(r"Response to user:\s*\#{4}\s*([0-4])\s*$", re.IGNORECASE)
 
 
-def build_env_config(config: Dict) -> Dict:
-    return build_highway_env_config(
+def build_env_bundle(
+    config: Dict,
+    env_id_override: Optional[str] = None,
+    native_env_defaults_override: Optional[bool] = None,
+) -> Dict:
+    return resolve_simulation_env_bundle(
         config,
         show_trajectories=False,
         render_agent=False,
+        env_id_override=env_id_override,
+        native_env_defaults_override=native_env_defaults_override,
     )
 
 
@@ -152,6 +158,18 @@ def _is_interactive_output() -> bool:
         return bool(getattr(sys.stdout, "isatty", lambda: False)())
     except Exception:
         return False
+
+
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _safe_int_action(action) -> int:
@@ -264,6 +282,7 @@ def extract_step_traffic_metrics(
 def run_episode(
     config: Dict,
     env_config: Dict,
+    env_type: str,
     agent_memory: DrivingMemory,
     seed: int,
     few_shot_num: int,
@@ -287,7 +306,6 @@ def run_episode(
     on_step: Optional[Callable[[int, bool], None]] = None,
     on_decision: Optional[Callable[[int, int, str, Dict], None]] = None,
 ) -> Dict:
-    env_type = "highway-v0"
     env = None
     result_prefix = f"highway_seed_{seed}"
     if save_artifacts:
@@ -358,7 +376,7 @@ def run_episode(
 
     try:
         env = gym.make(env_type, render_mode="rgb_array")
-        env.configure(env_config[env_type])
+        env.unwrapped.configure(env_config[env_type])
         if save_artifacts:
             env = RecordVideo(
                 env,
@@ -920,6 +938,21 @@ def main() -> None:
     parser.add_argument("--results-root", default=None, help="Structured results root. Defaults to config or results/experiments.")
     parser.add_argument("--output-root", default=None, help="Optional compare-output folder override.")
     parser.add_argument("--no-structured-output", action="store_true", help="Disable structured experiment/model outputs.")
+    parser.add_argument("--env-id", default=None, help="Simulation env id override (default: config sim_env_id -> rl_env_id alias -> highway-fast-v0).")
+    env_native_group = parser.add_mutually_exclusive_group()
+    env_native_group.add_argument(
+        "--native-env-defaults",
+        dest="native_env_defaults",
+        action="store_true",
+        help="Use native env defaults with top-level config overrides (default).",
+    )
+    env_native_group.add_argument(
+        "--no-native-env-defaults",
+        dest="native_env_defaults",
+        action="store_false",
+        help="Use legacy DiLu env builder behavior.",
+    )
+    parser.set_defaults(native_env_defaults=None)
     parser.add_argument("--save-run-artifacts", action="store_true", help="Save run-style artifacts (video/db/log/run_metrics) per model during evaluation.")
     parser.add_argument("--eval-run-id", default=None, help="Run id used under models/<slug>/runs/<eval_run_id> when --save-run-artifacts is enabled.")
     parser.add_argument("--quiet", action="store_true", help="Suppress high-frequency step/decision logs.")
@@ -1103,7 +1136,16 @@ def main() -> None:
     else:
         compare_dir = ensure_dir(args.output_root) if args.output_root else ensure_dir("results")
 
-    env_config = build_env_config(config)
+    env_bundle = build_env_bundle(
+        config,
+        env_id_override=args.env_id,
+        native_env_defaults_override=args.native_env_defaults,
+    )
+    for warning_msg in env_bundle.get("warnings", []):
+        print(f"[yellow]{warning_msg}[/yellow]")
+    env_config = env_bundle["env_config_map"]
+    env_type = str(env_bundle["env_id"])
+    env_config_snapshot = env_bundle["env_config_snapshot"]
     temp_dir = ensure_dir(os.path.join("temp", "eval_compare"))
 
     report = {
@@ -1125,6 +1167,15 @@ def main() -> None:
         "memory_path": config["memory_path"],
         "simulation_duration": int(config["simulation_duration"]),
         "metrics_config": {
+            "env_id": str(env_type),
+            "native_env_defaults": bool(env_bundle.get("use_native_env_defaults")),
+            "requested_env_id": str(env_bundle.get("requested_env_id")),
+            "env_resolution_sources": {
+                "env_id": env_bundle.get("env_source"),
+                "native_env_defaults": env_bundle.get("native_source"),
+            },
+            "env_resolution_warnings": list(env_bundle.get("warnings", [])),
+            "env_config_snapshot": _json_safe(copy.deepcopy(env_config_snapshot)),
             "ttc_threshold_sec": ttc_threshold_sec,
             "headway_threshold_m": headway_threshold_m,
             "rear_ttc_threshold_sec": rear_ttc_threshold_sec,
@@ -1322,6 +1373,7 @@ def main() -> None:
                 episode_result = run_episode(
                     config=config,
                     env_config=env_config,
+                    env_type=env_type,
                     agent_memory=agent_memory,
                     seed=seed,
                     few_shot_num=few_shot_num,

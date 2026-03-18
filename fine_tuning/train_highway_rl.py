@@ -17,7 +17,7 @@ import yaml
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
-from dilu.runtime import ensure_parent_dir
+from dilu.runtime import ensure_parent_dir, resolve_simulation_env_bundle
 
 console = Console()
 
@@ -38,7 +38,22 @@ def parse_args():
     p.add_argument("--device", default="auto")
 
     p.add_argument("--rl-train-profile", choices=["dqn_repo"], default="dqn_repo")
-    p.add_argument("--rl-env-id", default="")
+    p.add_argument("--env-id", default="", help="Simulation env id override (default: config sim_env_id -> rl_env_id alias -> highway-fast-v0).")
+    native_group = p.add_mutually_exclusive_group()
+    native_group.add_argument(
+        "--native-env-defaults",
+        dest="native_env_defaults",
+        action="store_true",
+        help="Use native env defaults with top-level config overrides (default).",
+    )
+    native_group.add_argument(
+        "--no-native-env-defaults",
+        dest="native_env_defaults",
+        action="store_false",
+        help="Use legacy DiLu env builder behavior.",
+    )
+    p.set_defaults(native_env_defaults=None)
+    p.add_argument("--rl-env-id", default="", help="Deprecated alias for --env-id.")
     p.add_argument("--rl-n-envs", type=int, default=6)
     p.add_argument("--rl-vec-env", choices=["subproc", "dummy"], default="subproc")
     p.add_argument("--rl-batch-size", type=int, default=32)
@@ -107,36 +122,6 @@ def _tensorboard_available() -> bool:
 def build_runtime_config(config_path: str) -> Dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def build_native_env_cfg(env_id: str, config_data: Dict) -> Dict:
-    probe = gym.make(env_id)
-    env_cfg = dict(probe.unwrapped.config)
-    probe.close()
-
-    env_cfg["duration"] = int(config_data.get("simulation_duration", env_cfg.get("duration", 30)))
-    env_cfg["vehicles_count"] = int(config_data.get("vehicle_count", env_cfg.get("vehicles_count", 20)))
-    env_cfg["vehicles_density"] = float(config_data.get("vehicles_density", env_cfg.get("vehicles_density", 1.0)))
-    if "other_vehicle_type" in config_data:
-        env_cfg["other_vehicles_type"] = config_data["other_vehicle_type"]
-
-    for key in [
-        "lanes_count",
-        "simulation_frequency",
-        "policy_frequency",
-        "collision_reward",
-        "high_speed_reward",
-        "right_lane_reward",
-        "lane_change_reward",
-        "normalize_reward",
-        "offroad_terminal",
-        "ego_spacing",
-    ]:
-        if key in config_data and config_data[key] is not None:
-            env_cfg[key] = config_data[key]
-    if "reward_speed_range" in config_data and config_data["reward_speed_range"] is not None:
-        env_cfg["reward_speed_range"] = config_data["reward_speed_range"]
-    return env_cfg
 
 
 def _extract_speed_and_x(env):
@@ -252,6 +237,19 @@ def summarize_rewards(rewards: List[float]) -> Dict:
         "last10_mean": float(sum(tail) / len(tail)),
     }
 
+
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def main():
     args = parse_args()
     ignored_legacy_flags = _warn_ignored_legacy_flags(args)
@@ -320,8 +318,20 @@ def main():
                 self._progress.stop()
 
     config_data = build_runtime_config(args.config)
-    env_id = str(args.rl_env_id or config_data.get("rl_env_id", "highway-fast-v0")).strip() or "highway-fast-v0"
-    train_env_cfg = build_native_env_cfg(env_id, config_data)
+    if str(args.rl_env_id or "").strip() and not str(args.env_id or "").strip():
+        console.print("[yellow]Deprecated CLI flag `--rl-env-id` is in use. Prefer `--env-id`.[/yellow]")
+    env_id_override = str(args.env_id or args.rl_env_id or "").strip() or None
+    env_bundle = resolve_simulation_env_bundle(
+        config_data,
+        show_trajectories=True,
+        render_agent=False,
+        env_id_override=env_id_override,
+        native_env_defaults_override=args.native_env_defaults,
+    )
+    for warning_msg in env_bundle.get("warnings", []):
+        console.print(f"[yellow]{warning_msg}[/yellow]")
+    env_id = str(env_bundle["env_id"])
+    train_env_cfg = dict(env_bundle["env_config_snapshot"])
 
     requested_vectorization = {"vec_env": "dummy", "n_envs": 1}
     effective_vectorization = {"vec_env": "dummy", "n_envs": 1}
@@ -388,6 +398,14 @@ def main():
         "algorithm": algorithm_name,
         "train_profile": str(args.rl_train_profile),
         "train_env_id": train_env_id,
+        "requested_env_id": str(env_bundle.get("requested_env_id")),
+        "native_env_defaults": bool(env_bundle.get("use_native_env_defaults")),
+        "env_resolution_sources": {
+            "env_id": env_bundle.get("env_source"),
+            "native_env_defaults": env_bundle.get("native_source"),
+        },
+        "env_resolution_warnings": list(env_bundle.get("warnings", [])),
+        "env_config": _json_safe(train_env_cfg),
         "device_requested": requested_device,
         "device_effective": str(model.device),
         "eval_episodes": int(args.eval_episodes),

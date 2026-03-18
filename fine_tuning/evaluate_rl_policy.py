@@ -23,7 +23,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from dilu.runtime import build_highway_env_config, current_timestamp, ensure_dir, write_json_atomic
+from dilu.runtime import current_timestamp, ensure_dir, resolve_simulation_env_bundle, write_json_atomic
 
 console = Console()
 
@@ -79,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--env-id",
         default="",
-        help="Gym env id for evaluation (default: config rl_env_id or highway-v0).",
+        help="Gym env id for evaluation (default: config sim_env_id -> rl_env_id alias -> highway-fast-v0).",
     )
     native_group = parser.add_mutually_exclusive_group()
     native_group.add_argument(
@@ -137,79 +137,6 @@ def _load_model(model_path: str, rl_algorithm: str):
             load_errors.append((name, f"{exc.__class__.__name__}: {exc}"))
     detail = "; ".join(f"{n} -> {m}" for n, m in load_errors)
     raise RuntimeError(f"Unable to load RL model with auto mode. Tried PPO and DQN. Details: {detail}")
-
-
-def _to_bool(value, default: bool) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _resolve_env_mode(config_data: Dict, args: argparse.Namespace) -> Tuple[str, bool]:
-    env_id = str(args.env_id or config_data.get("rl_env_id", "highway-v0")).strip() or "highway-v0"
-    if args.native_env_defaults is None:
-        native = _to_bool(config_data.get("rl_use_native_env_defaults", False), default=False)
-    else:
-        native = bool(args.native_env_defaults)
-    return env_id, native
-
-
-def _build_env_cfg(
-    config_data: Dict,
-    args: argparse.Namespace,
-    env_id: str,
-    native_env_defaults: bool,
-) -> Dict:
-    if native_env_defaults:
-        probe = gym.make(env_id)
-        env_cfg = dict(probe.unwrapped.config)
-        probe.close()
-
-        duration = int(args.collect_simulation_duration) if int(args.collect_simulation_duration) > 0 else int(config_data.get("simulation_duration", env_cfg.get("duration", 30)))
-        vehicles_count = int(args.collect_vehicle_count) if int(args.collect_vehicle_count) > 0 else int(config_data.get("vehicle_count", env_cfg.get("vehicles_count", 20)))
-        vehicles_density = float(args.collect_vehicles_density) if float(args.collect_vehicles_density) > 0 else float(config_data.get("vehicles_density", env_cfg.get("vehicles_density", 1.0)))
-
-        env_cfg["duration"] = duration
-        env_cfg["vehicles_count"] = vehicles_count
-        env_cfg["vehicles_density"] = vehicles_density
-        if "other_vehicle_type" in config_data:
-            env_cfg["other_vehicles_type"] = config_data["other_vehicle_type"]
-
-        for key in [
-            "lanes_count",
-            "simulation_frequency",
-            "policy_frequency",
-            "collision_reward",
-            "high_speed_reward",
-            "right_lane_reward",
-            "lane_change_reward",
-            "normalize_reward",
-            "offroad_terminal",
-            "ego_spacing",
-        ]:
-            if key in config_data and config_data[key] is not None:
-                env_cfg[key] = config_data[key]
-        if "reward_speed_range" in config_data and config_data["reward_speed_range"] is not None:
-            env_cfg["reward_speed_range"] = config_data["reward_speed_range"]
-
-        return env_cfg
-
-    cfg = dict(config_data)
-
-    if int(args.collect_simulation_duration) > 0:
-        cfg["simulation_duration"] = int(args.collect_simulation_duration)
-    if int(args.collect_vehicle_count) > 0:
-        cfg["vehicle_count"] = int(args.collect_vehicle_count)
-    if float(args.collect_vehicles_density) > 0:
-        cfg["vehicles_density"] = float(args.collect_vehicles_density)
-
-    return build_highway_env_config(
-        cfg,
-        show_trajectories=True,
-        render_agent=False,
-    )["highway-v0"]
 
 
 def _align_vehicle_count_to_model(env_cfg: Dict, model) -> None:
@@ -318,6 +245,18 @@ def _aggregate(episodes: List[Dict]) -> Dict:
     }
 
 
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -341,8 +280,26 @@ def main() -> None:
         ensure_dir(video_dir)
 
     model, resolved_algo = _load_model(args.rl_model_path, args.rl_algorithm)
-    env_id, native_env_defaults = _resolve_env_mode(config_data, args)
-    env_cfg = _build_env_cfg(config_data, args, env_id, native_env_defaults)
+    env_cfg_input = dict(config_data)
+    if int(args.collect_simulation_duration) > 0:
+        env_cfg_input["simulation_duration"] = int(args.collect_simulation_duration)
+    if int(args.collect_vehicle_count) > 0:
+        env_cfg_input["vehicle_count"] = int(args.collect_vehicle_count)
+    if float(args.collect_vehicles_density) > 0:
+        env_cfg_input["vehicles_density"] = float(args.collect_vehicles_density)
+
+    env_bundle = resolve_simulation_env_bundle(
+        env_cfg_input,
+        show_trajectories=True,
+        render_agent=False,
+        env_id_override=args.env_id or None,
+        native_env_defaults_override=args.native_env_defaults,
+    )
+    for warning_msg in env_bundle.get("warnings", []):
+        console.print(f"[yellow]{warning_msg}[/yellow]")
+    env_id = str(env_bundle["env_id"])
+    native_env_defaults = bool(env_bundle["use_native_env_defaults"])
+    env_cfg = dict(env_bundle["env_config_snapshot"])
     _align_vehicle_count_to_model(env_cfg, model)
 
     console.print(
@@ -385,12 +342,18 @@ def main() -> None:
         "rl_algorithm_resolved": resolved_algo,
         "env_id": env_id,
         "native_env_defaults": bool(native_env_defaults),
+        "requested_env_id": str(env_bundle.get("requested_env_id")),
+        "env_resolution_sources": {
+            "env_id": env_bundle.get("env_source"),
+            "native_env_defaults": env_bundle.get("native_source"),
+        },
+        "env_resolution_warnings": list(env_bundle.get("warnings", [])),
         "config_path": args.config,
         "episodes_requested": int(args.episodes),
         "seed_base": int(args.seed),
         "save_video": save_video,
         "video_dir": video_dir if save_video else None,
-        "env_config": env_cfg,
+        "env_config": _json_safe(env_cfg),
         "aggregate": aggregate,
         "episodes": episodes,
     }
