@@ -6,6 +6,15 @@ from .highway_env_config import (
     resolve_simulation_env_bundle,
 )
 from .constants import DEFAULT_DILU_SEEDS
+from .task_benchmark import (
+    DEFAULT_BENCHMARK_CASE_SET,
+    load_benchmark_case_set,
+    build_case_env_config,
+    benchmark_max_steps,
+    build_benchmark_instruction,
+    benchmark_metric_config,
+    BenchmarkEpisodeEvaluator,
+)
 from .model_policy import (
     resolve_model_policy,
     apply_model_policy_to_env,
@@ -37,6 +46,13 @@ __all__ = [
     "build_native_highway_env_config",
     "resolve_simulation_env_bundle",
     "DEFAULT_DILU_SEEDS",
+    "DEFAULT_BENCHMARK_CASE_SET",
+    "load_benchmark_case_set",
+    "build_case_env_config",
+    "benchmark_max_steps",
+    "build_benchmark_instruction",
+    "benchmark_metric_config",
+    "BenchmarkEpisodeEvaluator",
     "resolve_model_policy",
     "apply_model_policy_to_env",
     "build_decision_timeout_penalty_state",

@@ -72,6 +72,26 @@ python evaluate_models_ollama.py --models qwen3.5:0.8b --limit 1 --few-shot-num 
 python evaluate_models_ollama.py --models qwen3.5:0.8b qwen3.5:2b --limit 3 --few-shot-num 0 --experiment-id qwen_timeout_guard --decision-timeout-sec 10
 ```
 
+### 5) High-limit evaluation with reduced overhead
+
+```bash
+python evaluate_models_ollama.py --models qwen3.5:0.8b qwen3.5:2b --limit 100 --few-shot-num 0 --experiment-id long_eval --progress --performance-mode fast
+```
+
+### 6) LaMPilot-style highway task benchmark
+
+This is a highway-only, task-metric adaptation on top of the existing DiLu action-id loop. It does not switch the repo to code-generation policies.
+
+```bash
+python evaluate_models_ollama.py --models qwen3.5:0.8b deepseek-r1:1.5b --benchmark-case-set lampilot_highway_v1 --experiment-id lampilot_highway_smoke --progress
+```
+
+Plot task metrics:
+
+```bash
+python plot_eval_compare.py -i results/experiments/lampilot_highway_smoke/compare/eval_compare_<timestamp>.json --extended
+```
+
 Timeout-only policy (shared for eval + runtime):
 - Policy controls only `decision_timeout_sec` and adaptive timeout penalty.
 - Use `model_policy_overrides` (or legacy `eval_model_overrides`) with `decision_timeout_sec` entries.

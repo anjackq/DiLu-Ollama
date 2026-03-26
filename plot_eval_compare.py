@@ -33,6 +33,10 @@ def _normalize_aggregates(report: dict):
     raise ValueError("No 'aggregates' list or 'aggregate' object found in report.")
 
 
+def _has_benchmark_metrics(aggregates) -> bool:
+    return any(row.get("task_completion_rate") is not None for row in aggregates)
+
+
 def _plot_grid(models, charts, title: str, output_path: str) -> None:
     n = len(charts)
     cols = 2
@@ -82,6 +86,7 @@ def plot_aggregates(report: dict, output_path: str, extended: bool = False, all_
 
     models = [row["model"] for row in aggregates]
     title_prefix = "DiLu Run Metrics" if source_type == "run" else "DiLu Model Comparison"
+    benchmark_mode = _has_benchmark_metrics(aggregates)
 
     if all_metrics:
         charts = [
@@ -107,17 +112,48 @@ def plot_aggregates(report: dict, output_path: str, extended: bool = False, all_
             {"values": [_safe_value(row.get("ollama_native_decision_rate_mean")) for row in aggregates], "title": "Ollama Native Decision Rate", "ylim": (0, 1), "color": "#5e3c99"},
             {"values": [_safe_value(row.get("ollama_downgrade_episode_rate")) for row in aggregates], "title": "Ollama Downgrade Episode Rate", "ylim": (0, 1), "color": "#b2182b"},
         ]
+        if benchmark_mode:
+            charts.extend(
+                [
+                    {"values": [_safe_value(row.get("task_completion_rate")) for row in aggregates], "title": "Task Completion Rate", "ylim": (0, 1), "color": "#1f78b4"},
+                    {"values": [_safe_value(row.get("ttc_score_mean")) for row in aggregates], "title": "TTC Score Mean", "ylim": (0, 1), "color": "#e41a1c"},
+                    {"values": [_safe_value(row.get("speed_variance_score_mean")) for row in aggregates], "title": "Speed Variance Score Mean", "ylim": (0, 1), "color": "#4daf4a"},
+                    {"values": [_safe_value(row.get("time_efficiency_score_mean")) for row in aggregates], "title": "Time Efficiency Score Mean", "ylim": (0, 1), "color": "#ff7f00"},
+                    {"values": [_safe_value(row.get("overall_score_mean")) for row in aggregates], "title": "Overall Score Mean", "ylim": (0, 1), "color": "#984ea3"},
+                    {"values": [_safe_value(row.get("driving_score")) for row in aggregates], "title": "Driving Score", "ylim": (0, 1), "color": "#a65628"},
+                ]
+            )
         _plot_grid(models, charts, f"{title_prefix} (All Metrics)", output_path)
         return
 
     if not extended:
-        charts = [
-            {"values": [_safe_value(row.get("crash_rate")) for row in aggregates], "title": "Crash Rate", "ylim": (0, 1), "color": "#d95f02"},
-            {"values": [_safe_value(row.get("no_collision_rate")) for row in aggregates], "title": "No-Collision Rate", "ylim": (0, 1), "color": "#1b9e77"},
-            {"values": [_safe_value(row.get("avg_steps")) for row in aggregates], "title": "Average Steps", "ylim": None, "color": "#7570b3"},
-            {"values": [_safe_value(row.get("avg_episode_runtime_sec")) for row in aggregates], "title": "Avg Episode Runtime (s)", "ylim": None, "color": "#66a61e"},
-        ]
+        if benchmark_mode:
+            charts = [
+                {"values": [_safe_value(row.get("task_completion_rate")) for row in aggregates], "title": "Task Completion Rate", "ylim": (0, 1), "color": "#1f78b4"},
+                {"values": [_safe_value(row.get("driving_score")) for row in aggregates], "title": "Driving Score", "ylim": (0, 1), "color": "#a65628"},
+                {"values": [_safe_value(row.get("ttc_score_mean")) for row in aggregates], "title": "TTC Score Mean", "ylim": (0, 1), "color": "#e41a1c"},
+                {"values": [_safe_value(row.get("time_efficiency_score_mean")) for row in aggregates], "title": "Time Efficiency Score Mean", "ylim": (0, 1), "color": "#ff7f00"},
+            ]
+        else:
+            charts = [
+                {"values": [_safe_value(row.get("crash_rate")) for row in aggregates], "title": "Crash Rate", "ylim": (0, 1), "color": "#d95f02"},
+                {"values": [_safe_value(row.get("no_collision_rate")) for row in aggregates], "title": "No-Collision Rate", "ylim": (0, 1), "color": "#1b9e77"},
+                {"values": [_safe_value(row.get("avg_steps")) for row in aggregates], "title": "Average Steps", "ylim": None, "color": "#7570b3"},
+                {"values": [_safe_value(row.get("avg_episode_runtime_sec")) for row in aggregates], "title": "Avg Episode Runtime (s)", "ylim": None, "color": "#66a61e"},
+            ]
         _plot_grid(models, charts, title_prefix, output_path)
+        return
+
+    if benchmark_mode:
+        charts = [
+            {"values": [_safe_value(row.get("task_completion_rate")) for row in aggregates], "title": "Task Completion Rate", "ylim": (0, 1), "color": "#1f78b4"},
+            {"values": [_safe_value(row.get("driving_score")) for row in aggregates], "title": "Driving Score", "ylim": (0, 1), "color": "#a65628"},
+            {"values": [_safe_value(row.get("ttc_score_mean")) for row in aggregates], "title": "TTC Score Mean", "ylim": (0, 1), "color": "#e41a1c"},
+            {"values": [_safe_value(row.get("speed_variance_score_mean")) for row in aggregates], "title": "Speed Variance Score Mean", "ylim": (0, 1), "color": "#4daf4a"},
+            {"values": [_safe_value(row.get("time_efficiency_score_mean")) for row in aggregates], "title": "Time Efficiency Score Mean", "ylim": (0, 1), "color": "#ff7f00"},
+            {"values": [_safe_value(row.get("overall_score_mean")) for row in aggregates], "title": "Overall Score Mean", "ylim": (0, 1), "color": "#984ea3"},
+        ]
+        _plot_grid(models, charts, f"{title_prefix} (Benchmark Tasks)", output_path)
         return
 
     charts = [

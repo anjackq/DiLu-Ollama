@@ -1,0 +1,123 @@
+{
+  "benchmark_name": "lampilot_highway_v1",
+  "version": "1.0",
+  "description": "LaMPilot-inspired highway-only task benchmark for DiLu discrete-action evaluation.",
+  "defaults": {
+    "time_limit_sec": 12,
+    "success_criteria": {
+      "hold_steps": 2
+    }
+  },
+  "cases": [
+    {
+      "case_id": "speed_increase_open_7656",
+      "category": "speed_increase",
+      "instruction": "Increase speed smoothly to rejoin faster-flow traffic while maintaining a safe margin ahead.",
+      "seed": 7656,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "speed_band",
+        "min_speed_mps": 27.0,
+        "max_speed_mps": 30.0,
+        "hold_steps": 2
+      },
+      "tags": ["speed", "open_road"]
+    },
+    {
+      "case_id": "speed_decrease_close_front_8030",
+      "category": "speed_decrease",
+      "instruction": "Reduce speed to create extra safety margin from the slower vehicle ahead, then stabilize.",
+      "seed": 8030,
+      "time_limit_sec": 8,
+      "success_criteria": {
+        "type": "speed_band",
+        "min_speed_mps": 18.0,
+        "max_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "tags": ["speed", "close_front_vehicle"]
+    },
+    {
+      "case_id": "follow_gap_increase_5838",
+      "category": "follow_gap_increase",
+      "instruction": "Increase the following distance to the lead vehicle and hold a safer buffer.",
+      "seed": 5838,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "front_gap_band",
+        "min_gap_m": 35.0,
+        "max_gap_m": 95.0,
+        "hold_steps": 3
+      },
+      "tags": ["gap_control", "safety_buffer"]
+    },
+    {
+      "case_id": "follow_gap_decrease_6465",
+      "category": "follow_gap_decrease",
+      "instruction": "Close the distance to the lead vehicle to a moderate, non-tailgating following gap.",
+      "seed": 6465,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "front_gap_band",
+        "min_gap_m": 65.0,
+        "max_gap_m": 95.0,
+        "hold_steps": 2
+      },
+      "tags": ["gap_control", "moderate_following"]
+    },
+    {
+      "case_id": "lane_change_left_9390",
+      "category": "lane_change_left",
+      "instruction": "Move one lane to the left and stabilize there without losing control.",
+      "seed": 9390,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "lane_change",
+        "direction": "left",
+        "hold_steps": 3
+      },
+      "tags": ["lane_change", "left"]
+    },
+    {
+      "case_id": "lane_change_right_2939",
+      "category": "lane_change_right",
+      "instruction": "Move one lane to the right and stabilize there without unnecessary oscillation.",
+      "seed": 2939,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "lane_change",
+        "direction": "right",
+        "hold_steps": 3
+      },
+      "tags": ["lane_change", "right"]
+    },
+    {
+      "case_id": "overtake_left_5064",
+      "category": "overtake_left",
+      "instruction": "Use the left lane to overtake the slower vehicle ahead, then complete the pass cleanly.",
+      "seed": 5064,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "overtake",
+        "direction": "left",
+        "pass_margin_m": 5.0,
+        "hold_steps": 2
+      },
+      "tags": ["overtake", "left"]
+    },
+    {
+      "case_id": "overtake_right_3826",
+      "category": "overtake_right",
+      "instruction": "Use the right lane to pass the slower vehicle ahead and finish clearly in front of it.",
+      "seed": 3826,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "overtake",
+        "direction": "right",
+        "pass_margin_m": 5.0,
+        "hold_steps": 2
+      },
+      "tags": ["overtake", "right"]
+    }
+  ]
+}
