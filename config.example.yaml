@@ -27,8 +27,8 @@ OLLAMA_API_KEY: 'ollama'
 # Driver agent reasoning switch for native Ollama chat.
 # Allowed: auto | think | no_think
 OLLAMA_THINK_MODE: 'auto'
-# Use native Ollama /api/chat for driver decisions (supports think switch).
-OLLAMA_USE_NATIVE_CHAT: true
+# Use OpenAI-compatible /v1 by default for eval stability on smaller local models.
+OLLAMA_USE_NATIVE_CHAT: false
 # Optional timeout for native /api/chat requests (seconds).
 OLLAMA_NATIVE_CHAT_TIMEOUT_SEC: 60
 
@@ -37,7 +37,7 @@ reflection_module: True # True or False
 reflection_interactive: True # If False, disable Y/N terminal prompts in reflection flow
 reflection_auto_add: False # If True, auto-commit reflection memories without prompts
 reflection_add_every_n: 5 # In non-collision runs, add one memory every N frames (uses i % N == 1)
-few_shot_num: 3 # 0 or 1 recommended for smaller local models
+few_shot_num: 1 # Keep retrieval light for smaller local models during eval
 episodes_num: 3
 memory_path: 'memories/qwen3_embed_8b'
 
@@ -93,6 +93,9 @@ eval_decision_timeout_sec: 60
 eval_decision_max_output_tokens: 512 # Runtime output control (not policy-managed)
 eval_disable_streaming: true # Runtime output control (not policy-managed)
 eval_disable_checker_llm: true # Runtime output control (not policy-managed)
+eval_performance_mode: default # default | fast
+eval_ollama_preflight_enabled: true # Fail fast if Ollama cannot answer a tiny probe request.
+eval_ollama_preflight_timeout_sec: 15 # Seconds for the preflight probe before aborting eval.
 eval_slow_decision_threshold_sec: 5.0
 runtime_slow_decision_threshold_sec: 5.0
 eval_save_run_artifacts: false

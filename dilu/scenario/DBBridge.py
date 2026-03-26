@@ -8,6 +8,33 @@ from highway_env.vehicle.controller import MDPVehicle
 from highway_env.vehicle.behavior import IDMVehicle
 
 
+class NullDBBridge:
+    def __init__(self, database: str = "", env: AbstractEnv = None) -> None:
+        self.database = database
+        self.env = env
+
+    def createTable(self):
+        return None
+
+    def insertSimINFO(self, envType: str, seed: int):
+        return None
+
+    def getCicularLaneWayPoint(self, cl: CircularLane):
+        return ""
+
+    def insertNetwork(self):
+        return None
+
+    def insertVehicle(self, decisionFrame: int, SVs: List[IDMVehicle]):
+        return None
+
+    def insertPrompts(
+            self, decisionFrame: int, vectorID: str, done: bool,
+            description: str, fewshots: str, thoughtsAndAction: str
+    ):
+        return None
+
+
 class DBBridge:
     def __init__(self, database: str, env: AbstractEnv) -> None:
         self.database = database

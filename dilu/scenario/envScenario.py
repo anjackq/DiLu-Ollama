@@ -12,7 +12,7 @@ from highway_env.vehicle.controller import MDPVehicle
 from highway_env.vehicle.behavior import IDMVehicle
 import numpy as np
 
-from dilu.scenario.DBBridge import DBBridge
+from dilu.scenario.DBBridge import DBBridge, NullDBBridge
 from dilu.scenario.envPlotter import ScePlotter
 
 
@@ -36,10 +36,11 @@ ACTIONS_DESCRIPTION = {
 class EnvScenario:
     def __init__(
             self, env: AbstractEnv, envType: str,
-            seed: int, database: str = None
+            seed: int, database: str = None, enable_db: bool = True
     ) -> None:
         self.env = env
         self.envType = envType
+        self.enable_db = bool(enable_db)
 
         #self.ego: MDPVehicle = env.vehicle
         self.ego: MDPVehicle = env.unwrapped.vehicle
@@ -56,19 +57,23 @@ class EnvScenario:
         self.plotter = ScePlotter()
         if database:
             self.database = database
-        else:
+        elif self.enable_db:
             self.database = datetime.strftime(
                 datetime.now(), '%Y-%m-%d_%H-%M-%S'
             ) + '.db'
+        else:
+            self.database = ""
 
-        if os.path.exists(self.database):
-            os.remove(self.database)
+        if self.enable_db:
+            if os.path.exists(self.database):
+                os.remove(self.database)
 
-        self.dbBridge = DBBridge(self.database, env)
-
-        self.dbBridge.createTable()
-        self.dbBridge.insertSimINFO(envType, seed)
-        self.dbBridge.insertNetwork()
+            self.dbBridge = DBBridge(self.database, env)
+            self.dbBridge.createTable()
+            self.dbBridge.insertSimINFO(envType, seed)
+            self.dbBridge.insertNetwork()
+        else:
+            self.dbBridge = NullDBBridge(self.database, env)
 
 #    def getSurrendVehicles(self, vehicles_count: int) -> List[IDMVehicle]:
 #        return self.road.close_vehicles_to(
