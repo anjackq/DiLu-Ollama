@@ -15,6 +15,9 @@ DEPRECATED_POLICY_FIELDS = (
 EVAL_TIMEOUT_POLICY_MODE_DEFAULT = "laddered"
 EVAL_TIMEOUT_LADDER_SEC_DEFAULT = [15.0, 20.0, 30.0]
 EVAL_TIMEOUT_RECOVERY_SUCCESSES_DEFAULT = 3
+EVAL_FIRST_RESPONSE_WARMUP_TIMEOUT_SEC_DEFAULT = 60.0
+EVAL_FIRST_RESPONSE_WARMUP_MAX_FAILURES_DEFAULT = 2
+REMOTE_WARMUP_PROVIDERS = {"openai", "azure", "gemini"}
 
 
 def _clamp_float(value: Any, default: float, minimum: float) -> float:
@@ -43,7 +46,19 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 def _normalize_eval_timeout_policy_mode(value: Any) -> str:
     text = str(value or EVAL_TIMEOUT_POLICY_MODE_DEFAULT).strip().lower()
+    if text in {"off", "disabled", "none", "false", "0"}:
+        return "disabled"
     return "legacy" if text in {"legacy", "adaptive", "shrink_only"} else "laddered"
+
+
+def _normalize_timeout_seconds(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = float(default)
+    if parsed <= 0.0:
+        return 0.0
+    return float(parsed)
 
 
 def _normalize_timeout_ladder(value: Any) -> List[float]:
@@ -68,6 +83,14 @@ def _normalize_timeout_ladder(value: Any) -> List[float]:
 
 def _normalize_provider(provider: Any) -> str:
     return str(provider or "").strip().lower()
+
+
+def _provider_uses_eval_warmup(provider: str, mode: str, policy_mode: str) -> bool:
+    return (
+        str(mode or "").strip().lower() == "eval"
+        and str(policy_mode or "").strip().lower() == "laddered"
+        and str(provider or "").strip().lower() in REMOTE_WARMUP_PROVIDERS
+    )
 
 
 def _match_override(model_name: str, overrides: Any) -> Tuple[Optional[str], Dict[str, Any]]:
@@ -118,9 +141,15 @@ def _collect_deprecated_fields(payload: Any, source: str) -> list[str]:
 def _base_policy_defaults(config: Dict[str, Any], provider: str, mode: str) -> Dict[str, Any]:
     _ = provider  # kept for compatibility and future provider-specific timeout defaults
     if mode == "runtime":
-        decision_timeout_sec = float(config.get("runtime_decision_timeout_sec", 60.0))
+        decision_timeout_sec = _normalize_timeout_seconds(
+            config.get("runtime_decision_timeout_sec", 60.0),
+            default=60.0,
+        )
     else:
-        decision_timeout_sec = float(config.get("eval_decision_timeout_sec", 60.0))
+        decision_timeout_sec = _normalize_timeout_seconds(
+            config.get("eval_decision_timeout_sec", 60.0),
+            default=60.0,
+        )
 
     return {
         "decision_timeout_sec": decision_timeout_sec,
@@ -147,7 +176,10 @@ def resolve_model_policy(
     shared_key, shared_values = _match_override(model_name, shared_overrides)
     if shared_values:
         if "decision_timeout_sec" in shared_values and shared_values["decision_timeout_sec"] is not None:
-            resolved["decision_timeout_sec"] = shared_values["decision_timeout_sec"]
+            resolved["decision_timeout_sec"] = _normalize_timeout_seconds(
+                shared_values["decision_timeout_sec"],
+                default=float(resolved.get("decision_timeout_sec", 60.0) or 60.0),
+            )
         deprecated_policy_fields_ignored.extend(
             _collect_deprecated_fields(shared_values, "model_policy_overrides")
         )
@@ -158,7 +190,10 @@ def resolve_model_policy(
         legacy_key, legacy_values = _match_override(model_name, legacy_eval_overrides)
         if legacy_values:
             if "decision_timeout_sec" in legacy_values and legacy_values["decision_timeout_sec"] is not None:
-                resolved["decision_timeout_sec"] = legacy_values["decision_timeout_sec"]
+                resolved["decision_timeout_sec"] = _normalize_timeout_seconds(
+                    legacy_values["decision_timeout_sec"],
+                    default=float(resolved.get("decision_timeout_sec", 60.0) or 60.0),
+                )
             deprecated_policy_fields_ignored.extend(
                 _collect_deprecated_fields(legacy_values, "eval_model_overrides")
             )
@@ -167,12 +202,18 @@ def resolve_model_policy(
     if isinstance(cli_overrides, dict):
         for key in POLICY_TIMEOUT_FIELDS:
             if key in cli_overrides and cli_overrides[key] is not None:
-                cli_values[key] = cli_overrides[key]
+                cli_values[key] = _normalize_timeout_seconds(
+                    cli_overrides[key],
+                    default=float(resolved.get(key, 60.0) or 60.0),
+                )
         if cli_values:
             resolved.update(cli_values)
         deprecated_policy_fields_ignored.extend(_collect_deprecated_fields(cli_overrides, "cli"))
 
-    resolved["decision_timeout_sec"] = max(1.0, float(resolved["decision_timeout_sec"]))
+    resolved["decision_timeout_sec"] = _normalize_timeout_seconds(
+        resolved.get("decision_timeout_sec", 60.0),
+        default=60.0,
+    )
 
     resolved["policy_meta"] = {
         "provider": norm_provider,
@@ -207,6 +248,37 @@ def build_decision_timeout_penalty_state(
         if norm_mode == "eval"
         else "legacy"
     )
+    baseline_timeout_sec = _normalize_timeout_seconds(
+        baseline_decision_timeout_sec,
+        default=60.0,
+    )
+    if policy_mode == "disabled" or baseline_timeout_sec <= 0.0:
+        return {
+            "enabled": False,
+            "provider": norm_provider,
+            "mode": norm_mode,
+            "policy_mode": "disabled",
+            "baseline_decision_timeout_sec": baseline_timeout_sec if baseline_timeout_sec > 0.0 else None,
+            "effective_decision_timeout_sec": baseline_timeout_sec if baseline_timeout_sec > 0.0 else None,
+            "min_timeout_sec": None,
+            "halving_factor": None,
+            "trigger_consecutive_slow": None,
+            "slow_threshold_sec": None,
+            "stage": 0,
+            "timeout_ladder_sec": None,
+            "current_level_index": None,
+            "recovery_successes_required": None,
+            "recovery_success_streak": None,
+            "penalty_events": 0,
+            "timeout_triggers": 0,
+            "slow_triggers": 0,
+            "warmup_active": False,
+            "warmup_success_observed": True,
+            "warmup_timeout_sec": None,
+            "warmup_timeout_failures": 0,
+            "warmup_max_failures": None,
+            "timeout_phase": "disabled",
+        }
     if norm_mode == "eval" and policy_mode == "laddered":
         ladder = _normalize_timeout_ladder(config.get("eval_timeout_ladder_sec"))
         recovery_successes = _clamp_int(
@@ -215,13 +287,30 @@ def build_decision_timeout_penalty_state(
             minimum=1,
         )
         initial_timeout_sec = float(ladder[0])
+        warmup_enabled = _provider_uses_eval_warmup(norm_provider, norm_mode, policy_mode)
+        warmup_timeout_sec = _clamp_float(
+            config.get(
+                "eval_first_response_warmup_timeout_sec",
+                EVAL_FIRST_RESPONSE_WARMUP_TIMEOUT_SEC_DEFAULT,
+            ),
+            default=EVAL_FIRST_RESPONSE_WARMUP_TIMEOUT_SEC_DEFAULT,
+            minimum=1.0,
+        )
+        warmup_max_failures = _clamp_int(
+            config.get(
+                "eval_first_response_warmup_max_failures",
+                EVAL_FIRST_RESPONSE_WARMUP_MAX_FAILURES_DEFAULT,
+            ),
+            default=EVAL_FIRST_RESPONSE_WARMUP_MAX_FAILURES_DEFAULT,
+            minimum=1,
+        )
         return {
             "enabled": True,
             "provider": norm_provider,
             "mode": norm_mode,
             "policy_mode": "laddered",
             "baseline_decision_timeout_sec": initial_timeout_sec,
-            "effective_decision_timeout_sec": initial_timeout_sec,
+            "effective_decision_timeout_sec": warmup_timeout_sec if warmup_enabled else initial_timeout_sec,
             "min_timeout_sec": initial_timeout_sec,
             "halving_factor": None,
             "trigger_consecutive_slow": None,
@@ -234,6 +323,12 @@ def build_decision_timeout_penalty_state(
             "penalty_events": 0,
             "timeout_triggers": 0,
             "slow_triggers": 0,
+            "warmup_active": bool(warmup_enabled),
+            "warmup_success_observed": not bool(warmup_enabled),
+            "warmup_timeout_sec": warmup_timeout_sec if warmup_enabled else None,
+            "warmup_timeout_failures": 0,
+            "warmup_max_failures": int(warmup_max_failures),
+            "timeout_phase": "warmup" if warmup_enabled else "active",
         }
 
     enabled = _as_bool(config.get("adaptive_timeout_penalty_enabled"), default=True)
@@ -267,7 +362,7 @@ def build_decision_timeout_penalty_state(
     )
 
     baseline_timeout_sec = _clamp_float(
-        baseline_decision_timeout_sec,
+        baseline_timeout_sec,
         default=min_timeout_sec,
         minimum=min_timeout_sec,
     )
@@ -287,6 +382,12 @@ def build_decision_timeout_penalty_state(
         "penalty_events": 0,
         "timeout_triggers": 0,
         "slow_triggers": 0,
+        "warmup_active": False,
+        "warmup_success_observed": True,
+        "warmup_timeout_sec": None,
+        "warmup_timeout_failures": 0,
+        "warmup_max_failures": None,
+        "timeout_phase": "active",
     }
 
 
@@ -310,11 +411,13 @@ def update_decision_timeout_penalty_state(
     if not isinstance(state, dict) or not state.get("enabled", False):
         effective = None
         if isinstance(state, dict):
-            effective = _clamp_float(
-                state.get("effective_decision_timeout_sec", state.get("baseline_decision_timeout_sec", 4.0)),
-                default=4.0,
-                minimum=1.0,
-            )
+            raw_effective = state.get("effective_decision_timeout_sec", state.get("baseline_decision_timeout_sec"))
+            if raw_effective is not None:
+                effective = _clamp_float(
+                    raw_effective,
+                    default=4.0,
+                    minimum=1.0,
+                )
         return {
             "escalated": False,
             "reason": None,
@@ -323,6 +426,10 @@ def update_decision_timeout_penalty_state(
             "consecutive_slow_count": 0 if not isinstance(state, dict) else int(state.get("consecutive_slow_count", 0) or 0),
             "policy_mode": None if not isinstance(state, dict) else state.get("policy_mode"),
             "recovered": False,
+            "warmup_completed": False,
+            "warmup_active": False if not isinstance(state, dict) else bool(state.get("warmup_active", False)),
+            "warmup_timeout_failures": 0 if not isinstance(state, dict) else int(state.get("warmup_timeout_failures", 0) or 0),
+            "timeout_phase": None if not isinstance(state, dict) else state.get("timeout_phase"),
         }
 
     if state.get("policy_mode") == "laddered":
@@ -337,6 +444,42 @@ def update_decision_timeout_penalty_state(
         escalated = False
         recovered = False
         reason = None
+        warmup_completed = False
+
+        if bool(state.get("warmup_active", False)):
+            warmup_timeout_sec = _clamp_float(
+                state.get("warmup_timeout_sec", EVAL_FIRST_RESPONSE_WARMUP_TIMEOUT_SEC_DEFAULT),
+                default=EVAL_FIRST_RESPONSE_WARMUP_TIMEOUT_SEC_DEFAULT,
+                minimum=1.0,
+            )
+            if bool(timed_out):
+                state["warmup_timeout_failures"] = _clamp_int(
+                    state.get("warmup_timeout_failures", 0),
+                    default=0,
+                    minimum=0,
+                ) + 1
+                state["effective_decision_timeout_sec"] = float(warmup_timeout_sec)
+                state["timeout_phase"] = "warmup"
+                return {
+                    "escalated": False,
+                    "recovered": False,
+                    "reason": "warmup_timeout",
+                    "stage": int(state.get("stage", 0) or 0),
+                    "effective_decision_timeout_sec": float(state["effective_decision_timeout_sec"]),
+                    "consecutive_slow_count": 0,
+                    "policy_mode": "laddered",
+                    "warmup_completed": False,
+                    "warmup_active": True,
+                    "warmup_timeout_failures": int(state.get("warmup_timeout_failures", 0) or 0),
+                    "timeout_phase": "warmup",
+                }
+
+            state["warmup_active"] = False
+            state["warmup_success_observed"] = True
+            state["effective_decision_timeout_sec"] = float(ladder[current_idx])
+            state["timeout_phase"] = "active"
+            state["recovery_success_streak"] = 0
+            warmup_completed = True
 
         if bool(timed_out):
             state["timeout_triggers"] = _clamp_int(state.get("timeout_triggers", 0), default=0, minimum=0) + 1
@@ -363,6 +506,7 @@ def update_decision_timeout_penalty_state(
         state["baseline_decision_timeout_sec"] = float(ladder[0])
         state["min_timeout_sec"] = float(ladder[0])
         state["timeout_ladder_sec"] = list(ladder)
+        state["timeout_phase"] = "active"
         return {
             "escalated": escalated,
             "recovered": recovered,
@@ -371,6 +515,10 @@ def update_decision_timeout_penalty_state(
             "effective_decision_timeout_sec": float(state["effective_decision_timeout_sec"]),
             "consecutive_slow_count": 0,
             "policy_mode": "laddered",
+            "warmup_completed": bool(warmup_completed),
+            "warmup_active": bool(state.get("warmup_active", False)),
+            "warmup_timeout_failures": int(state.get("warmup_timeout_failures", 0) or 0),
+            "timeout_phase": str(state.get("timeout_phase") or "active"),
         }
 
     threshold = _clamp_float(
@@ -410,6 +558,10 @@ def update_decision_timeout_penalty_state(
         "effective_decision_timeout_sec": float(state["effective_decision_timeout_sec"]),
         "consecutive_slow_count": int(state["consecutive_slow_count"]),
         "policy_mode": "legacy",
+        "warmup_completed": False,
+        "warmup_active": False,
+        "warmup_timeout_failures": int(state.get("warmup_timeout_failures", 0) or 0),
+        "timeout_phase": str(state.get("timeout_phase") or "active"),
     }
 
 
@@ -432,6 +584,12 @@ def decision_timeout_penalty_snapshot(state: Optional[Dict[str, Any]]) -> Dict[s
             "current_level_index": None,
             "recovery_successes_required": None,
             "recovery_success_streak": None,
+            "warmup_active": False,
+            "warmup_success_observed": False,
+            "warmup_timeout_sec": None,
+            "warmup_timeout_failures": 0,
+            "warmup_max_failures": None,
+            "timeout_phase": None,
             # Compatibility aliases (deprecated)
             "baseline_native_timeout_sec": None,
             "effective_native_timeout_sec": None,
@@ -477,6 +635,20 @@ def decision_timeout_penalty_snapshot(state: Optional[Dict[str, Any]]) -> Dict[s
             if state.get("recovery_success_streak") is not None
             else None
         ),
+        "warmup_active": bool(state.get("warmup_active", False)),
+        "warmup_success_observed": bool(state.get("warmup_success_observed", False)),
+        "warmup_timeout_sec": (
+            float(state["warmup_timeout_sec"])
+            if state.get("warmup_timeout_sec") is not None
+            else None
+        ),
+        "warmup_timeout_failures": int(state.get("warmup_timeout_failures", 0) or 0),
+        "warmup_max_failures": (
+            int(state["warmup_max_failures"])
+            if state.get("warmup_max_failures") is not None
+            else None
+        ),
+        "timeout_phase": state.get("timeout_phase"),
         # Compatibility aliases (deprecated)
         "baseline_native_timeout_sec": (
             float(state["baseline_decision_timeout_sec"])

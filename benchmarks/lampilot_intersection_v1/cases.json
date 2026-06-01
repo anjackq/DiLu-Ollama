@@ -1,18 +1,22 @@
 {
   "benchmark_name": "lampilot_intersection_v1",
-  "version": "1.0",
-  "description": "Discrete intersection benchmark for DiLu-Ollama on highway-env intersection-v0 with fixed per-category overrides for destination and traffic density.",
-  "target_env_id": "intersection-v0",
+  "version": "1.1",
+  "description": "Prompt-conditioned intersection benchmark for DiLu-Ollama on highway-env intersection-v1 with discrete meta-actions. The suite separates runtime arrival behavior into clear crossing, yield-required crossing, dense crossing, and alternate-exit/follow-flow arrival tasks.",
+  "target_env_id": "intersection-v1",
   "scenario_family": "intersection",
   "defaults": {
-    "time_limit_sec": 15,
+    "time_limit_sec": 16,
     "difficulty": "medium",
     "case_group": "intersection_arrival",
     "env_overrides": {
-      "duration": 15,
+      "duration": 16,
       "initial_vehicle_count": 10,
       "spawn_probability": 0.6,
-      "destination": "o1"
+      "destination": "o1",
+      "action": {
+        "type": "DiscreteMetaAction",
+        "target_speeds": [0, 5, 10, 15, 20, 25, 30]
+      }
     },
     "success_criteria": {
       "type": "arrive",
@@ -23,7 +27,7 @@
     {
       "case_id": "clear_cross_101",
       "category": "clear_cross",
-      "instruction": "Cross the intersection smoothly when traffic is light and arrive without colliding. Replication 1.",
+      "instruction": "Cross the intersection smoothly when traffic is light and arrive without colliding.",
       "seed": 101,
       "time_limit_sec": 14,
       "success_criteria": {
@@ -36,17 +40,14 @@
         "spawn_probability": 0.2,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "light_traffic"
-      ],
+      "tags": ["intersection", "light_traffic", "prompt_conditioned"],
       "difficulty": "easy",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "clear_cross_203",
       "category": "clear_cross",
-      "instruction": "Cross the intersection smoothly when traffic is light and arrive without colliding. Replication 2.",
+      "instruction": "Proceed through the intersection when clear and keep enough momentum to finish the crossing.",
       "seed": 203,
       "time_limit_sec": 14,
       "success_criteria": {
@@ -59,17 +60,14 @@
         "spawn_probability": 0.2,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "light_traffic"
-      ],
+      "tags": ["intersection", "light_traffic", "prompt_conditioned"],
       "difficulty": "easy",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "clear_cross_307",
       "category": "clear_cross",
-      "instruction": "Cross the intersection smoothly when traffic is light and arrive without colliding. Replication 3.",
+      "instruction": "Use the open gap to cross decisively while staying collision-free.",
       "seed": 307,
       "time_limit_sec": 14,
       "success_criteria": {
@@ -82,17 +80,14 @@
         "spawn_probability": 0.2,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "light_traffic"
-      ],
+      "tags": ["intersection", "light_traffic", "prompt_conditioned"],
       "difficulty": "easy",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "clear_cross_409",
       "category": "clear_cross",
-      "instruction": "Cross the intersection smoothly when traffic is light and arrive without colliding. Replication 4.",
+      "instruction": "Cross without unnecessary stopping when the approach is clear.",
       "seed": 409,
       "time_limit_sec": 14,
       "success_criteria": {
@@ -105,17 +100,14 @@
         "spawn_probability": 0.2,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "light_traffic"
-      ],
+      "tags": ["intersection", "light_traffic", "prompt_conditioned"],
       "difficulty": "easy",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "clear_cross_503",
       "category": "clear_cross",
-      "instruction": "Cross the intersection smoothly when traffic is light and arrive without colliding. Replication 5.",
+      "instruction": "Maintain a smooth crossing line through light traffic and arrive cleanly.",
       "seed": 503,
       "time_limit_sec": 14,
       "success_criteria": {
@@ -128,17 +120,14 @@
         "spawn_probability": 0.2,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "light_traffic"
-      ],
+      "tags": ["intersection", "light_traffic", "prompt_conditioned"],
       "difficulty": "easy",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "clear_cross_607",
       "category": "clear_cross",
-      "instruction": "Cross the intersection smoothly when traffic is light and arrive without colliding. Replication 6.",
+      "instruction": "Complete the crossing promptly while respecting any visible vehicles.",
       "seed": 607,
       "time_limit_sec": 14,
       "success_criteria": {
@@ -151,271 +140,291 @@
         "spawn_probability": 0.2,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "light_traffic"
-      ],
+      "tags": ["intersection", "light_traffic", "prompt_conditioned"],
       "difficulty": "easy",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "yield_required_113",
       "category": "yield_required",
-      "instruction": "Yield as needed, then proceed through the intersection and arrive safely. Replication 1.",
+      "instruction": "Yield to cross traffic when needed, then cross the intersection once a safe gap opens.",
       "seed": 113,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 10,
-        "spawn_probability": 0.6,
+        "spawn_probability": 0.65,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "yield"
-      ],
+      "tags": ["intersection", "yield", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "yield_required_227",
       "category": "yield_required",
-      "instruction": "Yield as needed, then proceed through the intersection and arrive safely. Replication 2.",
+      "instruction": "Show defensive yielding before committing to the crossing and arriving safely.",
       "seed": 227,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 10,
-        "spawn_probability": 0.6,
+        "spawn_probability": 0.65,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "yield"
-      ],
+      "tags": ["intersection", "yield", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "yield_required_331",
       "category": "yield_required",
-      "instruction": "Yield as needed, then proceed through the intersection and arrive safely. Replication 3.",
+      "instruction": "Pause for unsafe cross traffic and continue only after the route is safe.",
       "seed": 331,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 10,
-        "spawn_probability": 0.6,
+        "spawn_probability": 0.65,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "yield"
-      ],
+      "tags": ["intersection", "yield", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "yield_required_419",
       "category": "yield_required",
-      "instruction": "Yield as needed, then proceed through the intersection and arrive safely. Replication 4.",
+      "instruction": "Balance caution and progress: yield first if traffic blocks the way, then cross.",
       "seed": 419,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 10,
-        "spawn_probability": 0.6,
+        "spawn_probability": 0.65,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "yield"
-      ],
+      "tags": ["intersection", "yield", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "yield_required_547",
       "category": "yield_required",
-      "instruction": "Yield as needed, then proceed through the intersection and arrive safely. Replication 5.",
+      "instruction": "Avoid rushing into conflict, yield as needed, and finish the crossing once safe.",
       "seed": 547,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 10,
-        "spawn_probability": 0.6,
+        "spawn_probability": 0.65,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "yield"
-      ],
+      "tags": ["intersection", "yield", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "intersection_arrival"
     },
     {
       "case_id": "yield_required_631",
       "category": "yield_required",
-      "instruction": "Yield as needed, then proceed through the intersection and arrive safely. Replication 6.",
+      "instruction": "Recognize crossing traffic, yield briefly if necessary, and proceed to the destination.",
       "seed": 631,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 10,
-        "spawn_probability": 0.6,
+        "spawn_probability": 0.65,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "yield"
-      ],
+      "tags": ["intersection", "yield", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "heavy_cross_127",
-      "category": "heavy_cross",
-      "instruction": "Handle dense cross traffic conservatively, then complete the crossing and arrive. Replication 1.",
+      "case_id": "dense_cross_127",
+      "category": "dense_cross",
+      "instruction": "Navigate dense intersection traffic by yielding to conflicts and crossing when the path opens.",
       "seed": 127,
-      "time_limit_sec": 16,
+      "time_limit_sec": 17,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 16,
+        "duration": 17,
         "initial_vehicle_count": 14,
         "spawn_probability": 0.9,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "dense_cross_traffic"
-      ],
+      "tags": ["intersection", "dense_traffic", "yield", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "heavy_cross_233",
-      "category": "heavy_cross",
-      "instruction": "Handle dense cross traffic conservatively, then complete the crossing and arrive. Replication 2.",
+      "case_id": "dense_cross_233",
+      "category": "dense_cross",
+      "instruction": "Handle heavy traffic patiently, then cross decisively once a safe opportunity appears.",
       "seed": 233,
-      "time_limit_sec": 16,
+      "time_limit_sec": 17,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 16,
+        "duration": 17,
         "initial_vehicle_count": 14,
         "spawn_probability": 0.9,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "dense_cross_traffic"
-      ],
+      "tags": ["intersection", "dense_traffic", "yield", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "heavy_cross_337",
-      "category": "heavy_cross",
-      "instruction": "Handle dense cross traffic conservatively, then complete the crossing and arrive. Replication 3.",
+      "case_id": "dense_cross_337",
+      "category": "dense_cross",
+      "instruction": "Stay defensive around dense cross traffic and complete the crossing without blocking in the junction.",
       "seed": 337,
-      "time_limit_sec": 16,
+      "time_limit_sec": 17,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 16,
+        "duration": 17,
         "initial_vehicle_count": 14,
         "spawn_probability": 0.9,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "dense_cross_traffic"
-      ],
+      "tags": ["intersection", "dense_traffic", "yield", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "heavy_cross_443",
-      "category": "heavy_cross",
-      "instruction": "Handle dense cross traffic conservatively, then complete the crossing and arrive. Replication 4.",
+      "case_id": "dense_cross_443",
+      "category": "dense_cross",
+      "instruction": "Wait out unsafe conflicts in dense traffic, then continue through the intersection.",
       "seed": 443,
-      "time_limit_sec": 16,
+      "time_limit_sec": 17,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 16,
+        "duration": 17,
         "initial_vehicle_count": 14,
         "spawn_probability": 0.9,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "dense_cross_traffic"
-      ],
+      "tags": ["intersection", "dense_traffic", "yield", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "heavy_cross_557",
-      "category": "heavy_cross",
-      "instruction": "Handle dense cross traffic conservatively, then complete the crossing and arrive. Replication 5.",
+      "case_id": "dense_cross_557",
+      "category": "dense_cross",
+      "instruction": "Cross a busy intersection with measured yielding and finish the route safely.",
       "seed": 557,
-      "time_limit_sec": 16,
+      "time_limit_sec": 17,
       "success_criteria": {
         "type": "arrive",
-        "hold_steps": 1
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
       },
       "env_overrides": {
-        "duration": 16,
+        "duration": 17,
         "initial_vehicle_count": 14,
         "spawn_probability": 0.9,
         "destination": "o1"
       },
-      "tags": [
-        "intersection",
-        "dense_cross_traffic"
-      ],
+      "tags": ["intersection", "dense_traffic", "yield", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "heavy_cross_641",
-      "category": "heavy_cross",
-      "instruction": "Handle dense cross traffic conservatively, then complete the crossing and arrive. Replication 6.",
+      "case_id": "dense_cross_641",
+      "category": "dense_cross",
+      "instruction": "In dense traffic, prioritize avoiding conflict while still completing the crossing.",
       "seed": 641,
+      "time_limit_sec": 17,
+      "success_criteria": {
+        "type": "arrive",
+        "hold_steps": 1,
+        "requires_yield": true,
+        "yield_speed_mps": 4.0,
+        "min_yield_steps": 1
+      },
+      "env_overrides": {
+        "duration": 17,
+        "initial_vehicle_count": 14,
+        "spawn_probability": 0.9,
+        "destination": "o1"
+      },
+      "tags": ["intersection", "dense_traffic", "yield", "prompt_conditioned"],
+      "difficulty": "hard",
+      "case_group": "intersection_arrival"
+    },
+    {
+      "case_id": "alternate_exit_follow_flow_131",
+      "category": "alternate_exit_follow_flow",
+      "instruction": "Follow the intended traffic flow to the alternate exit and arrive without unnecessary stopping.",
+      "seed": 131,
       "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
@@ -423,152 +432,111 @@
       },
       "env_overrides": {
         "duration": 16,
-        "initial_vehicle_count": 14,
-        "spawn_probability": 0.9,
-        "destination": "o1"
-      },
-      "tags": [
-        "intersection",
-        "dense_cross_traffic"
-      ],
-      "difficulty": "hard",
-      "case_group": "intersection_arrival"
-    },
-    {
-      "case_id": "follow_vehicle_131",
-      "category": "follow_vehicle",
-      "instruction": "Track the traffic flow ahead, accept a safe gap, and reach the alternate exit safely. Replication 1.",
-      "seed": 131,
-      "time_limit_sec": 15,
-      "success_criteria": {
-        "type": "arrive",
-        "hold_steps": 1
-      },
-      "env_overrides": {
-        "duration": 15,
         "initial_vehicle_count": 12,
         "spawn_probability": 0.7,
         "destination": "o2"
       },
-      "tags": [
-        "intersection",
-        "route_change"
-      ],
+      "tags": ["intersection", "alternate_exit", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "follow_vehicle_239",
-      "category": "follow_vehicle",
-      "instruction": "Track the traffic flow ahead, accept a safe gap, and reach the alternate exit safely. Replication 2.",
+      "case_id": "alternate_exit_follow_flow_239",
+      "category": "alternate_exit_follow_flow",
+      "instruction": "Use the route toward the alternate exit while keeping pace with safe traffic flow.",
       "seed": 239,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
         "hold_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 12,
         "spawn_probability": 0.7,
         "destination": "o2"
       },
-      "tags": [
-        "intersection",
-        "route_change"
-      ],
+      "tags": ["intersection", "alternate_exit", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "follow_vehicle_349",
-      "category": "follow_vehicle",
-      "instruction": "Track the traffic flow ahead, accept a safe gap, and reach the alternate exit safely. Replication 3.",
+      "case_id": "alternate_exit_follow_flow_349",
+      "category": "alternate_exit_follow_flow",
+      "instruction": "Proceed to the alternate exit with smooth flow-aware decisions through the intersection.",
       "seed": 349,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
         "hold_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 12,
         "spawn_probability": 0.7,
         "destination": "o2"
       },
-      "tags": [
-        "intersection",
-        "route_change"
-      ],
+      "tags": ["intersection", "alternate_exit", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "follow_vehicle_449",
-      "category": "follow_vehicle",
-      "instruction": "Track the traffic flow ahead, accept a safe gap, and reach the alternate exit safely. Replication 4.",
+      "case_id": "alternate_exit_follow_flow_449",
+      "category": "alternate_exit_follow_flow",
+      "instruction": "Arrive at the alternate exit by following the intersection flow instead of freezing in place.",
       "seed": 449,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
         "hold_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 12,
         "spawn_probability": 0.7,
         "destination": "o2"
       },
-      "tags": [
-        "intersection",
-        "route_change"
-      ],
+      "tags": ["intersection", "alternate_exit", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "follow_vehicle_563",
-      "category": "follow_vehicle",
-      "instruction": "Track the traffic flow ahead, accept a safe gap, and reach the alternate exit safely. Replication 5.",
+      "case_id": "alternate_exit_follow_flow_563",
+      "category": "alternate_exit_follow_flow",
+      "instruction": "Choose actions that keep the vehicle moving toward the alternate exit when the path is safe.",
       "seed": 563,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
         "hold_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 12,
         "spawn_probability": 0.7,
         "destination": "o2"
       },
-      "tags": [
-        "intersection",
-        "route_change"
-      ],
+      "tags": ["intersection", "alternate_exit", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     },
     {
-      "case_id": "follow_vehicle_647",
-      "category": "follow_vehicle",
-      "instruction": "Track the traffic flow ahead, accept a safe gap, and reach the alternate exit safely. Replication 6.",
+      "case_id": "alternate_exit_follow_flow_647",
+      "category": "alternate_exit_follow_flow",
+      "instruction": "Complete the alternate-exit route with steady progress and safe interaction with other vehicles.",
       "seed": 647,
-      "time_limit_sec": 15,
+      "time_limit_sec": 16,
       "success_criteria": {
         "type": "arrive",
         "hold_steps": 1
       },
       "env_overrides": {
-        "duration": 15,
+        "duration": 16,
         "initial_vehicle_count": 12,
         "spawn_probability": 0.7,
         "destination": "o2"
       },
-      "tags": [
-        "intersection",
-        "route_change"
-      ],
+      "tags": ["intersection", "alternate_exit", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "intersection_arrival"
     }

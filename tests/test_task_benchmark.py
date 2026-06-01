@@ -2,9 +2,15 @@ import copy
 import os
 import unittest
 
+import gymnasium as gym
 import numpy as np
 import yaml
 
+from dilu.runtime.highway_scenario_spec import (
+    apply_highway_scenario_events,
+    apply_highway_scenario_spec,
+    normalize_scenario_spec,
+)
 from dilu.runtime.highway_env_config import resolve_simulation_env_bundle
 from dilu.runtime.task_benchmark import (
     BenchmarkEpisodeEvaluator,
@@ -17,6 +23,7 @@ from dilu.runtime.task_benchmark import (
     validate_benchmark_case_set,
 )
 from evaluate_models_ollama import aggregate_results
+from evaluate_models_ollama import _decision_trace_item
 from evaluate_models_ollama import extract_step_traffic_metrics
 
 
@@ -118,6 +125,363 @@ class TaskBenchmarkTests(unittest.TestCase):
         )
         target_speeds = bundle["env_config_snapshot"]["action"]["target_speeds"]
         self.assertEqual(list(target_speeds), [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0])
+
+    def test_highway_scenario_spec_repositions_ego_and_places_vehicles(self):
+        env = gym.make("highway-fast-v0", render_mode="rgb_array")
+        try:
+            env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
+            env.reset(seed=123)
+            case = {
+                "scenario_spec": {
+                    "clear_existing_vehicles": True,
+                    "ego": {"lane_rank": 1, "x_m": 100.0, "speed_mps": 25.0},
+                    "vehicles": [
+                        {
+                            "id": "slow_lead",
+                            "role": "lead",
+                            "lane_offset": 0,
+                            "x_offset_m": 28.0,
+                            "speed_mps": 18.0,
+                            "target_speed_mps": 18.0,
+                        },
+                        {
+                            "id": "left_rear",
+                            "role": "left_rear",
+                            "lane_offset": -1,
+                            "x_offset_m": -45.0,
+                            "speed_mps": 25.0,
+                        },
+                    ],
+                }
+            }
+
+            meta = apply_highway_scenario_spec(env, case)
+            ego_vehicle = env.unwrapped.vehicle
+            front, _rear = env.unwrapped.road.neighbour_vehicles(ego_vehicle, ego_vehicle.lane_index)
+
+            self.assertTrue(meta["benchmark_scenario_spec_applied"])
+            self.assertEqual(ego_vehicle.lane_index[2], 1)
+            self.assertAlmostEqual(float(ego_vehicle.position[0]), 100.0, places=3)
+            self.assertAlmostEqual(float(ego_vehicle.speed), 25.0, places=3)
+            self.assertEqual(len(env.unwrapped.road.vehicles), 3)
+            self.assertIsNotNone(front)
+            self.assertAlmostEqual(float(ego_vehicle.lane_distance_to(front)), 28.0, places=3)
+        finally:
+            env.close()
+
+    def test_highway_scenario_spec_rejects_invalid_specs(self):
+        with self.assertRaisesRegex(ValueError, "duplicate vehicle id"):
+            normalize_scenario_spec(
+                {
+                    "vehicles": [
+                        {"id": "dup", "x_offset_m": 20, "speed_mps": 20},
+                        {"id": "dup", "x_offset_m": 40, "speed_mps": 20},
+                    ]
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "front-role x_offset_m must be positive"):
+            normalize_scenario_spec(
+                {"vehicles": [{"id": "bad_front", "role": "lead", "x_offset_m": -5, "speed_mps": 20}]}
+            )
+
+    def test_highway_scenario_events_reposition_update_and_spawn_vehicle(self):
+        env = gym.make("highway-fast-v0", render_mode="rgb_array")
+        try:
+            env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
+            env.reset(seed=321)
+            case = {
+                "scenario_spec": {
+                    "clear_existing_vehicles": True,
+                    "ego": {"lane_rank": 1, "x_m": 100.0, "speed_mps": 25.0},
+                    "vehicles": [
+                        {
+                            "id": "lead",
+                            "role": "lead",
+                            "lane_offset": 0,
+                            "x_offset_m": 40.0,
+                            "speed_mps": 20.0,
+                            "target_speed_mps": 20.0,
+                        }
+                    ],
+                    "events": [
+                        {
+                            "id": "lead_cut",
+                            "step": 2,
+                            "type": "reposition_vehicle",
+                            "vehicle_id": "lead",
+                            "lane_offset": 0,
+                            "x_offset_m": 18.0,
+                            "speed_mps": 15.0,
+                            "target_speed_mps": 14.0,
+                        },
+                        {
+                            "id": "spawn_rear",
+                            "step": 2,
+                            "type": "spawn_vehicle",
+                            "vehicle": {
+                                "id": "rear",
+                                "role": "rear",
+                                "lane_offset": 0,
+                                "x_offset_m": -30.0,
+                                "speed_mps": 24.0,
+                                "target_speed_mps": 24.0,
+                            },
+                        },
+                    ],
+                }
+            }
+            apply_highway_scenario_spec(env, case)
+            applied_ids = set()
+
+            meta = apply_highway_scenario_events(env, case, step_idx=2, applied_event_ids=applied_ids)
+
+            ego_vehicle = env.unwrapped.vehicle
+            vehicles_by_id = {
+                getattr(vehicle, "dilu_benchmark_id", ""): vehicle
+                for vehicle in env.unwrapped.road.vehicles
+            }
+            self.assertTrue(meta["benchmark_events_applied"])
+            self.assertEqual(meta["benchmark_event_ids"], ["lead_cut", "spawn_rear"])
+            self.assertIn("lead_cut", applied_ids)
+            self.assertIn("spawn_rear", applied_ids)
+            self.assertAlmostEqual(float(ego_vehicle.lane_distance_to(vehicles_by_id["lead"])), 18.0, places=3)
+            self.assertAlmostEqual(float(vehicles_by_id["lead"].speed), 15.0, places=3)
+            self.assertAlmostEqual(float(vehicles_by_id["lead"].target_speed), 14.0, places=3)
+            self.assertAlmostEqual(float(ego_vehicle.lane_distance_to(vehicles_by_id["rear"])), -30.0, places=3)
+        finally:
+            env.close()
+
+    def test_highway_scenario_reposition_lane_offset_is_ego_relative(self):
+        env = gym.make("highway-fast-v0", render_mode="rgb_array")
+        try:
+            env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
+            env.reset(seed=654)
+            case = {
+                "scenario_spec": {
+                    "clear_existing_vehicles": True,
+                    "ego": {"lane_rank": 1, "x_m": 100.0, "speed_mps": 25.0},
+                    "vehicles": [
+                        {
+                            "id": "left_car",
+                            "role": "left_front",
+                            "lane_offset": -1,
+                            "x_offset_m": 25.0,
+                            "speed_mps": 20.0,
+                            "target_speed_mps": 20.0,
+                        }
+                    ],
+                    "events": [
+                        {
+                            "id": "left_car_reposition",
+                            "step": 2,
+                            "type": "reposition_vehicle",
+                            "vehicle_id": "left_car",
+                            "lane_offset": -1,
+                            "x_offset_m": 70.0,
+                            "speed_mps": 26.0,
+                        }
+                    ],
+                }
+            }
+            apply_highway_scenario_spec(env, case)
+
+            meta = apply_highway_scenario_events(env, case, step_idx=2, applied_event_ids=set())
+
+            ego_vehicle = env.unwrapped.vehicle
+            vehicles_by_id = {
+                getattr(vehicle, "dilu_benchmark_id", ""): vehicle
+                for vehicle in env.unwrapped.road.vehicles
+            }
+            self.assertTrue(meta["benchmark_events_applied"])
+            self.assertEqual(vehicles_by_id["left_car"].lane_index[2], ego_vehicle.lane_index[2] - 1)
+            self.assertAlmostEqual(float(ego_vehicle.lane_distance_to(vehicles_by_id["left_car"])), 70.0, places=3)
+        finally:
+            env.close()
+
+    def test_stress_reposition_events_apply_for_delayed_and_closing_cases(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v1")
+        cases_by_id = {case["case_id"]: case for case in case_set["cases"]}
+
+        for case_id, step_idx in [
+            ("delayed_overtake_gap_001", 6),
+            ("closing_rear_lane_change_001", 4),
+        ]:
+            env = gym.make("highway-fast-v0", render_mode="rgb_array")
+            try:
+                env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
+                env.reset(seed=int(cases_by_id[case_id]["seed"]))
+                apply_highway_scenario_spec(env, cases_by_id[case_id])
+
+                meta = apply_highway_scenario_events(
+                    env,
+                    cases_by_id[case_id],
+                    step_idx=step_idx,
+                    applied_event_ids=set(),
+                )
+
+                self.assertTrue(meta["benchmark_events_applied"], case_id)
+            finally:
+                env.close()
+
+    def test_highway_scenario_events_reject_invalid_event_specs(self):
+        with self.assertRaisesRegex(ValueError, "duplicate event id"):
+            normalize_scenario_spec(
+                {
+                    "vehicles": [{"id": "lead", "role": "lead", "x_offset_m": 40, "speed_mps": 20}],
+                    "events": [
+                        {"id": "dup", "step": 1, "type": "set_speed", "vehicle_id": "lead", "speed_mps": 18},
+                        {"id": "dup", "step": 2, "type": "set_speed", "vehicle_id": "lead", "speed_mps": 19},
+                    ],
+                }
+            )
+
+    def test_action_trace_records_benchmark_event_metadata(self):
+        trace = _decision_trace_item(
+            step_idx=3,
+            action_id=4,
+            response_text="Response to user:#### 4",
+            decision_meta={
+                "original_selected_action": 1,
+                "selected_action": 4,
+                "benchmark_events_applied": True,
+                "benchmark_event_ids": ["cut_in"],
+                "benchmark_event_types": ["reposition_vehicle"],
+                "benchmark_event_step": 3,
+            },
+        )
+
+        self.assertTrue(trace["benchmark_events_applied"])
+        self.assertEqual(trace["benchmark_event_ids"], ["cut_in"])
+        self.assertEqual(trace["benchmark_event_types"], ["reposition_vehicle"])
+        self.assertEqual(trace["final_action_id"], 4)
+        with self.assertRaisesRegex(ValueError, "references unknown vehicle"):
+            normalize_scenario_spec(
+                {
+                    "vehicles": [{"id": "lead", "role": "lead", "x_offset_m": 40, "speed_mps": 20}],
+                    "events": [
+                        {"id": "bad_ref", "step": 1, "type": "set_speed", "vehicle_id": "missing", "speed_mps": 18}
+                    ],
+                }
+            )
+
+    def test_dilu_highway_reactive_case_set_validates_and_uses_stop_capable_speeds(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_v1")
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        config_path = os.path.join(repo_root, "config.example.yaml")
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        bundle = resolve_simulation_env_bundle(
+            config,
+            show_trajectories=False,
+            render_agent=False,
+            env_id_override=case_set["target_env_id"],
+            native_env_defaults_override=True,
+            env_config_overrides=case_set["defaults"]["env_overrides"],
+            require_discrete_meta_action=True,
+        )
+        result = validate_benchmark_case_set(
+            case_set,
+            bundle["env_config_map"],
+            bundle["env_id"],
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["summary"]["total_cases"], 60)
+        self.assertEqual(sorted(case_set["categories"]), [
+            "blocked_lane_patience",
+            "dense_traffic_flow",
+            "free_flow_cruise",
+            "lane_discipline",
+            "post_brake_recovery",
+            "slow_lead_overtake",
+        ])
+        self.assertEqual(
+            list(bundle["env_config_snapshot"]["action"]["target_speeds"]),
+            [0, 5, 10, 15, 20, 25, 30],
+        )
+
+    def test_dilu_highway_reactive_action_target_speed_cli_override_still_wins(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_v1")
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        config_path = os.path.join(repo_root, "config.example.yaml")
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+
+        bundle = resolve_simulation_env_bundle(
+            config,
+            show_trajectories=False,
+            render_agent=False,
+            env_id_override=case_set["target_env_id"],
+            native_env_defaults_override=True,
+            env_config_overrides=case_set["defaults"]["env_overrides"],
+            action_target_speeds_override="20,25,30",
+            require_discrete_meta_action=True,
+        )
+
+        self.assertEqual(list(bundle["env_config_snapshot"]["action"]["target_speeds"]), [20, 25, 30])
+
+    def test_dilu_highway_reactive_stress_case_set_validates(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v1")
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        config_path = os.path.join(repo_root, "config.example.yaml")
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        bundle = resolve_simulation_env_bundle(
+            config,
+            show_trajectories=False,
+            render_agent=False,
+            env_id_override=case_set["target_env_id"],
+            native_env_defaults_override=True,
+            env_config_overrides=case_set["defaults"]["env_overrides"],
+            require_discrete_meta_action=True,
+        )
+        result = validate_benchmark_case_set(
+            case_set,
+            bundle["env_config_map"],
+            bundle["env_id"],
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["summary"]["total_cases"], 80)
+        self.assertEqual(len(case_set["categories"]), 8)
+        self.assertEqual(
+            list(bundle["env_config_snapshot"]["action"]["target_speeds"]),
+            [0, 5, 10, 15, 20, 25, 30],
+        )
+        self.assertTrue(result["summary"]["scheduled_event_validation_enabled"])
+        self.assertEqual(result["summary"]["scheduled_event_validated_case_count"], 80)
+
+    def test_benchmark_validation_checks_scheduled_events(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v1")
+        bad_case = copy.deepcopy(case_set["cases"][0])
+        bad_case["case_id"] = "bad_scheduled_event_case"
+        bad_case["scenario_spec"]["events"] = [
+            {
+                "id": "bad_lane",
+                "step": 2,
+                "type": "reposition_vehicle",
+                "vehicle_id": bad_case["scenario_spec"]["vehicles"][0]["id"],
+                "lane_rank": 99,
+                "x_offset_m": 20.0,
+            }
+        ]
+        custom_case_set = {
+            "benchmark_name": "bad_scheduled_event_suite",
+            "target_env_id": "highway-fast-v0",
+            "cases": [bad_case],
+        }
+
+        result = validate_benchmark_case_set(
+            custom_case_set,
+            self.env_bundle["env_config_map"],
+            self.env_bundle["env_id"],
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["summary"]["scheduled_event_validated_case_count"], 1)
+        self.assertTrue(
+            any("scheduled_event_validation_error" in reason for reason in result["invalid_cases"][0]["reasons"])
+        )
 
     def test_step_metrics_detect_stop_and_near_stop_independently_from_low_speed_blocking(self):
         ego = _DummyVehicle(lane_rank=1, speed=0.1, x=0.0)
@@ -316,6 +680,574 @@ class TaskBenchmarkTests(unittest.TestCase):
         ego.position[0] = 65.0
         evaluator.update(env, 2, {"front_gap_m": None, "ttc_sec": 5.0}, crashed=False)
         self.assertTrue(evaluator.task_completed)
+
+    def test_safe_overtake_tracks_latency_and_requires_no_unsafe_attempts(self):
+        ego = _DummyVehicle(lane_rank=1, speed=25.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=28.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        case = {
+            "case_id": "safe_overtake_test",
+            "category": "slow_lead_overtake",
+            "instruction": "overtake test",
+            "time_limit_sec": 16,
+            "success_criteria": {
+                "type": "safe_overtake",
+                "direction": "left",
+                "pass_margin_m": 8.0,
+                "min_final_speed_mps": 22.0,
+                "hold_steps": 2,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+        ego.lane_index = ("a", "b", 0)
+        ego.position[1] = 0.0
+        ego.position[0] = 40.0
+        evaluator.update(
+            env,
+            1,
+            {"front_gap_m": None, "ttc_sec": 5.0},
+            crashed=False,
+            action_context={"final_action_id": 0},
+        )
+        self.assertFalse(evaluator.task_completed)
+        ego.position[0] = 42.0
+        evaluator.update(
+            env,
+            2,
+            {"front_gap_m": None, "ttc_sec": 5.0},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+
+        self.assertTrue(result["task_completed"])
+        self.assertEqual(result["benchmark_overtake_latency_steps"], 1)
+        self.assertEqual(result["benchmark_unsafe_lane_change_attempts"], 0)
+
+    def test_safe_overtake_counts_missed_open_target_lane_opportunity(self):
+        ego = _DummyVehicle(lane_rank=1, speed=25.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=40.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        case = {
+            "case_id": "safe_overtake_missed_opportunity_test",
+            "category": "slow_lead_overtake",
+            "instruction": "overtake test",
+            "time_limit_sec": 16,
+            "success_criteria": {
+                "type": "safe_overtake",
+                "direction": "left",
+                "pass_margin_m": 8.0,
+                "min_final_speed_mps": 22.0,
+                "hold_steps": 2,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+
+        evaluator.update(
+            env,
+            1,
+            {"front_gap_m": 40.0, "ttc_sec": 5.0},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+
+        self.assertEqual(result["benchmark_safe_overtake_opportunity_steps"], 1)
+        self.assertEqual(result["benchmark_missed_overtake_opportunity_steps"], 1)
+        self.assertEqual(result["benchmark_first_safe_overtake_opportunity_step"], 1)
+        self.assertIsNone(result["benchmark_first_lane_change_attempt_step"])
+        self.assertEqual(result["benchmark_missed_overtake_opportunity_rate"], 1.0)
+
+    def test_safe_overtake_records_lane_change_attempt_without_missed_opportunity(self):
+        ego = _DummyVehicle(lane_rank=1, speed=25.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=40.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        case = {
+            "case_id": "safe_overtake_attempt_test",
+            "category": "slow_lead_overtake",
+            "instruction": "overtake test",
+            "time_limit_sec": 16,
+            "success_criteria": {
+                "type": "safe_overtake",
+                "direction": "left",
+                "pass_margin_m": 8.0,
+                "min_final_speed_mps": 22.0,
+                "hold_steps": 2,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+
+        evaluator.update(
+            env,
+            1,
+            {"front_gap_m": 40.0, "ttc_sec": 5.0},
+            crashed=False,
+            action_context={"final_action_id": 0, "lane_change_shield_applied": True},
+        )
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+
+        self.assertEqual(result["benchmark_safe_overtake_opportunity_steps"], 1)
+        self.assertEqual(result["benchmark_missed_overtake_opportunity_steps"], 0)
+        self.assertEqual(result["benchmark_first_lane_change_attempt_step"], 1)
+        self.assertEqual(result["benchmark_unsafe_lane_change_attempts"], 1)
+
+    def test_benchmark_summary_aggregates_missed_overtake_opportunities(self):
+        episodes = [
+            {
+                "category": "slow_lead_overtake",
+                "task_completed": False,
+                "ttc_score": 1.0,
+                "speed_variance_score": 1.0,
+                "time_efficiency_score": 0.0,
+                "overall_score": 0.8,
+                "driving_score": 0.0,
+                "benchmark_failure_reason": "task_not_completed",
+                "benchmark_success_criteria": {"type": "safe_overtake"},
+                "benchmark_safe_overtake_opportunity_steps": 5,
+                "benchmark_missed_overtake_opportunity_steps": 3,
+            },
+            {
+                "category": "slow_lead_overtake",
+                "task_completed": True,
+                "ttc_score": 1.0,
+                "speed_variance_score": 0.9,
+                "time_efficiency_score": 0.8,
+                "overall_score": 0.9,
+                "driving_score": 0.9,
+                "benchmark_failure_reason": "",
+                "benchmark_success_criteria": {"type": "safe_overtake"},
+                "benchmark_safe_overtake_opportunity_steps": 5,
+                "benchmark_missed_overtake_opportunity_steps": 1,
+            },
+        ]
+
+        summary = summarize_benchmark_episodes(episodes)
+
+        self.assertEqual(summary["safe_overtake_opportunity_steps_total"], 10)
+        self.assertEqual(summary["missed_overtake_opportunity_steps_total"], 4)
+        self.assertEqual(summary["missed_overtake_opportunity_rate"], 0.4)
+        category = summary["benchmark_by_category"]["slow_lead_overtake"]
+        self.assertEqual(category["safe_overtake_opportunity_steps_total"], 10)
+        self.assertEqual(category["missed_overtake_opportunity_steps_total"], 4)
+        self.assertEqual(category["missed_overtake_opportunity_rate"], 0.4)
+
+    def test_benchmark_summary_exposes_stress_success_rates(self):
+        episodes = [
+            {
+                "category": "cut_in_brake_response",
+                "task_completed": True,
+                "ttc_score": 1.0,
+                "speed_variance_score": 1.0,
+                "time_efficiency_score": 0.8,
+                "overall_score": 0.9,
+                "driving_score": 0.9,
+                "benchmark_success_criteria": {"type": "cut_in_brake_response"},
+            },
+            {
+                "category": "cut_in_brake_response",
+                "task_completed": False,
+                "ttc_score": 0.6,
+                "speed_variance_score": 0.8,
+                "time_efficiency_score": 0.0,
+                "overall_score": 0.5,
+                "driving_score": 0.0,
+                "benchmark_failure_reason": "task_not_completed",
+                "benchmark_success_criteria": {"type": "cut_in_brake_response"},
+            },
+            {
+                "category": "dense_dynamic_flow",
+                "task_completed": True,
+                "ttc_score": 1.0,
+                "speed_variance_score": 0.9,
+                "time_efficiency_score": 0.8,
+                "overall_score": 0.9,
+                "driving_score": 0.9,
+                "benchmark_success_criteria": {"type": "dense_dynamic_flow"},
+            },
+        ]
+
+        summary = summarize_benchmark_episodes(episodes)
+
+        self.assertEqual(summary["cut_in_response_success_rate"], 0.5)
+        self.assertEqual(summary["dynamic_dense_flow_success_rate"], 1.0)
+
+    def test_blocked_lane_patience_fails_if_lane_change_shield_fires(self):
+        ego = _DummyVehicle(lane_rank=1, speed=22.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=28.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        case = {
+            "case_id": "blocked_patience_test",
+            "category": "blocked_lane_patience",
+            "instruction": "patience test",
+            "time_limit_sec": 12,
+            "success_criteria": {
+                "type": "blocked_lane_patience",
+                "min_survival_steps": 2,
+                "min_speed_mps": 18.0,
+                "max_unsafe_lane_change_attempts": 0,
+                "hold_steps": 1,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+        evaluator.update(
+            env,
+            1,
+            {"front_gap_m": 28.0, "ttc_sec": 5.0},
+            crashed=False,
+            action_context={"final_action_id": 1, "lane_change_shield_applied": True},
+        )
+        evaluator.update(
+            env,
+            2,
+            {"front_gap_m": 30.0, "ttc_sec": 5.0},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+        self.assertFalse(result["task_completed"])
+        self.assertEqual(result["benchmark_unsafe_lane_change_attempts"], 1)
+        self.assertFalse(result["benchmark_criteria_status"]["unsafe_attempt_satisfied"])
+
+    def test_post_brake_recovery_completes_after_clear_front_gap_and_speed_recovery(self):
+        ego = _DummyVehicle(lane_rank=1, speed=15.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=15.0, x=16.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        case = {
+            "case_id": "post_brake_recovery_test",
+            "category": "post_brake_recovery",
+            "instruction": "recovery test",
+            "time_limit_sec": 12,
+            "success_criteria": {
+                "type": "post_brake_recovery",
+                "clear_front_gap_m": 25.0,
+                "clear_front_ttc_sec": 4.0,
+                "min_recovery_speed_mps": 22.0,
+                "hold_steps": 1,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+        evaluator.update(env, 1, {"front_gap_m": 16.0, "ttc_sec": 2.0}, crashed=False)
+        ego.speed = 23.0
+        evaluator.update(env, 2, {"front_gap_m": None, "ttc_sec": None}, crashed=False)
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+
+        self.assertTrue(result["task_completed"])
+        self.assertEqual(result["benchmark_recovery_clear_step"], 2)
+        self.assertEqual(result["benchmark_recovery_time_steps"], 0)
+
+    def test_flow_dense_and_lane_discipline_reactive_criteria(self):
+        ego = _DummyVehicle(lane_rank=1, speed=24.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 2, 3, 4])
+
+        flow_case = {
+            "case_id": "flow_case",
+            "category": "free_flow_cruise",
+            "instruction": "flow test",
+            "time_limit_sec": 10,
+            "success_criteria": {
+                "type": "flow_cruise",
+                "min_speed_mps": 20.0,
+                "max_speed_mps": 30.0,
+                "min_survival_steps": 2,
+                "max_lane_changes": 0,
+                "hold_steps": 1,
+            },
+        }
+        flow_eval = BenchmarkEpisodeEvaluator(flow_case, env)
+        flow_eval.update(env, 1, {"front_gap_m": None, "ttc_sec": None}, crashed=False, action_context={"final_action_id": 1})
+        flow_eval.update(env, 2, {"front_gap_m": None, "ttc_sec": None}, crashed=False, action_context={"final_action_id": 1})
+        self.assertTrue(flow_eval.finalize(False, "completed")["task_completed"])
+
+        dense_case = {
+            "case_id": "dense_case",
+            "category": "dense_traffic_flow",
+            "instruction": "dense test",
+            "time_limit_sec": 10,
+            "success_criteria": {
+                "type": "dense_flow",
+                "min_survival_steps": 2,
+                "min_avg_speed_mps": 18.0,
+                "max_ttc_danger_rate": 0.5,
+                "max_headway_violation_rate": 0.5,
+                "max_flap_accel_decel_count": 0,
+                "hold_steps": 1,
+            },
+        }
+        dense_eval = BenchmarkEpisodeEvaluator(dense_case, env)
+        dense_eval.update(env, 1, {"front_gap_m": 40.0, "ttc_sec": 5.0}, crashed=False, action_context={"final_action_id": 1})
+        dense_eval.update(env, 2, {"front_gap_m": 42.0, "ttc_sec": 5.0}, crashed=False, action_context={"final_action_id": 1})
+        self.assertTrue(dense_eval.finalize(False, "completed")["task_completed"])
+
+        lane_case = {
+            "case_id": "lane_case",
+            "category": "lane_discipline",
+            "instruction": "lane discipline test",
+            "time_limit_sec": 10,
+            "success_criteria": {
+                "type": "lane_discipline",
+                "direction": "right",
+                "expect_move": True,
+                "min_speed_mps": 20.0,
+                "hold_steps": 1,
+            },
+        }
+        lane_eval = BenchmarkEpisodeEvaluator(lane_case, env)
+        ego.lane_index = ("a", "b", 2)
+        lane_eval.update(env, 1, {"front_gap_m": None, "ttc_sec": None}, crashed=False, action_context={"final_action_id": 2})
+        self.assertTrue(lane_eval.finalize(False, "completed")["task_completed"])
+
+    def test_stress_cut_in_and_false_alarm_criteria(self):
+        ego = _DummyVehicle(lane_rank=1, speed=22.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 2, 3, 4])
+        cut_in_case = {
+            "case_id": "cut_in_test",
+            "category": "cut_in_brake_response",
+            "instruction": "cut in test",
+            "time_limit_sec": 20,
+            "success_criteria": {
+                "type": "cut_in_brake_response",
+                "min_survival_steps": 2,
+                "max_ttc_danger_rate": 0.5,
+                "max_headway_violation_rate": 0.5,
+                "max_flap_accel_decel_count": 1,
+                "min_avg_speed_mps": 10.0,
+                "hold_steps": 1,
+            },
+        }
+        cut_eval = BenchmarkEpisodeEvaluator(cut_in_case, env)
+        cut_eval.update(
+            env,
+            1,
+            {"front_gap_m": 20.0, "ttc_sec": 3.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={
+                "final_action_id": 4,
+                "benchmark_events_applied": True,
+                "benchmark_event_ids": ["cut_in"],
+                "benchmark_event_types": ["reposition_vehicle"],
+                "benchmark_event_step": 1,
+            },
+        )
+        cut_eval.update(
+            env,
+            2,
+            {"front_gap_m": 24.0, "ttc_sec": 4.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        self.assertTrue(cut_eval.finalize(False, "completed")["task_completed"])
+
+        false_alarm_case = {
+            "case_id": "false_alarm_test",
+            "category": "false_alarm_stability",
+            "instruction": "false alarm test",
+            "time_limit_sec": 20,
+            "success_criteria": {
+                "type": "false_alarm_stability",
+                "min_survival_steps": 2,
+                "min_speed_mps": 18.0,
+                "max_speed_mps": 30.0,
+                "min_avg_speed_mps": 18.0,
+                "max_lane_changes": 0,
+                "max_flap_accel_decel_count": 0,
+                "hold_steps": 1,
+            },
+        }
+        false_eval = BenchmarkEpisodeEvaluator(false_alarm_case, env)
+        false_eval.update(
+            env,
+            1,
+            {"front_gap_m": 80.0, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={
+                "final_action_id": 2,
+                "benchmark_events_applied": True,
+                "benchmark_event_ids": ["safe_motion"],
+                "benchmark_event_types": ["set_lane_change"],
+                "benchmark_event_step": 1,
+            },
+        )
+        false_eval.update(
+            env,
+            2,
+            {"front_gap_m": 80.0, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        result = false_eval.finalize(False, "completed")
+        self.assertFalse(result["task_completed"])
+        self.assertFalse(result["benchmark_criteria_status"]["lane_change_satisfied"])
+        self.assertEqual(result["benchmark_event_count_applied"], 1)
+
+    def test_delayed_overtake_requires_safe_pass_after_event(self):
+        ego = _DummyVehicle(lane_rank=1, speed=24.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=35.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        case = {
+            "case_id": "delayed_overtake_test",
+            "category": "delayed_overtake_gap",
+            "instruction": "delayed overtake test",
+            "time_limit_sec": 20,
+            "success_criteria": {
+                "type": "delayed_overtake_gap",
+                "direction": "left",
+                "pass_margin_m": 8.0,
+                "min_final_speed_mps": 20.0,
+                "hold_steps": 1,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+        evaluator.update(
+            env,
+            1,
+            {"front_gap_m": 35.0, "ttc_sec": 5.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 0, "lane_change_shield_applied": True},
+        )
+        ego.lane_index = ("a", "b", 0)
+        ego.position[0] = 45.0
+        evaluator.update(
+            env,
+            2,
+            {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={
+                "final_action_id": 0,
+                "benchmark_events_applied": True,
+                "benchmark_event_ids": ["gap_open"],
+                "benchmark_event_types": ["reposition_vehicle"],
+                "benchmark_event_step": 2,
+            },
+        )
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+
+        self.assertFalse(result["task_completed"])
+        self.assertEqual(result["benchmark_unsafe_lane_change_attempts"], 1)
+        self.assertFalse(result["benchmark_criteria_status"]["safety_satisfied"])
+
+    def test_merge_complete_requires_progress_speed_and_hold_steps(self):
+        ego = _DummyVehicle(lane_rank=1, speed=10.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 3, 4])
+        case = {
+            "case_id": "merge_speed_test",
+            "category": "decisive_merge",
+            "instruction": "merge test",
+            "time_limit_sec": 12,
+            "success_criteria": {
+                "type": "merge_complete",
+                "target_lane_offset": -1,
+                "hold_steps": 2,
+                "min_progress_m": 30.0,
+                "min_speed_mps": 12.0,
+                "max_speed_mps": 28.0,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+        ego.lane_index = ("a", "b", 0)
+        ego.position[0] = 35.0
+        evaluator.update(env, 1, {"front_gap_m": None, "ttc_sec": None}, crashed=False)
+        self.assertFalse(evaluator.task_completed)
+        self.assertFalse(evaluator.last_criteria_status["speed_band_satisfied"])
+
+        ego.speed = 14.0
+        evaluator.update(env, 2, {"front_gap_m": None, "ttc_sec": None}, crashed=False)
+        self.assertFalse(evaluator.task_completed)
+        evaluator.update(env, 3, {"front_gap_m": None, "ttc_sec": None}, crashed=False)
+
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+        self.assertTrue(result["task_completed"])
+        self.assertEqual(result["benchmark_completion_speed_mps"], 14.0)
+        self.assertEqual(result["benchmark_completion_progress_m"], 35.0)
+        self.assertTrue(result["benchmark_criteria_status"]["merge_progress_satisfied"])
+
+    def test_arrive_with_required_yield_fails_without_slowing(self):
+        ego = _DummyVehicle(lane_rank=1, speed=8.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[1, 3, 4])
+        case = {
+            "case_id": "yield_missing_test",
+            "category": "yield_required",
+            "instruction": "yield test",
+            "time_limit_sec": 12,
+            "success_criteria": {
+                "type": "arrive",
+                "hold_steps": 1,
+                "requires_yield": True,
+                "yield_speed_mps": 4.0,
+                "min_yield_steps": 2,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+        evaluator.update(
+            env,
+            1,
+            {"front_gap_m": None, "ttc_sec": None},
+            crashed=False,
+            info={"is_success": True},
+        )
+
+        self.assertFalse(evaluator.task_completed)
+        self.assertEqual(evaluator.yield_observed_steps, 0)
+        self.assertTrue(evaluator.last_criteria_status["arrived"])
+        self.assertFalse(evaluator.last_criteria_status["yield_satisfied"])
+
+    def test_arrive_with_required_yield_passes_after_enough_yield_steps(self):
+        ego = _DummyVehicle(lane_rank=1, speed=8.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[1, 3, 4])
+        case = {
+            "case_id": "yield_pass_test",
+            "category": "yield_required",
+            "instruction": "yield test",
+            "time_limit_sec": 12,
+            "success_criteria": {
+                "type": "arrive",
+                "hold_steps": 1,
+                "requires_yield": True,
+                "yield_speed_mps": 4.0,
+                "min_yield_steps": 2,
+            },
+        }
+        evaluator = BenchmarkEpisodeEvaluator(case, env)
+        ego.speed = 3.0
+        evaluator.update(
+            env,
+            1,
+            {"front_gap_m": None, "ttc_sec": None},
+            crashed=False,
+            info={"is_success": False},
+        )
+        evaluator.update(
+            env,
+            2,
+            {"front_gap_m": None, "ttc_sec": None},
+            crashed=False,
+            info={"is_success": True},
+        )
+
+        result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
+        self.assertTrue(result["task_completed"])
+        self.assertEqual(result["benchmark_yield_observed_steps"], 2)
+        self.assertTrue(result["benchmark_criteria_status"]["yield_satisfied"])
+
+    def test_intersection_v1_env_override_preserves_discrete_target_speeds(self):
+        bundle = resolve_simulation_env_bundle(
+            {"sim_env_id": "intersection-v1", "sim_use_native_env_defaults": True},
+            show_trajectories=False,
+            render_agent=False,
+            env_config_overrides={
+                "action": {
+                    "type": "DiscreteMetaAction",
+                    "target_speeds": [0, 5, 10, 15, 20, 25, 30],
+                }
+            },
+            require_discrete_meta_action=True,
+        )
+
+        self.assertEqual(bundle["env_id"], "intersection-v1")
+        self.assertEqual(
+            list(bundle["env_config_snapshot"]["action"]["target_speeds"]),
+            [0, 5, 10, 15, 20, 25, 30],
+        )
 
     def test_benchmark_aggregate_includes_category_breakdown_and_ci(self):
         episodes = [

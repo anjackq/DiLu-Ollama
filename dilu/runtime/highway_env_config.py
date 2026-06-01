@@ -1,3 +1,4 @@
+import copy
 from typing import Any, Dict, List, Optional
 
 import gymnasium as gym
@@ -55,6 +56,15 @@ def _derive_env_profile_label(action_target_speeds: Optional[List[float]]) -> st
     return "custom_action_target_speeds"
 
 
+def _deep_update(base: Dict[str, Any], updates: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    for key, value in (updates or {}).items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_update(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+    return base
+
+
 def build_highway_env_config(
     config: Dict[str, Any],
     *,
@@ -66,7 +76,13 @@ def build_highway_env_config(
     resolved_lanes_count = int(config.get("lanes_count", lanes_count))
     resolved_ego_spacing = float(config.get("ego_spacing", 4))
     resolved_scaling = float(config.get("scaling", 5))
-    resolved_target_speeds = _resolve_action_target_speeds(config, action_target_speeds_override)
+    explicit_target_speeds = (
+        _normalize_action_target_speeds(action_target_speeds_override)
+        if action_target_speeds_override is not None
+        else None
+    )
+    config_target_speeds = _resolve_action_target_speeds(config)
+    resolved_target_speeds = explicit_target_speeds if explicit_target_speeds is not None else config_target_speeds
 
     env_cfg: Dict[str, Any] = {
         "observation": {
@@ -194,10 +210,12 @@ def build_native_highway_env_config(
     render_agent: bool,
     lanes_count: int = 4,
     action_target_speeds_override: Optional[Any] = None,
+    env_config_overrides: Optional[Dict[str, Any]] = None,
     require_discrete_meta_action: bool = False,
 ) -> Dict[str, Any]:
     probe = gym.make(env_id)
     env_cfg = dict(probe.unwrapped.config)
+    _deep_update(env_cfg, env_config_overrides)
     action_cfg_probe = dict(env_cfg.get("action") or {})
     if require_discrete_meta_action:
         action_type_name = str(action_cfg_probe.get("type") or "").strip()
@@ -222,15 +240,27 @@ def build_native_highway_env_config(
     env_cfg["render_agent"] = bool(render_agent)
     if "other_vehicle_type" in config and config["other_vehicle_type"] is not None:
         env_cfg["other_vehicles_type"] = config["other_vehicle_type"]
-    resolved_target_speeds = _resolve_action_target_speeds(config, action_target_speeds_override)
+    explicit_target_speeds = (
+        _normalize_action_target_speeds(action_target_speeds_override)
+        if action_target_speeds_override is not None
+        else None
+    )
+    config_target_speeds = _resolve_action_target_speeds(config)
 
     if isinstance(env_cfg.get("observation"), dict):
         env_cfg["observation"] = dict(env_cfg["observation"])
         env_cfg["observation"]["vehicles_count"] = vehicle_count
     action_cfg = dict(env_cfg.get("action") or {})
     if action_cfg.get("type") == "DiscreteMetaAction":
+        benchmark_target_speeds = action_cfg.get("target_speeds")
         action_cfg["target_speeds"] = list(
-            resolved_target_speeds if resolved_target_speeds is not None else DEFAULT_NATIVE_TARGET_SPEEDS
+            explicit_target_speeds
+            if explicit_target_speeds is not None
+            else benchmark_target_speeds
+            if benchmark_target_speeds is not None
+            else config_target_speeds
+            if config_target_speeds is not None
+            else DEFAULT_NATIVE_TARGET_SPEEDS
         )
         env_cfg["action"] = action_cfg
 
@@ -265,6 +295,7 @@ def resolve_simulation_env_bundle(
     native_env_defaults_override: Optional[bool] = None,
     lanes_count: int = 4,
     action_target_speeds_override: Optional[Any] = None,
+    env_config_overrides: Optional[Dict[str, Any]] = None,
     require_discrete_meta_action: bool = False,
 ) -> Dict[str, Any]:
     mode = resolve_simulation_env_mode(
@@ -283,6 +314,7 @@ def resolve_simulation_env_bundle(
             render_agent=render_agent,
             lanes_count=lanes_count,
             action_target_speeds_override=action_target_speeds_override,
+            env_config_overrides=env_config_overrides,
             require_discrete_meta_action=require_discrete_meta_action,
         )
         resolved_action_target_speeds = _normalize_action_target_speeds(
@@ -309,6 +341,8 @@ def resolve_simulation_env_bundle(
         action_target_speeds_override=action_target_speeds_override,
     )
     requested_env_id = str(mode["env_id"])
+    if requested_env_id in env_config_map:
+        _deep_update(env_config_map[requested_env_id], env_config_overrides)
     if requested_env_id in env_config_map:
         env_id = requested_env_id
     else:

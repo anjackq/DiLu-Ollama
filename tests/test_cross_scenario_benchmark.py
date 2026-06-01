@@ -10,9 +10,11 @@ from dilu.runtime.task_benchmark import (
     BenchmarkEpisodeEvaluator,
     benchmark_metric_config,
     load_benchmark_case_set,
+    validate_benchmark_case_set,
     validate_benchmark_case,
 )
 from dilu.scenario.envScenario import EnvScenario
+from evaluate_models_ollama import _benchmark_default_env_overrides, _resolve_benchmark_env_id_override
 
 
 def _write_case_set(path: str, payload: dict) -> None:
@@ -20,25 +22,37 @@ def _write_case_set(path: str, payload: dict) -> None:
         json.dump(payload, handle, indent=2)
 
 
+def _make_discrete_intersection_v1(seed: int = 123):
+    env = gym.make("intersection-v1", render_mode="rgb_array")
+    env.unwrapped.configure(
+        {
+            "action": {
+                "type": "DiscreteMetaAction",
+                "target_speeds": [0, 5, 10, 15, 20, 25, 30],
+            }
+        }
+    )
+    env.reset(seed=seed)
+    return env
+
+
 class CrossScenarioBenchmarkTests(unittest.TestCase):
     def test_intersection_available_actions_follow_env_action_semantics(self):
-        env = gym.make("intersection-v0", render_mode="rgb_array")
+        env = _make_discrete_intersection_v1(seed=123)
         try:
-            env.reset(seed=123)
-            scenario = EnvScenario(env, "intersection-v0", 123, enable_db=False)
+            scenario = EnvScenario(env, "intersection-v1", 123, enable_db=False)
             desc = scenario.availableActionsDescription()
         finally:
             env.close()
 
         self.assertIn("IDLE - remain in the current lane with current speed Action_id: 1", desc)
-        self.assertIn("Deceleration - decelerate the vehicle Action_id: 0", desc)
+        self.assertIn("Deceleration - decelerate the vehicle Action_id: 4", desc)
         self.assertNotIn("Turn-left", desc)
 
     def test_intersection_description_mentions_intersection_context(self):
-        env = gym.make("intersection-v0", render_mode="rgb_array")
+        env = _make_discrete_intersection_v1(seed=123)
         try:
-            env.reset(seed=123)
-            scenario = EnvScenario(env, "intersection-v0", 123, enable_db=False)
+            scenario = EnvScenario(env, "intersection-v1", 123, enable_db=False)
             desc = scenario.describe(0)
         finally:
             env.close()
@@ -96,9 +110,8 @@ class CrossScenarioBenchmarkTests(unittest.TestCase):
         self.assertEqual(reasons, [])
 
     def test_benchmark_evaluator_supports_arrive_for_intersection(self):
-        env = gym.make("intersection-v0", render_mode="rgb_array")
+        env = _make_discrete_intersection_v1(seed=123)
         try:
-            env.reset(seed=123)
             case = {
                 "case_id": "arrive_case",
                 "category": "clear_cross",
@@ -138,6 +151,27 @@ class CrossScenarioBenchmarkTests(unittest.TestCase):
                 require_discrete_meta_action=True,
             )
 
+    def test_intersection_v1_benchmark_defaults_enable_discrete_actions(self):
+        case_set = load_benchmark_case_set("lampilot_intersection_v1")
+        bundle = resolve_simulation_env_bundle(
+            {"sim_env_id": "intersection-v1", "sim_use_native_env_defaults": True},
+            show_trajectories=False,
+            render_agent=False,
+            env_config_overrides=_benchmark_default_env_overrides(case_set),
+            require_discrete_meta_action=True,
+        )
+        env = gym.make("intersection-v1", render_mode="rgb_array")
+        try:
+            env.unwrapped.configure(bundle["env_config_snapshot"])
+            env.reset(seed=101)
+            available_actions = env.unwrapped.get_available_actions()
+        finally:
+            env.close()
+
+        self.assertEqual(bundle["env_id"], "intersection-v1")
+        self.assertTrue(available_actions)
+        self.assertIn(1, available_actions)
+
     def test_non_highway_metric_config_uses_legacy_driving_score_headline(self):
         merge_metrics = benchmark_metric_config("merge")
         intersection_metrics = benchmark_metric_config("intersection")
@@ -148,14 +182,77 @@ class CrossScenarioBenchmarkTests(unittest.TestCase):
     def test_cross_scenario_case_sets_exist_and_expose_metadata(self):
         merge_case_set = load_benchmark_case_set("benchmarks/lampilot_merge_v1/cases.json")
         intersection_case_set = load_benchmark_case_set("benchmarks/lampilot_intersection_v1/cases.json")
+        stress_case_set = load_benchmark_case_set("benchmarks/dilu_highway_reactive_stress_v1/cases.json")
 
         self.assertEqual(merge_case_set["target_env_id"], "merge-v0")
         self.assertEqual(merge_case_set["scenario_family"], "merge")
-        self.assertTrue(merge_case_set["cases"])
+        self.assertEqual(len(merge_case_set["cases"]), 24)
+        self.assertEqual(len(merge_case_set["categories"]), 4)
 
-        self.assertEqual(intersection_case_set["target_env_id"], "intersection-v0")
+        self.assertEqual(intersection_case_set["target_env_id"], "intersection-v1")
         self.assertEqual(intersection_case_set["scenario_family"], "intersection")
-        self.assertTrue(intersection_case_set["cases"])
+        self.assertEqual(len(intersection_case_set["cases"]), 24)
+        self.assertEqual(len(intersection_case_set["categories"]), 4)
+
+        self.assertEqual(stress_case_set["target_env_id"], "highway-fast-v0")
+        self.assertEqual(stress_case_set["scenario_family"], "highway")
+        self.assertEqual(len(stress_case_set["cases"]), 80)
+        self.assertEqual(len(stress_case_set["categories"]), 8)
+
+    def test_revised_merge_and_intersection_case_sets_validate(self):
+        merge_case_set = load_benchmark_case_set("lampilot_merge_v1")
+        merge_bundle = resolve_simulation_env_bundle(
+            {"sim_env_id": "merge-v0", "sim_use_native_env_defaults": True},
+            show_trajectories=False,
+            render_agent=False,
+            require_discrete_meta_action=True,
+        )
+        merge_result = validate_benchmark_case_set(
+            merge_case_set,
+            merge_bundle["env_config_map"],
+            merge_bundle["env_id"],
+        )
+
+        intersection_case_set = load_benchmark_case_set("lampilot_intersection_v1")
+        intersection_bundle = resolve_simulation_env_bundle(
+            {"sim_env_id": "intersection-v1", "sim_use_native_env_defaults": True},
+            show_trajectories=False,
+            render_agent=False,
+            env_config_overrides=_benchmark_default_env_overrides(intersection_case_set),
+            require_discrete_meta_action=True,
+        )
+        intersection_result = validate_benchmark_case_set(
+            intersection_case_set,
+            intersection_bundle["env_config_map"],
+            intersection_bundle["env_id"],
+        )
+
+        self.assertTrue(merge_result["passed"], merge_result)
+        self.assertEqual(merge_result["summary"]["total_cases"], 24)
+        self.assertTrue(intersection_result["passed"], intersection_result)
+        self.assertEqual(intersection_result["summary"]["total_cases"], 24)
+
+    def test_benchmark_target_env_is_used_when_cli_env_is_absent(self):
+        case_set = load_benchmark_case_set("lampilot_intersection_v1")
+
+        self.assertEqual(_resolve_benchmark_env_id_override(None, case_set), "intersection-v1")
+        self.assertEqual(_resolve_benchmark_env_id_override("merge-v0", case_set), "merge-v0")
+        self.assertEqual(
+            _benchmark_default_env_overrides(case_set)["action"]["type"],
+            "DiscreteMetaAction",
+        )
+
+    def test_explicit_mismatched_env_id_fails_clearly(self):
+        case_set = load_benchmark_case_set("lampilot_intersection_v1")
+        merge_bundle = resolve_simulation_env_bundle(
+            {"sim_env_id": "merge-v0", "sim_use_native_env_defaults": True},
+            show_trajectories=False,
+            render_agent=False,
+            require_discrete_meta_action=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "targets env_id='intersection-v1'.*resolved env_id='merge-v0'"):
+            validate_benchmark_case_set(case_set, merge_bundle["env_config_map"], merge_bundle["env_id"])
 
 
 if __name__ == "__main__":

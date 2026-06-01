@@ -1,3 +1,5 @@
+# Canonical 100-seed simulation bank used by evaluate_models_ollama.py.
+# Keep the active YAML configs lean; use --seed-count N to run a prefix.
 DEFAULT_DILU_SEEDS = [
     4091, 2125, 9293, 8030, 1620, 6465, 5931, 5026, 5516, 5434,
     4568, 1688, 7654, 5169, 4259, 2939, 8339, 1411, 1900, 6406,

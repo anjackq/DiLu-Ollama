@@ -8,8 +8,25 @@ OPENAI_API_TYPE: 'ollama' # openai | azure | ollama | gemini
 
 # OpenAI settings
 OPENAI_KEY: ''
+OPENAI_BASE_URL: null
 OPENAI_CHAT_MODEL: null
 OPENAI_REFLECTION_MODEL: null
+
+# OpenRouter via OpenAI-compatible chat completions:
+# 1. Keep OPENAI_API_TYPE: 'openai'
+# 2. Set OPENAI_BASE_URL to https://openrouter.ai/api/v1
+# 3. Put the API key in OPENAI_KEY, OPENAI_API_KEY, or env OPENROUTER_API_KEY.
+# 4. Optional attribution headers are passed to OpenRouter when set.
+# Example:
+# OPENAI_API_TYPE: 'openai'
+# OPENAI_CHAT_MODEL: 'openai/gpt-5.2'
+# OPENAI_REFLECTION_MODEL: 'openai/gpt-5.2'
+# OPENAI_BASE_URL: 'https://openrouter.ai/api/v1'
+# OPENAI_KEY: ''
+# OPENROUTER_HTTP_REFERER: 'https://your-project.example'
+# OPENROUTER_APP_TITLE: 'DiLu-Ollama'
+OPENROUTER_HTTP_REFERER: null
+OPENROUTER_APP_TITLE: null
 
 # Azure OpenAI settings
 AZURE_API_BASE: null # https://xxxxxxx.openai.azure.com/
@@ -31,7 +48,10 @@ OLLAMA_EMBED_MODEL: 'qwen3-embedding:8b'
 OLLAMA_API_KEY: 'ollama'
 # Allowed: auto | think | no_think
 OLLAMA_THINK_MODE: 'auto'
-OLLAMA_USE_NATIVE_CHAT: false
+# Allowed: auto | true | false. `auto` keeps normal models on OpenAI-compatible
+# /v1, but uses native /api/chat for thinking-capable families when
+# OLLAMA_THINK_MODE is explicitly think/no_think.
+OLLAMA_USE_NATIVE_CHAT: auto
 OLLAMA_NATIVE_CHAT_TIMEOUT_SEC: 60
 
 ############ DiLu settings ############
@@ -42,6 +62,9 @@ reflection_add_every_n: 5
 few_shot_num: 1
 episodes_num: 5
 memory_path: 'memories/20_mem'
+# Default 100-seed simulation bank lives in dilu/runtime/constants.py.
+# Use evaluate_models_ollama.py --seed-count N to run the first N seeds.
+# Optional override: eval_seed_bank: [1, 2, 3]
 
 ############ Structured results ############
 results_root: 'results/'
@@ -91,6 +114,28 @@ metrics_blocking_front_ttc_safe_sec: 4.0
 metrics_stop_threshold_mps: 0.5
 metrics_near_stop_threshold_mps: 2.0
 
+# Split scoring is additive in reports under policy `dilu_split_score_v1`.
+# It reports driving behavior and LLM driver quality separately:
+# - driving_score_behavior_v1 = safety/efficiency/comfort after shields
+# - llm_driver_score_v1 = contract/reliability/validity/latency/resource behavior
+# - dilu_joint_score_v1 = secondary geometric-mean deployment readiness
+# Future threshold overrides can live here; code defaults are used for now.
+# split_scoring_policy_version: dilu_split_score_v1
+# split_scoring_primary_driving_metric: driving_score_behavior_v1
+# split_scoring_primary_llm_metric: llm_driver_score_v1
+# split_scoring_secondary_joint_metric: dilu_joint_score_v1
+
+# Optional scientific-reporting claim gates. These feed the additive
+# primary_metric_spec in eval reports; leave unset to use code defaults.
+# scientific_min_claim_episodes: 30
+# scientific_max_decision_timeout_rate: 0.05
+# scientific_max_fallback_action_rate: 0.05
+# scientific_min_response_strict_format_rate: 0.80
+# scientific_max_ttc_danger_rate: 0.0
+# scientific_max_headway_violation_rate: 0.0
+# scientific_max_rear_ttc_danger_rate: 0.0
+# scientific_max_rear_headway_violation_rate: 0.0
+
 ############ Evaluation / runtime guardrails ############
 quiet_mode: false
 eval_quiet_mode: null
@@ -105,9 +150,25 @@ runtime_progress_reply_mode: null
 
 eval_decision_timeout_sec: 60
 runtime_decision_timeout_sec: 60
+# Provider-neutral cap for model-visible output. Older configs can keep using
+# eval_decision_max_output_tokens; runtime_max_output_tokens controls the
+# short action-decision contract when set.
+max_output_tokens: 512
+runtime_max_output_tokens: 256
 eval_decision_max_output_tokens: 512
 eval_disable_streaming: true
 eval_disable_checker_llm: true
+
+# Optional three-layer parser layer 3. Keep disabled for strict scientific
+# compliance runs unless you explicitly want model-assisted intent decoding
+# after numeric and deterministic semantic recovery both fail.
+eval_enable_intent_resolver: false
+intent_resolver_api_type: ollama
+intent_resolver_model: 'qwen3.2:3b'
+intent_resolver_timeout_sec: 5
+intent_resolver_max_output_tokens: 32
+intent_resolver_abstain_on_ambiguous: true
+
 eval_performance_mode: default # default | fast
 eval_ollama_preflight_enabled: true
 eval_ollama_preflight_timeout_sec: 15
@@ -115,12 +176,18 @@ eval_measurement_hard_preflight_policy: skip_model # warn_run | skip_model | abo
 eval_slow_decision_threshold_sec: 5.0
 runtime_slow_decision_threshold_sec: 5.0
 eval_save_run_artifacts: false
+eval_record_video: false
 eval_run_id: null
 
 ############ Eval timeout ladder defaults ############
+# Use `disabled` to keep eval_decision_timeout_sec fixed with no ladder/adaptive
+# updates. Remote OpenAI-compatible/Gemini/Azure runs can use first-response
+# warmup to avoid classifying a cold first call as steady-state latency.
 eval_timeout_policy_mode: laddered
 eval_timeout_ladder_sec: [15, 20, 30]
 eval_timeout_recovery_successes: 3
+eval_first_response_warmup_timeout_sec: 60
+eval_first_response_warmup_max_failures: 2
 eval_timeout_early_stop_enabled: true
 eval_timeout_early_stop_min_decisions: 5
 eval_timeout_early_stop_consecutive_timeout_fallbacks: 3

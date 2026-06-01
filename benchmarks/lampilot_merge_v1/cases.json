@@ -1,7 +1,7 @@
 {
   "benchmark_name": "lampilot_merge_v1",
-  "version": "1.0",
-  "description": "Discrete merge benchmark for DiLu-Ollama on highway-env merge-v0. The native environment exposes a fixed-layout merge setup, so categories are protocol slices over the canonical merge geometry rather than distinct procedurally generated traffic families.",
+  "version": "1.1",
+  "description": "Prompt-conditioned merge benchmark for DiLu-Ollama on highway-env merge-v0. The suite keeps the canonical merge layout and separates runtime behavior into timely, stable, decisive, and recovery-to-flow merge tasks.",
   "target_env_id": "merge-v0",
   "scenario_family": "merge",
   "defaults": {
@@ -12,469 +12,428 @@
       "type": "merge_complete",
       "target_lane_offset": -1,
       "hold_steps": 2,
-      "min_progress_m": 20
+      "min_progress_m": 20,
+      "min_speed_mps": 8.0
     }
   },
   "cases": [
     {
       "case_id": "timely_merge_101",
       "category": "timely_merge",
-      "instruction": "Merge from the approach lane into the mainline promptly and stabilize once merged.",
+      "instruction": "Merge from the approach lane into the mainline promptly, then keep the vehicle settled in traffic flow.",
       "seed": 101,
       "time_limit_sec": 10,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 2,
-        "min_progress_m": 20
+        "min_progress_m": 20,
+        "min_speed_mps": 8.0
       },
-      "tags": [
-        "merge",
-        "deadline"
-      ],
+      "tags": ["merge", "deadline", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "timely_merge_211",
       "category": "timely_merge",
-      "instruction": "Join the mainline without lingering on the merge lane, then hold the lane cleanly.",
+      "instruction": "Join the mainline without lingering on the merge lane and stabilize once merged.",
       "seed": 211,
       "time_limit_sec": 10,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 2,
-        "min_progress_m": 20
+        "min_progress_m": 20,
+        "min_speed_mps": 8.0
       },
-      "tags": [
-        "merge",
-        "deadline"
-      ],
+      "tags": ["merge", "deadline", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "timely_merge_307",
       "category": "timely_merge",
-      "instruction": "Complete the merge efficiently while keeping the vehicle settled after the lane change.",
+      "instruction": "Complete the merge efficiently while maintaining safe, steady motion after entering the mainline.",
       "seed": 307,
       "time_limit_sec": 10,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 2,
-        "min_progress_m": 20
+        "min_progress_m": 20,
+        "min_speed_mps": 8.0
       },
-      "tags": [
-        "merge",
-        "deadline"
-      ],
+      "tags": ["merge", "deadline", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "timely_merge_401",
       "category": "timely_merge",
-      "instruction": "Move into the mainline with minimal hesitation and maintain lane discipline after merging.",
+      "instruction": "Move into the mainline with minimal hesitation and avoid drifting back into the merge lane.",
       "seed": 401,
       "time_limit_sec": 10,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 2,
-        "min_progress_m": 20
+        "min_progress_m": 20,
+        "min_speed_mps": 8.0
       },
-      "tags": [
-        "merge",
-        "deadline"
-      ],
+      "tags": ["merge", "deadline", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "timely_merge_509",
       "category": "timely_merge",
-      "instruction": "Finish the merge within a short horizon and stay composed in the target lane.",
+      "instruction": "Finish the merge within a short horizon and continue smoothly with the mainline flow.",
       "seed": 509,
       "time_limit_sec": 10,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 2,
-        "min_progress_m": 20
+        "min_progress_m": 20,
+        "min_speed_mps": 8.0
       },
-      "tags": [
-        "merge",
-        "deadline"
-      ],
+      "tags": ["merge", "deadline", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "timely_merge_613",
       "category": "timely_merge",
-      "instruction": "Execute a timely merge into the highway flow and then stabilize.",
+      "instruction": "Execute a timely merge into the highway flow and keep a stable course after the maneuver.",
       "seed": 613,
       "time_limit_sec": 10,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 2,
-        "min_progress_m": 20
+        "min_progress_m": 20,
+        "min_speed_mps": 8.0
       },
-      "tags": [
-        "merge",
-        "deadline"
-      ],
+      "tags": ["merge", "deadline", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "stable_merge_103",
       "category": "stable_merge",
-      "instruction": "Merge into the mainline and remain stably centered in the merged lane for several steps.",
+      "instruction": "Merge safely, then hold the mainline lane long enough to show a stable completed maneuver.",
       "seed": 103,
       "time_limit_sec": 12,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 3,
-        "min_progress_m": 20
+        "min_progress_m": 24,
+        "min_speed_mps": 10.0,
+        "max_speed_mps": 28.0
       },
-      "tags": [
-        "merge",
-        "hold"
-      ],
+      "tags": ["merge", "stability", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "stable_merge_223",
       "category": "stable_merge",
-      "instruction": "Complete the merge, then demonstrate lane stability instead of oscillating back.",
+      "instruction": "Join the highway and keep the target lane with smooth speed rather than oscillating after the merge.",
       "seed": 223,
       "time_limit_sec": 12,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 3,
-        "min_progress_m": 20
+        "min_progress_m": 24,
+        "min_speed_mps": 10.0,
+        "max_speed_mps": 28.0
       },
-      "tags": [
-        "merge",
-        "hold"
-      ],
+      "tags": ["merge", "stability", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "stable_merge_311",
       "category": "stable_merge",
-      "instruction": "Join the mainline and keep the post-merge lane position steady.",
+      "instruction": "Merge into the mainline and demonstrate stable lane keeping as traffic continues forward.",
       "seed": 311,
       "time_limit_sec": 12,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 3,
-        "min_progress_m": 20
+        "min_progress_m": 24,
+        "min_speed_mps": 10.0,
+        "max_speed_mps": 28.0
       },
-      "tags": [
-        "merge",
-        "hold"
-      ],
+      "tags": ["merge", "stability", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "stable_merge_409",
       "category": "stable_merge",
-      "instruction": "Merge safely and prove the maneuver is complete by holding the lane cleanly.",
+      "instruction": "Complete the merge and remain composed in the mainline without unnecessary braking.",
       "seed": 409,
       "time_limit_sec": 12,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 3,
-        "min_progress_m": 20
+        "min_progress_m": 24,
+        "min_speed_mps": 10.0,
+        "max_speed_mps": 28.0
       },
-      "tags": [
-        "merge",
-        "hold"
-      ],
+      "tags": ["merge", "stability", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "stable_merge_521",
       "category": "stable_merge",
-      "instruction": "Enter the mainline and stay composed after the merge rather than drifting.",
+      "instruction": "Enter the mainline cleanly and keep pace without overreacting after the lane change.",
       "seed": 521,
       "time_limit_sec": 12,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 3,
-        "min_progress_m": 20
+        "min_progress_m": 24,
+        "min_speed_mps": 10.0,
+        "max_speed_mps": 28.0
       },
-      "tags": [
-        "merge",
-        "hold"
-      ],
+      "tags": ["merge", "stability", "prompt_conditioned"],
       "difficulty": "medium",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "stable_merge_617",
       "category": "stable_merge",
-      "instruction": "Merge left and maintain the merged lane with stable control.",
+      "instruction": "Merge with controlled timing and hold the mainline while preserving smooth progress.",
       "seed": 617,
       "time_limit_sec": 12,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
         "hold_steps": 3,
-        "min_progress_m": 20
+        "min_progress_m": 24,
+        "min_speed_mps": 10.0,
+        "max_speed_mps": 28.0
       },
-      "tags": [
-        "merge",
-        "hold"
-      ],
+      "tags": ["merge", "stability", "prompt_conditioned"],
       "difficulty": "medium",
-      "case_group": "merge_protocol"
-    },
-    {
-      "case_id": "extended_merge_107",
-      "category": "extended_merge",
-      "instruction": "Merge into the mainline and continue with enough forward progress to clear the merge zone.",
-      "seed": 107,
-      "time_limit_sec": 14,
-      "success_criteria": {
-        "type": "merge_complete",
-        "target_lane_offset": -1,
-        "hold_steps": 2,
-        "min_progress_m": 30
-      },
-      "tags": [
-        "merge",
-        "progress"
-      ],
-      "difficulty": "hard",
-      "case_group": "merge_protocol"
-    },
-    {
-      "case_id": "extended_merge_227",
-      "category": "extended_merge",
-      "instruction": "Finish the merge and advance decisively through the merge corridor.",
-      "seed": 227,
-      "time_limit_sec": 14,
-      "success_criteria": {
-        "type": "merge_complete",
-        "target_lane_offset": -1,
-        "hold_steps": 2,
-        "min_progress_m": 30
-      },
-      "tags": [
-        "merge",
-        "progress"
-      ],
-      "difficulty": "hard",
-      "case_group": "merge_protocol"
-    },
-    {
-      "case_id": "extended_merge_313",
-      "category": "extended_merge",
-      "instruction": "Join the highway lane and keep moving until the merge area is clearly behind you.",
-      "seed": 313,
-      "time_limit_sec": 14,
-      "success_criteria": {
-        "type": "merge_complete",
-        "target_lane_offset": -1,
-        "hold_steps": 2,
-        "min_progress_m": 30
-      },
-      "tags": [
-        "merge",
-        "progress"
-      ],
-      "difficulty": "hard",
-      "case_group": "merge_protocol"
-    },
-    {
-      "case_id": "extended_merge_419",
-      "category": "extended_merge",
-      "instruction": "Complete the merge with meaningful downstream progress instead of stopping immediately after entry.",
-      "seed": 419,
-      "time_limit_sec": 14,
-      "success_criteria": {
-        "type": "merge_complete",
-        "target_lane_offset": -1,
-        "hold_steps": 2,
-        "min_progress_m": 30
-      },
-      "tags": [
-        "merge",
-        "progress"
-      ],
-      "difficulty": "hard",
-      "case_group": "merge_protocol"
-    },
-    {
-      "case_id": "extended_merge_523",
-      "category": "extended_merge",
-      "instruction": "Merge left and carry the maneuver forward until you have clearly exited the merge section.",
-      "seed": 523,
-      "time_limit_sec": 14,
-      "success_criteria": {
-        "type": "merge_complete",
-        "target_lane_offset": -1,
-        "hold_steps": 2,
-        "min_progress_m": 30
-      },
-      "tags": [
-        "merge",
-        "progress"
-      ],
-      "difficulty": "hard",
-      "case_group": "merge_protocol"
-    },
-    {
-      "case_id": "extended_merge_619",
-      "category": "extended_merge",
-      "instruction": "Enter the mainline and preserve progress through the merge region.",
-      "seed": 619,
-      "time_limit_sec": 14,
-      "success_criteria": {
-        "type": "merge_complete",
-        "target_lane_offset": -1,
-        "hold_steps": 2,
-        "min_progress_m": 30
-      },
-      "tags": [
-        "merge",
-        "progress"
-      ],
-      "difficulty": "hard",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "decisive_merge_109",
       "category": "decisive_merge",
-      "instruction": "Make a decisive merge into the mainline, then hold the lane while continuing forward.",
+      "instruction": "Make a decisive merge when the gap is acceptable, then continue forward in the mainline.",
       "seed": 109,
-      "time_limit_sec": 12,
+      "time_limit_sec": 11,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
-        "hold_steps": 3,
-        "min_progress_m": 30
+        "hold_steps": 2,
+        "min_progress_m": 30,
+        "min_speed_mps": 12.0
       },
-      "tags": [
-        "merge",
-        "progress",
-        "hold"
-      ],
+      "tags": ["merge", "progress", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "decisive_merge_229",
       "category": "decisive_merge",
-      "instruction": "Complete the merge with both stable lane holding and clear downstream progress.",
+      "instruction": "Commit to the merge once safe and show that the vehicle has moved beyond the merge zone.",
       "seed": 229,
-      "time_limit_sec": 12,
+      "time_limit_sec": 11,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
-        "hold_steps": 3,
-        "min_progress_m": 30
+        "hold_steps": 2,
+        "min_progress_m": 30,
+        "min_speed_mps": 12.0
       },
-      "tags": [
-        "merge",
-        "progress",
-        "hold"
-      ],
+      "tags": ["merge", "progress", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "decisive_merge_317",
       "category": "decisive_merge",
-      "instruction": "Merge left decisively and demonstrate that the maneuver is complete by holding lane and progress.",
+      "instruction": "Merge left without excessive hesitation and carry the vehicle into steady mainline progress.",
       "seed": 317,
-      "time_limit_sec": 12,
+      "time_limit_sec": 11,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
-        "hold_steps": 3,
-        "min_progress_m": 30
+        "hold_steps": 2,
+        "min_progress_m": 30,
+        "min_speed_mps": 12.0
       },
-      "tags": [
-        "merge",
-        "progress",
-        "hold"
-      ],
+      "tags": ["merge", "progress", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "decisive_merge_421",
       "category": "decisive_merge",
-      "instruction": "Join the highway flow cleanly, then stay settled while continuing beyond the merge zone.",
+      "instruction": "Join the highway flow cleanly and avoid stopping short of the completed merge.",
       "seed": 421,
-      "time_limit_sec": 12,
+      "time_limit_sec": 11,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
-        "hold_steps": 3,
-        "min_progress_m": 30
+        "hold_steps": 2,
+        "min_progress_m": 30,
+        "min_speed_mps": 12.0
       },
-      "tags": [
-        "merge",
-        "progress",
-        "hold"
-      ],
+      "tags": ["merge", "progress", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "decisive_merge_541",
       "category": "decisive_merge",
-      "instruction": "Execute a confident merge and maintain stable control after entering the mainline.",
+      "instruction": "Execute a confident merge and maintain meaningful forward progress after entering the mainline.",
       "seed": 541,
-      "time_limit_sec": 12,
+      "time_limit_sec": 11,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
-        "hold_steps": 3,
-        "min_progress_m": 30
+        "hold_steps": 2,
+        "min_progress_m": 30,
+        "min_speed_mps": 12.0
       },
-      "tags": [
-        "merge",
-        "progress",
-        "hold"
-      ],
+      "tags": ["merge", "progress", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "merge_protocol"
     },
     {
       "case_id": "decisive_merge_631",
       "category": "decisive_merge",
-      "instruction": "Finish the merge, keep the lane, and continue forward through the end of the merge section.",
+      "instruction": "Finish the merge with clear forward motion and keep the vehicle aligned with the mainline.",
       "seed": 631,
-      "time_limit_sec": 12,
+      "time_limit_sec": 11,
       "success_criteria": {
         "type": "merge_complete",
         "target_lane_offset": -1,
-        "hold_steps": 3,
-        "min_progress_m": 30
+        "hold_steps": 2,
+        "min_progress_m": 30,
+        "min_speed_mps": 12.0
       },
-      "tags": [
-        "merge",
-        "progress",
-        "hold"
-      ],
+      "tags": ["merge", "progress", "prompt_conditioned"],
+      "difficulty": "hard",
+      "case_group": "merge_protocol"
+    },
+    {
+      "case_id": "recovery_to_flow_merge_107",
+      "category": "recovery_to_flow_merge",
+      "instruction": "If the merge requires slowing, recover to highway flow after entering the mainline.",
+      "seed": 107,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "merge_complete",
+        "target_lane_offset": -1,
+        "hold_steps": 2,
+        "min_progress_m": 36,
+        "min_speed_mps": 16.0,
+        "max_speed_mps": 30.0
+      },
+      "tags": ["merge", "flow_recovery", "prompt_conditioned"],
+      "difficulty": "hard",
+      "case_group": "merge_protocol"
+    },
+    {
+      "case_id": "recovery_to_flow_merge_227",
+      "category": "recovery_to_flow_merge",
+      "instruction": "Complete the merge and rebuild speed smoothly once front-risk clears.",
+      "seed": 227,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "merge_complete",
+        "target_lane_offset": -1,
+        "hold_steps": 2,
+        "min_progress_m": 36,
+        "min_speed_mps": 16.0,
+        "max_speed_mps": 30.0
+      },
+      "tags": ["merge", "flow_recovery", "prompt_conditioned"],
+      "difficulty": "hard",
+      "case_group": "merge_protocol"
+    },
+    {
+      "case_id": "recovery_to_flow_merge_313",
+      "category": "recovery_to_flow_merge",
+      "instruction": "After any defensive slowing, merge and return toward normal highway pace.",
+      "seed": 313,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "merge_complete",
+        "target_lane_offset": -1,
+        "hold_steps": 2,
+        "min_progress_m": 36,
+        "min_speed_mps": 16.0,
+        "max_speed_mps": 30.0
+      },
+      "tags": ["merge", "flow_recovery", "prompt_conditioned"],
+      "difficulty": "hard",
+      "case_group": "merge_protocol"
+    },
+    {
+      "case_id": "recovery_to_flow_merge_419",
+      "category": "recovery_to_flow_merge",
+      "instruction": "Join the mainline, avoid remaining too slow, and continue with the traffic stream.",
+      "seed": 419,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "merge_complete",
+        "target_lane_offset": -1,
+        "hold_steps": 2,
+        "min_progress_m": 36,
+        "min_speed_mps": 16.0,
+        "max_speed_mps": 30.0
+      },
+      "tags": ["merge", "flow_recovery", "prompt_conditioned"],
+      "difficulty": "hard",
+      "case_group": "merge_protocol"
+    },
+    {
+      "case_id": "recovery_to_flow_merge_523",
+      "category": "recovery_to_flow_merge",
+      "instruction": "Recover from cautious merging by accelerating back into stable mainline flow when safe.",
+      "seed": 523,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "merge_complete",
+        "target_lane_offset": -1,
+        "hold_steps": 2,
+        "min_progress_m": 36,
+        "min_speed_mps": 16.0,
+        "max_speed_mps": 30.0
+      },
+      "tags": ["merge", "flow_recovery", "prompt_conditioned"],
+      "difficulty": "hard",
+      "case_group": "merge_protocol"
+    },
+    {
+      "case_id": "recovery_to_flow_merge_619",
+      "category": "recovery_to_flow_merge",
+      "instruction": "Merge safely and regain enough speed to avoid blocking the mainline traffic stream.",
+      "seed": 619,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "merge_complete",
+        "target_lane_offset": -1,
+        "hold_steps": 2,
+        "min_progress_m": 36,
+        "min_speed_mps": 16.0,
+        "max_speed_mps": 30.0
+      },
+      "tags": ["merge", "flow_recovery", "prompt_conditioned"],
       "difficulty": "hard",
       "case_group": "merge_protocol"
     }

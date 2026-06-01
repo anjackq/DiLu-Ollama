@@ -1,5 +1,16 @@
-from .llm_env import configure_runtime_env
+from .llm_env import (
+    configure_runtime_env,
+    openai_compatible_default_headers_from_env,
+    openai_compatible_default_headers_from_config,
+)
 from .config_loader import load_runtime_config
+from .ollama_transport import (
+    OllamaNativeChatResolution,
+    normalize_ollama_native_chat_mode,
+    normalize_ollama_think_mode,
+    ollama_model_maybe_supports_thinking,
+    resolve_ollama_native_chat_mode,
+)
 from .token_usage import (
     aggregate_episode_token_usage,
     combine_token_usage_records,
@@ -12,6 +23,11 @@ from .highway_env_config import (
     resolve_simulation_env_mode,
     build_native_highway_env_config,
     resolve_simulation_env_bundle,
+)
+from .highway_scenario_spec import (
+    apply_highway_scenario_spec,
+    normalize_scenario_spec,
+    scenario_spec_summary,
 )
 from .constants import DEFAULT_DILU_SEEDS
 from .task_benchmark import (
@@ -62,10 +78,33 @@ from .energy_monitor import (
     system_hardware_snapshot,
     build_energy_tradeoff_summary,
 )
+from .safety_shields import (
+    SafetyShieldResult,
+    apply_lane_change_safety_shield,
+    apply_low_speed_recovery_shield,
+    apply_longitudinal_safety_shield,
+)
+from .scientific_reporting import (
+    annotate_aggregate_with_scientific_reporting,
+    build_primary_metric_spec,
+    write_scientific_analysis_artifacts,
+)
+from .dilu_scoring import (
+    SPLIT_SCORING_POLICY_VERSION,
+    SPLIT_SCORE_FIELDS,
+    compute_split_scores_for_episode,
+)
 
 __all__ = [
     "configure_runtime_env",
+    "openai_compatible_default_headers_from_env",
+    "openai_compatible_default_headers_from_config",
     "load_runtime_config",
+    "OllamaNativeChatResolution",
+    "normalize_ollama_native_chat_mode",
+    "normalize_ollama_think_mode",
+    "ollama_model_maybe_supports_thinking",
+    "resolve_ollama_native_chat_mode",
     "aggregate_episode_token_usage",
     "combine_token_usage_records",
     "build_token_usage_record_from_langchain_message",
@@ -75,6 +114,9 @@ __all__ = [
     "resolve_simulation_env_mode",
     "build_native_highway_env_config",
     "resolve_simulation_env_bundle",
+    "apply_highway_scenario_spec",
+    "normalize_scenario_spec",
+    "scenario_spec_summary",
     "DEFAULT_DILU_SEEDS",
     "DEFAULT_BENCHMARK_CASE_SET",
     "load_benchmark_case_set",
@@ -116,4 +158,14 @@ __all__ = [
     "create_energy_monitor",
     "system_hardware_snapshot",
     "build_energy_tradeoff_summary",
+    "SafetyShieldResult",
+    "apply_lane_change_safety_shield",
+    "apply_low_speed_recovery_shield",
+    "apply_longitudinal_safety_shield",
+    "annotate_aggregate_with_scientific_reporting",
+    "build_primary_metric_spec",
+    "write_scientific_analysis_artifacts",
+    "SPLIT_SCORING_POLICY_VERSION",
+    "SPLIT_SCORE_FIELDS",
+    "compute_split_scores_for_episode",
 ]

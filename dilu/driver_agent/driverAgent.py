@@ -3,18 +3,15 @@ import json
 import re
 import textwrap
 import time
+from contextlib import contextmanager
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from rich import print
-from typing import List
+from typing import Any, Dict, List
 import requests
 
 # UPDATED IMPORTS
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:
-    ChatGoogleGenerativeAI = None
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_community.callbacks import OpenAICallbackHandler
 
@@ -26,10 +23,48 @@ from dilu.runtime.token_usage import (
     build_token_usage_record_from_ollama_native_payload,
     build_whitespace_estimate_token_usage,
 )
+from dilu.runtime.llm_env import openai_compatible_default_headers_from_env
+from dilu.runtime.ollama_transport import (
+    normalize_ollama_think_mode,
+    ollama_model_maybe_supports_thinking,
+    resolve_ollama_native_chat_mode,
+)
 
 delimiter = "####"
+ChatGoogleGenerativeAI = None
+_GEMINI_IMPORT_ERROR = None
 ACTION_RECOVERY_PATTERN = re.compile(r"Response to user:\s*\#{4}\s*(?:<[^>]+>\s*)?(-?\d+)\s*$", re.IGNORECASE | re.MULTILINE)
 ACTION_ANYWHERE_PATTERN = re.compile(r"\b-?\d+\b")
+RUNTIME_ACTION_LINE_PATTERN = re.compile(
+    r"^Response to user:\s*\#{4}\s*(?:<[^>]+>\s*)?(-?\d+)\s*$",
+    re.IGNORECASE,
+)
+RUNTIME_MISSING_DELIMITER_ACTION_LINE_PATTERN = re.compile(
+    r"^Response to user:\s*(?:<[^>]+>\s*)?(-?\d+)\s*$",
+    re.IGNORECASE,
+)
+RUNTIME_LABELED_ACTION_PATTERN = re.compile(r"^Action id:\s*(-?\d+)\s*$", re.IGNORECASE)
+RUNTIME_REASON_LINE_PATTERN = re.compile(r"^Reason:\s*(.+?)\s*$", re.IGNORECASE)
+RUNTIME_RESPONSE_PREFIX_PATTERN = re.compile(r"^Response to user:", re.IGNORECASE)
+RECOVERED_RUNTIME_PARSE_PATHS = {
+    "missing_delimiter_recovered",
+    "labeled_backup",
+    "delimiter_tail",
+    "regex_recovered",
+    "loose_recovered",
+    "semantic_label_recovered",
+    "intent_resolver_direct",
+    "checker_direct",
+    "checker_regex_recovered",
+    "checker_loose_recovered",
+}
+UNPARSEABLE_RUNTIME_PARSE_PATHS = {
+    "parse_fallback",
+    "empty_response_fallback",
+    "max_tokens_empty_response_fallback",
+    "incomplete_output_fallback",
+    "checker_fallback",
+}
 
 
 def _content_to_text(content) -> str:
@@ -55,6 +90,20 @@ def _content_to_text(content) -> str:
     return str(content)
 
 
+def _load_chat_google_generative_ai():
+    global ChatGoogleGenerativeAI, _GEMINI_IMPORT_ERROR
+    if ChatGoogleGenerativeAI is not None:
+        return ChatGoogleGenerativeAI
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI as GeminiChat
+    except Exception as exc:
+        _GEMINI_IMPORT_ERROR = exc
+        return None
+    ChatGoogleGenerativeAI = GeminiChat
+    _GEMINI_IMPORT_ERROR = None
+    return ChatGoogleGenerativeAI
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -73,17 +122,19 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 def _is_timeout_exception(exc: Exception) -> bool:
     return isinstance(exc, (TimeoutError, requests.Timeout))
 
 
 def _normalize_ollama_think_mode(raw: str) -> str:
-    mode = str(raw or "auto").strip().lower()
-    if mode in {"think", "true", "on", "1"}:
-        return "think"
-    if mode in {"no_think", "nothink", "no-think", "false", "off", "0"}:
-        return "no_think"
-    return "auto"
+    return normalize_ollama_think_mode(raw)
 
 
 def _ollama_native_chat_url(api_base: str) -> str:
@@ -104,29 +155,7 @@ def _ollama_native_chat_url(api_base: str) -> str:
 
 
 def _ollama_model_maybe_supports_think(model_name: str) -> bool:
-    name = str(model_name or "").strip().lower()
-    if not name:
-        return False
-    # Allow obvious reasoning-oriented models to try native think mode.
-    reasoning_markers = (
-        "deepseek-r1",
-        "qwen",
-        "qwen2",
-        "qwen2.5",
-        "qwen3",
-        "qwen3.5",
-        "reason",
-        "reasoning",
-        "qwq",
-        "think",
-    )
-    if any(marker in name for marker in reasoning_markers):
-        return True
-    # Conservative default for general instruct/base families.
-    non_reasoning_prefixes = ("llama", "llama3", "llama3.1", "llama3.2", "mistral", "gemma")
-    if any(name.startswith(prefix) for prefix in non_reasoning_prefixes):
-        return False
-    return False
+    return ollama_model_maybe_supports_thinking(model_name)
 
 
 def _ollama_role_from_message(msg) -> str:
@@ -152,15 +181,8 @@ example_message = textwrap.dedent(f"""\
         Deceleration - decelerate the vehicle Action_id: 4
         """)
 example_answer = textwrap.dedent(f"""\
-        **Step-by-Step Explanation:**
-        1. **Safety Check:** The vehicle directly ahead in my lane (Vehicle 912) is only 19.19 meters away (382.33m - 363.14m), which is under the 25m safety buffer. It is also traveling slower than me (23.30 m/s vs 25.00 m/s). This presents an immediate collision risk.
-        2. **Efficiency Consideration:** My current speed is 25.00 m/s, which is close to the 28 m/s target, but safety supersedes efficiency. Accelerating or maintaining speed will cause a rear-end collision.
-        3. **Lane Change Feasibility:** Changing lanes is not safe. The left lane is blocked by Vehicle 488 (only 5.61m ahead), and the right lane is blocked by Vehicle 864 (only 10.6m ahead). Both are too close to attempt a safe lane change.
-        4. **Conclusion:** Since I cannot safely maintain speed, accelerate, or change lanes due to surrounding traffic, I must decelerate to avoid crashing into Vehicle 912.
-
-        **Answer:**
-        Reasoning: The lead car in my lane is critically close (under 25m) and slower, and adjacent lanes are blocked, mandating immediate deceleration.
         Response to user:{delimiter} 4
+        Reason: The lead car is critically close and slower, while adjacent lanes are blocked, so deceleration is required.
         """)
 
 
@@ -172,20 +194,45 @@ class DriverAgent:
         self.sce = sce
         self.verbose = bool(verbose)
         self.quiet_mode = _env_bool("DILU_QUIET_MODE", False)
+        self.temperature = float(temperature)
         self.oai_api_type = os.getenv("OPENAI_API_TYPE")
         self.decision_timeout_sec = _env_float("DILU_DECISION_TIMEOUT_SEC", 60.0)
         # For local Ollama models, invoke mode avoids long stream stalls on small models.
         default_streaming = self.oai_api_type != "ollama"
         self.use_streaming = _env_bool("DILU_USE_STREAMING", default_streaming)
         self.enable_checker_llm = _env_bool("DILU_ENABLE_CHECKER_LLM", True)
+        self.enable_intent_resolver = _env_bool("DILU_ENABLE_INTENT_RESOLVER", False)
+        self.intent_resolver_api_type = os.getenv("DILU_INTENT_RESOLVER_API_TYPE", "ollama").strip().lower()
+        self.intent_resolver_model = os.getenv("DILU_INTENT_RESOLVER_MODEL", "").strip()
+        self.intent_resolver_timeout_sec = _env_float("DILU_INTENT_RESOLVER_TIMEOUT_SEC", 5.0)
+        self.intent_resolver_max_output_tokens = max(
+            1,
+            int(os.getenv("DILU_INTENT_RESOLVER_MAX_OUTPUT_TOKENS", "32")),
+        )
+        self.intent_resolver_abstain_on_ambiguous = _env_bool(
+            "DILU_INTENT_RESOLVER_ABSTAIN_ON_AMBIGUOUS",
+            True,
+        )
+        self.last_intent_resolver_prompt = None
         max_tokens_default = 2000
         self.max_tokens = int(os.getenv("DILU_MAX_OUTPUT_TOKENS", str(max_tokens_default)))
-        self.ollama_use_native_chat = _env_bool("OLLAMA_USE_NATIVE_CHAT", True)
+        self.runtime_max_output_tokens = max(
+            1,
+            int(os.getenv("DILU_RUNTIME_MAX_OUTPUT_TOKENS", str(self.max_tokens))),
+        )
         self.ollama_think_mode = _normalize_ollama_think_mode(os.getenv("OLLAMA_THINK_MODE", "auto"))
         self.ollama_native_chat_timeout_sec = _env_float("OLLAMA_NATIVE_CHAT_TIMEOUT_SEC", self.decision_timeout_sec)
         self.ollama_chat_url = _ollama_native_chat_url(os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1"))
         self.ollama_model_name = os.getenv("OLLAMA_CHAT_MODEL")
         self.ollama_api_key = os.getenv("OLLAMA_API_KEY", "ollama")
+        self.ollama_native_chat_resolution = resolve_ollama_native_chat_mode(
+            self.ollama_model_name,
+            os.getenv("OLLAMA_USE_NATIVE_CHAT_CONFIGURED", os.getenv("OLLAMA_USE_NATIVE_CHAT", "auto")),
+            self.ollama_think_mode,
+        )
+        self.ollama_use_native_chat = bool(self.ollama_native_chat_resolution.effective_native_chat)
+        self.ollama_use_native_chat_configured = self.ollama_native_chat_resolution.configured_mode
+        self.ollama_native_chat_resolution_reason = self.ollama_native_chat_resolution.reason
         self.ollama_native_think_supported = None
         self.ollama_native_timed_out = False
         self.ollama_model_think_heuristic = _ollama_model_maybe_supports_think(self.ollama_model_name)
@@ -204,6 +251,15 @@ class DriverAgent:
             "selected_action": None,
             "decision_elapsed_sec": 0.0,
             "ollama_transport": None,
+            "ollama_native_chat_configured": (
+                self.ollama_use_native_chat_configured if self.oai_api_type == "ollama" else None
+            ),
+            "ollama_native_chat_effective": (
+                self.ollama_use_native_chat if self.oai_api_type == "ollama" else None
+            ),
+            "ollama_native_chat_resolution_reason": (
+                self.ollama_native_chat_resolution_reason if self.oai_api_type == "ollama" else None
+            ),
             "ollama_requested_think_mode": None,
             "ollama_effective_think_mode": None,
             "ollama_native_retry_used": False,
@@ -214,6 +270,25 @@ class DriverAgent:
             "total_tokens": None,
             "token_count_method": None,
             "token_usage_source": None,
+            "response_contract_satisfied": False,
+            "response_contract_recovered": False,
+            "response_recovery_reason": None,
+            "response_unparseable": False,
+            "response_action_line_present": False,
+            "response_action_line_count": 0,
+            "response_reason_line_present": False,
+            "runtime_parse_path": "unknown",
+            "response_first_nonempty_line": None,
+            "response_truncated_before_contract": False,
+            "semantic_recovery_used": False,
+            "semantic_recovery_label": None,
+            "semantic_recovery_reason": None,
+            "intent_resolver_used": False,
+            "intent_resolver_model": None,
+            "intent_resolver_action_id": None,
+            "intent_resolver_abstained": False,
+            "intent_resolver_reason": None,
+            "final_action_source": "unknown",
         }
         if self.oai_api_type == "azure":
             self._log_info("Using Azure Chat API")
@@ -228,21 +303,34 @@ class DriverAgent:
                 streaming=self.use_streaming,
             )
         elif self.oai_api_type == "openai":
-            self._log_info("Use OpenAI API")
+            openai_api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
+            openai_api_key = os.getenv("OPENAI_API_KEY")
+            default_headers = openai_compatible_default_headers_from_env()
+            if openai_api_base:
+                self._log_info(f"Use OpenAI-compatible API at {openai_api_base}")
+            else:
+                self._log_info("Use OpenAI API")
+            chat_kwargs = {}
+            if default_headers:
+                chat_kwargs["default_headers"] = default_headers
             self.llm = ChatOpenAI(
                 temperature=temperature,
                 callbacks=[
                     OpenAICallbackHandler()
                 ],
                 model_name=os.getenv("OPENAI_CHAT_MODEL"),
+                openai_api_base=openai_api_base,
+                openai_api_key=openai_api_key,
                 max_tokens=self.max_tokens,
                 request_timeout=self.decision_timeout_sec,
                 streaming=self.use_streaming,
+                **chat_kwargs,
             )
         # [ADD] Added support for local Ollama models
         elif self.oai_api_type == "ollama":
             model_name = self.ollama_model_name
             api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
+            self.ollama_api_base = api_base
             api_key = self.ollama_api_key
 
             if not model_name:
@@ -252,7 +340,17 @@ class DriverAgent:
             if self.ollama_use_native_chat:
                 effective_mode = self._get_ollama_effective_think_mode()
                 self._log_info(
-                    f"[yellow]DriverAgent Ollama mode: native /api/chat | think_mode={self.ollama_think_mode} | effective={effective_mode}[/yellow]"
+                    f"[yellow]DriverAgent Ollama mode: native /api/chat | "
+                    f"configured={self.ollama_use_native_chat_configured} "
+                    f"reason={self.ollama_native_chat_resolution_reason} | "
+                    f"think_mode={self.ollama_think_mode} | effective={effective_mode}[/yellow]"
+                )
+            else:
+                self._log_info(
+                    f"[yellow]DriverAgent Ollama mode: OpenAI-compatible /v1 | "
+                    f"configured={self.ollama_use_native_chat_configured} "
+                    f"reason={self.ollama_native_chat_resolution_reason} | "
+                    f"think_mode={self.ollama_think_mode}[/yellow]"
                 )
 
             # Keep OpenAI-compatible client as fallback for native failures.
@@ -266,10 +364,11 @@ class DriverAgent:
                 streaming=self.use_streaming,
             )
         elif self.oai_api_type == "gemini":
-            if ChatGoogleGenerativeAI is None:
+            gemini_chat = _load_chat_google_generative_ai()
+            if gemini_chat is None:
                 raise ImportError(
                     "Gemini support requires 'langchain-google-genai'. Install with: pip install langchain-google-genai"
-                )
+                ) from _GEMINI_IMPORT_ERROR
             model_name = os.getenv("GEMINI_CHAT_MODEL")
             api_key = os.getenv("GEMINI_API_KEY")
             if not model_name:
@@ -277,7 +376,7 @@ class DriverAgent:
             if not api_key:
                 raise ValueError("GEMINI_API_KEY is not configured.")
             self._log_info(f"Using Gemini API: {model_name}")
-            self.llm = ChatGoogleGenerativeAI(
+            self.llm = gemini_chat(
                 model=model_name,
                 google_api_key=api_key,
                 temperature=temperature,
@@ -356,6 +455,16 @@ class DriverAgent:
             rows.append(f"| {action_id} | {description} |")
         return "\n".join(rows)
 
+    def _intent_resolver_action_table(self) -> str:
+        rows = ["| action_id | token | description |", "|-----------|-------|-------------|"]
+        action_descriptions = self._action_descriptions()
+        for action_id in self._valid_action_ids():
+            entry = action_descriptions.get(int(action_id), {})
+            token = str(entry.get("token") or f"ACTION_{action_id}")
+            description = str(entry.get("description") or f"Action {action_id}")
+            rows.append(f"| {action_id} | {token} | {description} |")
+        return "\n".join(rows)
+
     def _is_valid_action_id(self, value: int) -> bool:
         return int(value) in set(self._valid_action_ids())
 
@@ -381,10 +490,374 @@ class DriverAgent:
 
         raise ValueError("No valid action id found in text")
 
+    def _default_action_catalog_entry(self, action_id: int) -> Dict[str, str]:
+        defaults = {
+            0: {"token": "LANE_LEFT", "description": "Turn-left"},
+            1: {"token": "IDLE", "description": "IDLE"},
+            2: {"token": "LANE_RIGHT", "description": "Turn-right"},
+            3: {"token": "FASTER", "description": "Acceleration"},
+            4: {"token": "SLOWER", "description": "Deceleration"},
+        }
+        return dict(defaults.get(int(action_id), {"token": f"ACTION_{action_id}", "description": f"Action {action_id}"}))
+
+    def _semantic_aliases_for_action(self, action_id: int, entry: Dict[str, Any]) -> tuple[str, List[str]]:
+        action_id = int(action_id)
+        default_entry = self._default_action_catalog_entry(action_id)
+        token = str(entry.get("token") or default_entry.get("token") or f"ACTION_{action_id}").strip()
+        description = str(entry.get("description") or default_entry.get("description") or f"Action {action_id}").strip()
+        aliases = {token, description}
+        if action_id == 0:
+            aliases.update({"LANE_LEFT", "Turn-left", "turn left", "left lane"})
+        elif action_id == 1:
+            aliases.update({"IDLE", "keep lane", "maintain speed"})
+        elif action_id == 2:
+            aliases.update({"LANE_RIGHT", "Turn-right", "turn right", "right lane"})
+        elif action_id == 3:
+            aliases.update({"FASTER", "Acceleration", "accelerate"})
+        elif action_id == 4:
+            aliases.update({"SLOWER", "Deceleration", "decelerate"})
+        cleaned_aliases = sorted(
+            {
+                alias.strip()
+                for alias in aliases
+                if str(alias or "").strip()
+            },
+            key=lambda value: (-len(value), value.lower()),
+        )
+        return token, cleaned_aliases
+
+    def _semantic_action_segment(self, text: str) -> str:
+        nonempty_lines = self._response_nonempty_lines(text)
+        for line in nonempty_lines:
+            if not RUNTIME_RESPONSE_PREFIX_PATTERN.match(line):
+                continue
+            segment = line.split(delimiter, 1)[-1] if delimiter in line else line.split(":", 1)[-1]
+            return segment.strip()
+        if delimiter in str(text or ""):
+            return str(text or "").split(delimiter, 1)[-1].splitlines()[0].strip()
+        return str(text or "").strip()
+
+    @staticmethod
+    def _semantic_normalize(text: str) -> str:
+        lowered = str(text or "").lower()
+        lowered = re.sub(r"[_\-]+", " ", lowered)
+        lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
+        return f" {lowered.strip()} "
+
+    def _extract_semantic_action_from_text(self, text: str) -> tuple[int, str]:
+        segment = self._semantic_action_segment(text)
+        if not segment:
+            raise ValueError("semantic label unavailable")
+        normalized_segment = self._semantic_normalize(segment)
+        action_descriptions = self._action_descriptions()
+        all_action_ids = sorted(
+            {
+                int(action_id)
+                for action_id in set(action_descriptions.keys()) | {0, 1, 2, 3, 4} | set(self._valid_action_ids())
+            }
+        )
+        matched: Dict[int, str] = {}
+        for action_id in all_action_ids:
+            entry = dict(self._default_action_catalog_entry(action_id))
+            entry.update(action_descriptions.get(int(action_id), {}) or {})
+            token, aliases = self._semantic_aliases_for_action(action_id, entry)
+            for alias in aliases:
+                normalized_alias = self._semantic_normalize(alias).strip()
+                if not normalized_alias:
+                    continue
+                if re.search(rf"(?<![a-z0-9]){re.escape(normalized_alias)}(?![a-z0-9])", normalized_segment):
+                    matched[int(action_id)] = token
+                    break
+        if not matched:
+            raise ValueError("semantic label unavailable")
+        if len(matched) > 1:
+            labels = ", ".join(matched[action_id] for action_id in sorted(matched))
+            raise ValueError(f"semantic label ambiguous: {labels}")
+        action_id, token = next(iter(matched.items()))
+        if not self._is_valid_action_id(action_id):
+            raise ValueError(f"semantic label unavailable for current action set: {token}")
+        return int(action_id), str(token)
+
+    def _intent_resolver_enabled(self) -> bool:
+        return bool(
+            getattr(self, "enable_intent_resolver", False)
+            and str(getattr(self, "intent_resolver_api_type", "ollama") or "").strip().lower() == "ollama"
+            and str(getattr(self, "intent_resolver_model", "") or "").strip()
+        )
+
+    def _intent_resolver_prompt(self, raw_output: str) -> str:
+        action_table = self._intent_resolver_action_table()
+        allowed_actions = self._allowed_action_text()
+        return textwrap.dedent(f"""\
+        You are an action-intent decoder, not a driving policy.
+        Decode the driver's intended action from the raw output only.
+        Use only the valid action table below. Do not infer from any traffic scenario.
+        Abstain with null when the intent is ambiguous, unsafe to infer, or not clearly mapped to one valid action.
+
+        Valid action table:
+        {action_table}
+
+        Raw driver output:
+        {raw_output}
+
+        Return JSON only, with this exact schema:
+        {{"action_id": <one of [{allowed_actions}] or null>, "confidence": "high"|"low", "reason": "<short reason>"}}
+        """).strip()
+
+    def _invoke_intent_resolver_model(self, prompt: str) -> str:
+        model_name = str(getattr(self, "intent_resolver_model", "") or "").strip()
+        payload = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You extract one action id from malformed driver output. "
+                        "Return valid JSON only."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0,
+                "num_predict": int(getattr(self, "intent_resolver_max_output_tokens", 32) or 32),
+            },
+        }
+        payload = self._apply_ollama_think_mode(payload, "no_think")
+        response = requests.post(
+            self.ollama_chat_url,
+            headers=self._ollama_request_headers(),
+            json=payload,
+            timeout=float(getattr(self, "intent_resolver_timeout_sec", 5.0) or 5.0),
+        )
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, dict):
+            message = data.get("message")
+            if isinstance(message, dict):
+                return str(message.get("content") or "")
+            return str(data.get("response") or "")
+        return str(data or "")
+
+    @staticmethod
+    def _parse_intent_resolver_json(text: str) -> Dict[str, Any]:
+        content = str(text or "").strip()
+        if not content:
+            raise ValueError("empty intent resolver response")
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+            if match is None:
+                raise ValueError("invalid intent resolver json")
+            parsed = json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            raise ValueError("intent resolver response is not an object")
+        return parsed
+
+    def _resolve_action_with_intent_resolver(self, raw_output: str) -> tuple[int | None, Dict[str, Any]]:
+        metadata = {
+            "intent_resolver_used": False,
+            "intent_resolver_model": str(getattr(self, "intent_resolver_model", "") or "") or None,
+            "intent_resolver_action_id": None,
+            "intent_resolver_abstained": False,
+            "intent_resolver_reason": None,
+        }
+        if not self._intent_resolver_enabled():
+            metadata["intent_resolver_reason"] = "disabled"
+            return None, metadata
+        metadata["intent_resolver_used"] = True
+        prompt = self._intent_resolver_prompt(raw_output)
+        self.last_intent_resolver_prompt = prompt
+        try:
+            resolver_text = self._invoke_intent_resolver_model(prompt)
+            parsed = self._parse_intent_resolver_json(resolver_text)
+        except TimeoutError:
+            metadata["intent_resolver_reason"] = "timeout"
+            return None, metadata
+        except Exception as exc:
+            metadata["intent_resolver_reason"] = f"invalid_response: {type(exc).__name__}"
+            return None, metadata
+
+        reason = str(parsed.get("reason") or "").strip()
+        metadata["intent_resolver_reason"] = reason[:160] if reason else None
+        confidence = str(parsed.get("confidence") or "").strip().lower()
+        raw_action_id = parsed.get("action_id")
+        if raw_action_id is None:
+            metadata["intent_resolver_abstained"] = True
+            return None, metadata
+        if confidence != "high" and bool(getattr(self, "intent_resolver_abstain_on_ambiguous", True)):
+            metadata["intent_resolver_abstained"] = True
+            return None, metadata
+        try:
+            action_id = int(raw_action_id)
+        except Exception:
+            metadata["intent_resolver_reason"] = metadata["intent_resolver_reason"] or "invalid_action_id"
+            metadata["intent_resolver_abstained"] = True
+            return None, metadata
+        metadata["intent_resolver_action_id"] = int(action_id)
+        if not self._is_valid_action_id(action_id):
+            metadata["intent_resolver_reason"] = metadata["intent_resolver_reason"] or "invalid_action_id"
+            metadata["intent_resolver_abstained"] = True
+            return None, metadata
+        metadata["intent_resolver_abstained"] = False
+        return int(action_id), metadata
+
+    def _response_nonempty_lines(self, text: str) -> List[str]:
+        return [line.strip() for line in str(text or "").splitlines() if line.strip()]
+
+    def _runtime_response_contract_diagnostics(
+        self,
+        text: str,
+        response_diagnostics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        nonempty_lines = self._response_nonempty_lines(text)
+        first_nonempty_line = nonempty_lines[0] if nonempty_lines else None
+        response_action_line_present = any(
+            line.lower().startswith("response to user:")
+            for line in nonempty_lines
+        )
+        response_action_line_count = sum(
+            1 for line in nonempty_lines if RUNTIME_RESPONSE_PREFIX_PATTERN.match(line)
+        )
+        response_reason_line_present = any(
+            RUNTIME_REASON_LINE_PATTERN.fullmatch(line) is not None
+            for line in nonempty_lines
+        )
+        response_contract_satisfied = False
+        if first_nonempty_line is not None:
+            match = RUNTIME_ACTION_LINE_PATTERN.fullmatch(first_nonempty_line)
+            if match is not None:
+                try:
+                    response_contract_satisfied = self._is_valid_action_id(int(match.group(1)))
+                except Exception:
+                    response_contract_satisfied = False
+        finish_reason = str(response_diagnostics.get("response_finish_reason") or "").strip().upper()
+        response_truncated_before_contract = bool(
+            finish_reason == "MAX_TOKENS" and not response_action_line_present
+        )
+        return {
+            "response_contract_satisfied": bool(response_contract_satisfied),
+            "response_contract_recovered": False,
+            "response_recovery_reason": None,
+            "response_unparseable": False,
+            "response_action_line_present": bool(response_action_line_present),
+            "response_action_line_count": int(response_action_line_count),
+            "response_reason_line_present": bool(response_reason_line_present),
+            "response_first_nonempty_line": (
+                None if first_nonempty_line is None else first_nonempty_line[:160]
+            ),
+            "response_truncated_before_contract": bool(response_truncated_before_contract),
+        }
+
+    def _mark_runtime_parse_result(self, decision_meta: Dict[str, Any], parse_path: str) -> None:
+        recovered = parse_path in RECOVERED_RUNTIME_PARSE_PATHS
+        decision_meta["response_contract_recovered"] = bool(recovered)
+        if parse_path == "missing_delimiter_recovered":
+            decision_meta["response_recovery_reason"] = "missing_delimiter_action_line"
+        elif recovered:
+            decision_meta["response_recovery_reason"] = "non_strict_runtime_parse"
+        else:
+            decision_meta["response_recovery_reason"] = None
+        decision_meta["response_unparseable"] = False
+
+    def _mark_runtime_parse_failure(self, decision_meta: Dict[str, Any], parse_path: str) -> None:
+        decision_meta["response_contract_recovered"] = False
+        decision_meta["response_recovery_reason"] = None
+        decision_meta["response_unparseable"] = parse_path in UNPARSEABLE_RUNTIME_PARSE_PATHS
+
+    def _extract_runtime_action_from_text(self, text: str) -> tuple[int, str]:
+        nonempty_lines = self._response_nonempty_lines(text)
+        if nonempty_lines:
+            first_nonempty_line = nonempty_lines[0]
+            match = RUNTIME_ACTION_LINE_PATTERN.fullmatch(first_nonempty_line)
+            if match is not None:
+                value = int(match.group(1))
+                if self._is_valid_action_id(value):
+                    return value, "strict_action_line"
+            missing_delimiter_match = RUNTIME_MISSING_DELIMITER_ACTION_LINE_PATTERN.fullmatch(first_nonempty_line)
+            if missing_delimiter_match is not None:
+                response_lines = [
+                    line for line in nonempty_lines if RUNTIME_RESPONSE_PREFIX_PATTERN.match(line)
+                ]
+                if len(response_lines) != 1:
+                    raise ValueError("Ambiguous runtime response action lines")
+                value = int(missing_delimiter_match.group(1))
+                if self._is_valid_action_id(value):
+                    return value, "missing_delimiter_recovered"
+        for line in nonempty_lines:
+            match = RUNTIME_LABELED_ACTION_PATTERN.fullmatch(line)
+            if match is None:
+                continue
+            value = _safe_int(match.group(1), default=-999)
+            if self._is_valid_action_id(value):
+                return value, "labeled_backup"
+        raise ValueError("No valid runtime action line found in text")
+
+    def _response_diagnostics_from_message(self, response: Any, response_content: str) -> Dict[str, Any]:
+        response_metadata = getattr(response, "response_metadata", None) or {}
+        usage_metadata = getattr(response, "usage_metadata", None) or {}
+        output_token_details = {}
+        if isinstance(usage_metadata, dict):
+            output_token_details = usage_metadata.get("output_token_details") or {}
+            if not isinstance(output_token_details, dict):
+                output_token_details = {}
+        visible_content = str(response_content or "").strip()
+        return {
+            "response_finish_reason": (
+                str(response_metadata.get("finish_reason"))
+                if isinstance(response_metadata, dict) and response_metadata.get("finish_reason") is not None
+                else None
+            ),
+            "response_model_provider": (
+                str(response_metadata.get("model_provider"))
+                if isinstance(response_metadata, dict) and response_metadata.get("model_provider") is not None
+                else None
+            ),
+            "response_visible_chars": len(visible_content),
+            "response_empty": len(visible_content) == 0,
+            "reasoning_tokens": _safe_int(output_token_details.get("reasoning"), default=0),
+            "output_tokens": (
+                _safe_int(usage_metadata.get("output_tokens"), default=0)
+                if isinstance(usage_metadata, dict)
+                else 0
+            ),
+        }
+
+    def _empty_selector_fallback_reason(self, response_content: str, response_diagnostics: Dict[str, Any]) -> str:
+        if str(response_content or "").strip():
+            return "parse_fallback"
+        if str(response_diagnostics.get("response_finish_reason") or "").strip().upper() == "MAX_TOKENS":
+            return "max_tokens_empty_response_fallback"
+        return "empty_response_fallback"
+
+    def _highway_flow_safety_rules(self) -> str:
+        scenario_family = getattr(self.sce, "scenario_family", lambda: "highway")()
+        if str(scenario_family or "highway").strip().lower() != "highway":
+            return ""
+        return textwrap.dedent("""\
+        HIGHWAY TRAFFIC-FLOW SAFETY:
+        - Unnecessary stopping or near-stopping in a live highway lane is unsafe because it creates rear-end collision risk.
+        - Do not repeatedly choose Deceleration or IDLE until the ego vehicle stops unless an immediate front-collision risk makes it unavoidable.
+        - If ego speed is already very low and the front gap is safe, prefer Acceleration or steady lane keeping over further Deceleration.
+        - After Deceleration resolves a front-risk situation, recover toward the current lane's traffic-flow band instead of camping at the lowest available highway speed.
+        - In the rightmost cruising lane, 60 km/h is a slow-flow floor, not the default cruising target when the road ahead is clear.
+        - If ego is in the rightmost lane, below 80 km/h, and the front gap/TTC is safe or not closing, prefer Acceleration over repeated IDLE.
+        - Do not accelerate behind a slower same-lane lead car unless the projected front gap and projected TTC remain safe after acceleration.
+        - If same-lane front TTC is collapsing, choose Deceleration early rather than waiting until the final unsafe gap.
+        - Treat safe progress and maintaining traffic flow as part of safety, not merely efficiency.
+        - Lane ranks use right-hand traffic: lane_rank=0 is the leftmost/overtaking lane, and the maximum lane_rank is the rightmost cruising lane.
+        - Highway speed discipline: right/slow flow is 60-100 km/h, middle/normal flow is 100-120 km/h, and left/overtaking flow is 120-130 km/h.
+        - Low-speed left-lane camping is a traffic-flow safety issue; if ego is in a faster lane, below that lane's flow band, and not actively overtaking, prefer a safe LANE_RIGHT when target-lane gaps are clear.
+        - Hard lane-change safety overrides lane discipline: never change lanes if front or rear target-lane gaps are unsafe or uncertain.
+        """)
+
     def _build_system_message(self, fallback_action_id: int) -> str:
         scenario_family = getattr(self.sce, "scenario_family", lambda: "highway")()
         allowed_actions = self._allowed_action_text()
         if scenario_family == "intersection":
+            feasibility_check = "Confirm that the action is compatible with an intersection-only longitudinal decision."
             drive_logic = textwrap.dedent(f"""\
             ### DRIVE LOGIC:
             1. SAFETY: Avoid entering a conflict zone unless the gap is clearly safe. If uncertain, use the safer slower action when available.
@@ -392,8 +865,8 @@ class DriverAgent:
             3. NO LANE CHANGES: Treat this as a longitudinal-only decision problem. Do not invent lane changes.
             4. EFFICIENCY: Prefer smooth progress, but only after safety is satisfied.
             """)
-            step3 = "3. **Gap Acceptance:** [Analyze whether it is safe to continue, hold speed, or slow down]"
         elif scenario_family == "merge":
+            feasibility_check = "Confirm that the action preserves a safe merge gap and does not force nearby traffic."
             drive_logic = textwrap.dedent(f"""\
             ### DRIVE LOGIC:
             1. SAFETY: Maintain a safe gap to nearby traffic and avoid forcing a merge.
@@ -401,36 +874,46 @@ class DriverAgent:
             3. NO-UNNECESSARY-BRAKING: Avoid full hesitation when a safe merge opportunity is already present.
             4. EFFICIENCY: Preserve stable speed and lane control while completing the merge.
             """)
-            step3 = "3. **Merge Feasibility:** [Analyze whether a safe merge gap exists and whether lane change is necessary now]"
         else:
+            feasibility_check = (
+                "Confirm lane-change feasibility: target-lane front and rear vehicles must both leave clear safety gaps."
+            )
             drive_logic = textwrap.dedent(f"""\
             ### DRIVE LOGIC:
             1. SAFETY: If a lead car is closer than 25m and your speed is higher, you should prefer the safer slower action when available.
             2. NO-UNNECESSARY-LANE-CHANGE: If the lead car in your current lane is not slower than you (or not close enough to block you), do not change lane just for preference.
-            3. EFFICIENCY: Maintain a brisk but safe cruising speed.
+            3. EFFICIENCY: Once front-collision risk is resolved, recover toward the current lane's flow band instead of camping at the lowest speed.
             4. TRAFFIC RULE (RIGHT-HAND TRAFFIC): Prefer overtaking from the LEFT lane when overtaking is necessary and safe.
             """)
-            step3 = "3. **Lane Change Feasibility:** [Analyze if changing lanes is safe or necessary]"
 
         return textwrap.dedent(f"""\
-        You are an autonomous driving decision module. You must strictly follow a Chain of Thought reasoning process before making a decision.
+        You are an autonomous driving decision module.
+        Think privately about safety, traffic flow, and action validity, but do not output your private reasoning.
 
         {drive_logic}
-        You MUST format your response EXACTLY like this, using these exact headings:
+        {self._highway_flow_safety_rules()}
 
-        **Step-by-Step Explanation:**
-        1. **Safety Check:** [Analyze the nearest relevant traffic and collision risk]
-        2. **Efficiency Consideration:** [Analyze whether you should maintain, increase, or reduce speed]
-        {step3}
-        4. **Conclusion:** [Summarize the best course of action]
+        PRIVATE DECISION CHECKLIST - DO NOT OUTPUT:
+        1. Safety check: reject collision-prone actions and unavailable action ids.
+        2. Check front collision risk, target-lane front/rear gaps, and projected TTC.
+        3. Efficiency check: keep safe traffic flow and recover speed after immediate risk clears.
+        4. {feasibility_check}
+        5. Choose the safest valid action id from the allowed set.
 
-        **Answer:**
-        Reasoning: [1-sentence summary of the conclusion]
-        Response to user:{delimiter} {fallback_action_id}
+        HARD LANE-CHANGE SAFETY RULES:
+        - Never choose a lane-change action if a target-lane vehicle is within 15 m ahead or behind the ego vehicle.
+        - Never choose a lane-change action if target-lane front/rear distance is unknown or ambiguous.
+        - If a lane-change action is unsafe or unavailable, choose a longitudinal action that preserves safety and traffic flow.
 
-        IMPORTANT:
-        - Output one real integer action id from: {allowed_actions}
-        - Do NOT output angle brackets like <Action_id_integer>.
+        RESPONSE CONTRACT:
+        - Output at most two non-empty lines.
+        - First non-empty line must be exactly:
+        Response to user:{delimiter} <action_id>
+        - Optional second line may be:
+        Reason: <one short sentence>
+        - Use exactly one real integer action id from: {allowed_actions}
+        - Do not output angle brackets, markdown, bullet points, code fences, JSON, or step-by-step reasoning.
+        - Do not omit "{delimiter}"; a missing delimiter can be recovered but is counted as a runtime contract failure.
         """)
 
     def _run_with_timeout(self, fn, *args):
@@ -444,12 +927,79 @@ class DriverAgent:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def _invoke_response(self, messages) -> str:
+    @contextmanager
+    def _temporary_max_output_tokens(self, max_output_tokens_override: int | None):
+        if max_output_tokens_override is None:
+            yield
+            return
+        attr_names = ("max_tokens", "max_output_tokens")
+        original_values = {}
+        for attr_name in attr_names:
+            if hasattr(self.llm, attr_name):
+                try:
+                    original_values[attr_name] = getattr(self.llm, attr_name)
+                    setattr(self.llm, attr_name, int(max_output_tokens_override))
+                except Exception:
+                    pass
+        try:
+            yield
+        finally:
+            for attr_name, value in original_values.items():
+                try:
+                    setattr(self.llm, attr_name, value)
+                except Exception:
+                    pass
+
+    def _runtime_response_diagnostics_for_text(
+        self,
+        response_content: str,
+        token_usage: Dict[str, Any] | None,
+        *,
+        finish_reason: str | None = None,
+    ) -> Dict[str, Any]:
+        token_usage = token_usage or {}
+        visible_content = str(response_content or "").strip()
+        return {
+            "response_finish_reason": finish_reason,
+            "response_model_provider": None,
+            "response_visible_chars": len(visible_content),
+            "response_empty": len(visible_content) == 0,
+            "reasoning_tokens": 0,
+            "output_tokens": _safe_int(token_usage.get("completion_tokens"), default=0),
+        }
+
+    def _invoke_response_with_diagnostics(
+        self,
+        messages,
+        max_output_tokens_override: int | None = None,
+    ) -> tuple[str, Dict[str, Any] | None, Dict[str, Any]]:
         if self.oai_api_type == "ollama" and self.ollama_use_native_chat:
             content, _thinking, usage = self._ollama_native_invoke(messages)
-            return content, usage
-        response = self._run_with_timeout(self.llm.invoke, messages)
-        return _content_to_text(getattr(response, "content", "")), build_token_usage_record_from_langchain_message(response)
+            diagnostics = self._runtime_response_diagnostics_for_text(content, usage)
+            return content, usage, diagnostics
+
+        if self.oai_api_type == "ollama":
+            content, usage, finish_reason = self._ollama_openai_compat_invoke(
+                messages,
+                max_output_tokens=max_output_tokens_override,
+            )
+            diagnostics = self._runtime_response_diagnostics_for_text(
+                content,
+                usage,
+                finish_reason=finish_reason,
+            )
+            return content, usage, diagnostics
+
+        with self._temporary_max_output_tokens(max_output_tokens_override):
+            response = self._run_with_timeout(self.llm.invoke, messages)
+        content = _content_to_text(getattr(response, "content", ""))
+        token_usage = build_token_usage_record_from_langchain_message(response)
+        diagnostics = self._response_diagnostics_from_message(response, content)
+        return content, token_usage, diagnostics
+
+    def _invoke_response(self, messages) -> str:
+        content, token_usage, _diagnostics = self._invoke_response_with_diagnostics(messages)
+        return content, token_usage
 
     def _stream_response(self, messages) -> str:
         if self.oai_api_type == "ollama" and self.ollama_use_native_chat:
@@ -511,6 +1061,85 @@ class DriverAgent:
 
     def _ollama_request_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.ollama_api_key}"}
+
+    def _ollama_openai_compat_url(self) -> str:
+        raw_base = (
+            str(getattr(self, "ollama_api_base", "") or "").strip()
+            or str(os.getenv("OLLAMA_API_BASE", "") or "").strip()
+            or str(getattr(self, "ollama_chat_url", "") or "").strip()
+            or "http://localhost:11434/v1"
+        )
+        base = raw_base.rstrip("/")
+        if base.endswith("/v1/chat/completions"):
+            return base
+        if base.endswith("/chat/completions"):
+            return base
+        if base.endswith("/api/chat"):
+            return base[: -len("/api/chat")] + "/v1/chat/completions"
+        if base.endswith("/api"):
+            return base[: -len("/api")] + "/v1/chat/completions"
+        if base.endswith("/v1"):
+            return base + "/chat/completions"
+        return base + "/v1/chat/completions"
+
+    def _ollama_openai_compat_usage_record(self, usage: Any) -> Dict[str, Any] | None:
+        if not isinstance(usage, dict):
+            return None
+        prompt_tokens = _safe_int(usage.get("prompt_tokens"), default=0)
+        completion_tokens = _safe_int(usage.get("completion_tokens"), default=0)
+        total_tokens = _safe_int(usage.get("total_tokens"), default=prompt_tokens + completion_tokens)
+        return {
+            "prompt_tokens": max(0, int(prompt_tokens)),
+            "completion_tokens": max(0, int(completion_tokens)),
+            "total_tokens": max(0, int(total_tokens)),
+            "token_count_method": "ollama_openai_usage",
+            "token_usage_source": "openai_compat",
+        }
+
+    def _ollama_openai_compat_invoke_once(self, messages, max_output_tokens: int | None = None):
+        output_cap = max(
+            1,
+            int(
+                max_output_tokens
+                or getattr(self, "runtime_max_output_tokens", None)
+                or getattr(self, "max_tokens", 512)
+                or 512
+            ),
+        )
+        payload = {
+            "model": self.ollama_model_name,
+            "messages": self._to_ollama_messages(messages),
+            "stream": False,
+            "temperature": float(getattr(self, "temperature", 0.0) or 0.0),
+            "max_tokens": output_cap,
+        }
+        response = requests.post(
+            self._ollama_openai_compat_url(),
+            json=payload,
+            headers=self._ollama_request_headers(),
+            timeout=float(getattr(self, "decision_timeout_sec", 60.0) or 60.0),
+        )
+        response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices") if isinstance(data, dict) else None
+        choice = choices[0] if isinstance(choices, list) and choices else {}
+        message = choice.get("message") if isinstance(choice, dict) else {}
+        content = _content_to_text((message or {}).get("content", ""))
+        finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+        usage = self._ollama_openai_compat_usage_record(data.get("usage") if isinstance(data, dict) else None)
+        return content, usage, finish_reason
+
+    def _ollama_openai_compat_invoke(self, messages, max_output_tokens: int | None = None):
+        self.last_ollama_transport = "openai_compat_direct"
+        self.last_ollama_effective_think_mode = self._get_ollama_effective_think_mode()
+        self.last_ollama_native_retry_used = False
+        self.last_ollama_native_timeout = False
+        self.last_ollama_native_timeout_short_circuit = False
+        return self._run_with_timeout(
+            self._ollama_openai_compat_invoke_once,
+            messages,
+            max_output_tokens,
+        )
 
     def _effective_ollama_native_timeout_sec(self) -> float:
         # Decision timeout is the hard cap in timeout-only policy mode.
@@ -767,8 +1396,15 @@ class DriverAgent:
         valid_action_ids = self._valid_action_ids()
         system_message = self._build_system_message(fallback_action_id)
 
+        fewshot_intro = (
+            "Above messages are some examples of how you make a decision successfully in the past. "
+            "Those scenarios are similar to the current scenario. You should refer to those examples "
+            "to make a decision for the current scenario."
+            if fewshot_messages
+            else "Use only the current scenario."
+        )
         human_message = f"""\
-        Above messages are some examples of how you make a decision successfully in the past. Those scenarios are similar to the current scenario. You should refer to those examples to make a decision for the current scenario. 
+        {fewshot_intro}
 
         Here is the current scenario:
         {delimiter} Driving scenario description:
@@ -778,7 +1414,7 @@ class DriverAgent:
         {delimiter} Available actions:
         {available_actions}
 
-        You can stop reasoning once you have a valid action to take. 
+        Think privately; output only the response contract from the system message.
         """
         human_message = human_message.replace("        ", "")
 
@@ -810,6 +1446,15 @@ class DriverAgent:
             "selected_action": None,
             "decision_elapsed_sec": 0.0,
             "ollama_transport": None,
+            "ollama_native_chat_configured": (
+                self.ollama_use_native_chat_configured if self.oai_api_type == "ollama" else None
+            ),
+            "ollama_native_chat_effective": (
+                self.ollama_use_native_chat if self.oai_api_type == "ollama" else None
+            ),
+            "ollama_native_chat_resolution_reason": (
+                self.ollama_native_chat_resolution_reason if self.oai_api_type == "ollama" else None
+            ),
             "ollama_requested_think_mode": self.ollama_think_mode if self.oai_api_type == "ollama" else None,
             "ollama_effective_think_mode": None,
             "ollama_native_retry_used": False,
@@ -820,6 +1465,31 @@ class DriverAgent:
             "total_tokens": None,
             "token_count_method": None,
             "token_usage_source": None,
+            "response_contract_satisfied": False,
+            "response_contract_recovered": False,
+            "response_recovery_reason": None,
+            "response_unparseable": False,
+            "response_action_line_present": False,
+            "response_action_line_count": 0,
+            "response_reason_line_present": False,
+            "runtime_parse_path": "unknown",
+            "response_first_nonempty_line": None,
+            "response_truncated_before_contract": False,
+            "response_finish_reason": None,
+            "response_model_provider": None,
+            "response_visible_chars": 0,
+            "response_empty": False,
+            "reasoning_tokens": 0,
+            "output_tokens": 0,
+            "semantic_recovery_used": False,
+            "semantic_recovery_label": None,
+            "semantic_recovery_reason": None,
+            "intent_resolver_used": False,
+            "intent_resolver_model": None,
+            "intent_resolver_action_id": None,
+            "intent_resolver_abstained": False,
+            "intent_resolver_reason": None,
+            "final_action_source": "unknown",
         }
 
         # NOTE: get_openai_callback might return 0 for Ollama
@@ -829,24 +1499,37 @@ class DriverAgent:
         self._log_step("[cyan]Agent answer:[/cyan]")
         response_content = ""
         token_usage = None
+        response_diagnostics: Dict[str, Any] = {}
         try:
             if self.use_streaming:
                 response_content, token_usage = self._stream_response(messages)
+                response_diagnostics = self._runtime_response_diagnostics_for_text(response_content, token_usage)
             else:
-                response_content, token_usage = self._invoke_response(messages)
+                response_content, token_usage, response_diagnostics = self._invoke_response_with_diagnostics(
+                    messages,
+                    max_output_tokens_override=self.runtime_max_output_tokens,
+                )
                 self._log_step(response_content, end="", flush=True)
             self._log_step("\n")
         except TimeoutError:
-            response_content = f"Decision timeout. Response to user:{delimiter} {fallback_action_id}"
+            response_content = f"Response to user:{delimiter} {fallback_action_id}"
+            response_diagnostics = self._runtime_response_diagnostics_for_text(response_content, token_usage)
             self._log_error(
                 f"\n[red]Decision timeout after {self.decision_timeout_sec:.1f}s. "
                 f"Fallback action: {fallback_action_id}[/red]"
+            )
+            decision_meta.update(response_diagnostics)
+            decision_meta.update(
+                self._runtime_response_contract_diagnostics(response_content, response_diagnostics)
             )
             decision_meta["timed_out"] = True
             decision_meta["used_fallback"] = True
             decision_meta["fallback_reason"] = "decision_timeout"
             decision_meta["parse_mode"] = "timeout_fallback"
+            decision_meta["runtime_parse_path"] = "timeout_fallback"
+            decision_meta["response_unparseable"] = False
             decision_meta["selected_action"] = fallback_action_id
+            decision_meta["final_action_source"] = "safe_fallback"
             decision_meta["decision_elapsed_sec"] = round(time.time() - start_time, 3)
             if self.oai_api_type == "ollama":
                 decision_meta["ollama_transport"] = self.last_ollama_transport
@@ -863,87 +1546,132 @@ class DriverAgent:
             self._log_step(f"Result: {fallback_action_id}")
             return fallback_action_id, response_content, human_message, few_shot_answers_store
 
-        decision_action = response_content.split(delimiter)[-1]
-        try:
-            result = self._extract_valid_action_from_text(decision_action)
-        except ValueError:
+        decision_meta.update(response_diagnostics)
+        decision_meta.update(
+            self._runtime_response_contract_diagnostics(response_content, response_diagnostics)
+        )
+        result = fallback_action_id
+        parse_path = "unknown"
+        response_text = str(response_content or "")
+
+        def _accept_parse(action_id: int, path: str) -> None:
+            nonlocal result, parse_path
+            result = int(action_id)
+            parse_path = str(path)
+            decision_meta["parse_mode"] = parse_path
+            decision_meta["runtime_parse_path"] = parse_path
+            decision_meta["final_action_source"] = parse_path
+            self._mark_runtime_parse_result(decision_meta, parse_path)
+
+        def _use_fallback(path: str) -> None:
+            nonlocal result, parse_path
+            result = fallback_action_id
+            parse_path = str(path)
+            decision_meta["used_fallback"] = True
+            decision_meta["fallback_reason"] = parse_path
+            decision_meta["parse_mode"] = parse_path
+            decision_meta["runtime_parse_path"] = parse_path
+            decision_meta["final_action_source"] = "safe_fallback"
+            self._mark_runtime_parse_failure(decision_meta, parse_path)
+
+        if not response_text.strip():
+            _use_fallback(self._empty_selector_fallback_reason(response_text, response_diagnostics))
+            self._log_step(
+                f"[red]LLM returned an empty action response. Fallback to action {fallback_action_id}.[/red]"
+            )
+        else:
             try:
-                result = self._extract_valid_action_from_text(response_content)
-                decision_meta["parse_mode"] = "regex_recovered"
-                self._log_step(f"[yellow]Recovered action via regex parse:[/yellow] {result}")
+                action_id, path = self._extract_runtime_action_from_text(response_text)
+                _accept_parse(action_id, path)
             except ValueError:
-                if not self.enable_checker_llm:
+                tail = response_text.split(delimiter)[-1].strip() if delimiter in response_text else ""
+                try:
+                    if tail:
+                        _accept_parse(self._extract_valid_action_from_text(tail), "delimiter_tail")
+                    else:
+                        raise ValueError("No delimiter tail available")
+                except ValueError:
                     try:
-                        result = self._extract_valid_action_from_text(response_content)
-                        decision_meta["parse_mode"] = "loose_recovered"
-                        self._log_step(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
-                    except ValueError:
-                        result = fallback_action_id
-                        decision_meta["used_fallback"] = True
-                        decision_meta["fallback_reason"] = "parse_fallback"
-                        decision_meta["parse_mode"] = "parse_fallback"
-                        self._log_step(
-                            f"[red]Output parse failed. Checker disabled; fallback to action {fallback_action_id}.[/red]"
-                        )
-                else:
-                    decision_meta["checker_used"] = True
-                    self._log_step("Output is not a int number, checking the output...")
-                    action_table = self._action_table_markdown()
-                    allowed_actions = self._allowed_action_text()
-                    check_message = f"""
-                    You are a output checking assistant who is responsible for checking the output of another agent.
-
-                    The output you received is: {decision_action}
-
-                    Your should just output the right int type of action_id, with no other characters or delimiters.
-                    Valid actions are:
-                    {action_table}
-
-                    Use only one of these action ids: {allowed_actions}
-
-                    You answer format would be:
-                    {delimiter} <correct action_id>
-                    """
-                    messages = [
-                        HumanMessage(content=check_message),
-                    ]
-                    checker_token_usage = None
-                    try:
-                        check_response = self._run_with_timeout(self.llm.invoke, messages)
-                        checker_token_usage = build_token_usage_record_from_langchain_message(check_response)
-                        check_text = _content_to_text(getattr(check_response, "content", "")).strip()
-                        if checker_token_usage is None and check_text:
-                            checker_token_usage = build_whitespace_estimate_token_usage(
-                                estimate_generated_tokens(check_text)
-                            )
-                    except TimeoutError:
-                        check_text = ""
-                        decision_meta["timed_out"] = True
-                        self._log_step("[yellow]Checker timed out. Applying safe fallback parse.[/yellow]")
-                    token_usage = combine_token_usage_records(token_usage, checker_token_usage)
-
-                    tail = check_text.split(delimiter)[-1].strip() if delimiter in check_text else check_text
-                    try:
-                        result = self._extract_valid_action_from_text(tail)
-                        decision_meta["parse_mode"] = "checker_direct"
+                        _accept_parse(self._extract_valid_action_from_text(response_text), "regex_recovered")
+                        self._log_step(f"[yellow]Recovered action via regex parse:[/yellow] {result}")
                     except ValueError:
                         try:
-                            result = self._extract_valid_action_from_text(check_text)
-                            decision_meta["parse_mode"] = "checker_regex_recovered"
-                            self._log_step(f"[yellow]Recovered action from checker output:[/yellow] {result}")
-                        except ValueError:
-                            try:
-                                result = self._extract_valid_action_from_text(check_text)
-                                decision_meta["parse_mode"] = "checker_loose_recovered"
-                                self._log_step(f"[yellow]Recovered action from loose parse:[/yellow] {result}")
-                            except ValueError:
-                                result = fallback_action_id
-                                decision_meta["used_fallback"] = True
-                                decision_meta["fallback_reason"] = "checker_fallback"
-                                decision_meta["parse_mode"] = "checker_fallback"
+                            semantic_action_id, semantic_label = self._extract_semantic_action_from_text(response_text)
+                            decision_meta["semantic_recovery_used"] = True
+                            decision_meta["semantic_recovery_label"] = semantic_label
+                            decision_meta["semantic_recovery_reason"] = None
+                            _accept_parse(semantic_action_id, "semantic_label_recovered")
+                            self._log_step(
+                                f"[yellow]Recovered action via semantic label:[/yellow] {semantic_label} -> {result}"
+                            )
+                        except ValueError as semantic_exc:
+                            decision_meta["semantic_recovery_used"] = False
+                            decision_meta["semantic_recovery_label"] = None
+                            decision_meta["semantic_recovery_reason"] = str(semantic_exc)[:160]
+                            resolver_action_id, resolver_meta = self._resolve_action_with_intent_resolver(response_text)
+                            decision_meta.update(resolver_meta)
+                            if resolver_action_id is not None:
+                                _accept_parse(resolver_action_id, "intent_resolver_direct")
                                 self._log_step(
-                                    f"[red]Checker output parse failed. Falling back to safe action {fallback_action_id}.[/red]"
+                                    f"[yellow]Recovered action via intent resolver:[/yellow] {result}"
                                 )
+                            elif not self.enable_checker_llm:
+                                fallback_path = (
+                                    "incomplete_output_fallback"
+                                    if decision_meta.get("response_truncated_before_contract")
+                                    else "parse_fallback"
+                                )
+                                _use_fallback(fallback_path)
+                                self._log_step(
+                                    f"[red]Output parse failed. Checker disabled; fallback to action {fallback_action_id}.[/red]"
+                                )
+                            else:
+                                decision_meta["checker_used"] = True
+                                self._log_step("Output is not a valid action contract, checking the output...")
+                                action_table = self._action_table_markdown()
+                                allowed_actions = self._allowed_action_text()
+                                check_message = f"""
+                                You are an output checking assistant.
+
+                                The driving agent output was:
+                                {response_text}
+
+                                Valid actions are:
+                                {action_table}
+
+                                Return exactly one valid action id from: {allowed_actions}
+
+                                Answer format:
+                                {delimiter} <correct action_id>
+                                """
+                                checker_messages = [HumanMessage(content=check_message)]
+                                checker_token_usage = None
+                                try:
+                                    check_response = self._run_with_timeout(self.llm.invoke, checker_messages)
+                                    checker_token_usage = build_token_usage_record_from_langchain_message(check_response)
+                                    check_text = _content_to_text(getattr(check_response, "content", "")).strip()
+                                    if checker_token_usage is None and check_text:
+                                        checker_token_usage = build_whitespace_estimate_token_usage(
+                                            estimate_generated_tokens(check_text)
+                                        )
+                                except TimeoutError:
+                                    check_text = ""
+                                    decision_meta["timed_out"] = True
+                                    self._log_step("[yellow]Checker timed out. Applying safe fallback parse.[/yellow]")
+                                token_usage = combine_token_usage_records(token_usage, checker_token_usage)
+
+                                checker_tail = check_text.split(delimiter)[-1].strip() if delimiter in check_text else check_text
+                                try:
+                                    _accept_parse(self._extract_valid_action_from_text(checker_tail), "checker_direct")
+                                except ValueError:
+                                    try:
+                                        _accept_parse(self._extract_valid_action_from_text(check_text), "checker_regex_recovered")
+                                        self._log_step(f"[yellow]Recovered action from checker output:[/yellow] {result}")
+                                    except ValueError:
+                                        _use_fallback("checker_fallback")
+                                        self._log_step(
+                                            f"[red]Checker output parse failed. Falling back to safe action {fallback_action_id}.[/red]"
+                                        )
 
         few_shot_answers_store = ""
         for i in range(len(fewshot_messages)):

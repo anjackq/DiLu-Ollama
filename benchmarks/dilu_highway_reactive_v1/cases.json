@@ -1,0 +1,3769 @@
+{
+  "benchmark_name": "dilu_highway_reactive_v1",
+  "version": "1.0",
+  "description": "Controlled highway reactive-driving benchmark with hidden scenario_spec traffic initialization for runtime LLM driver evaluation.",
+  "target_env_id": "highway-fast-v0",
+  "scenario_family": "highway",
+  "defaults": {
+    "time_limit_sec": 14,
+    "difficulty": "medium",
+    "case_group": "reactive_highway",
+    "env_overrides": {
+      "lanes_count": 3,
+      "vehicles_count": 8,
+      "vehicles_density": 0.4,
+      "duration": 30,
+      "simulation_frequency": 5,
+      "policy_frequency": 1,
+      "ego_spacing": 1.5,
+      "action": {
+        "type": "DiscreteMetaAction",
+        "target_speeds": [
+          0,
+          5,
+          10,
+          15,
+          20,
+          25,
+          30
+        ]
+      }
+    },
+    "success_criteria": {
+      "hold_steps": 2
+    }
+  },
+  "cases": [
+    {
+      "case_id": "flow_cruise_001",
+      "category": "free_flow_cruise",
+      "instruction": "Maintain normal highway flow safely without unnecessary lane changes.",
+      "seed": 1101,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 105.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_002",
+      "category": "free_flow_cruise",
+      "instruction": "Cruise with the highway stream and avoid needless braking or weaving.",
+      "seed": 1102,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 110.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 120.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 75.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_003",
+      "category": "free_flow_cruise",
+      "instruction": "Hold a steady highway pace on an open road.",
+      "seed": 1103,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 95.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 135.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "rear",
+            "lane_offset": 1,
+            "x_offset_m": -70.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_004",
+      "category": "free_flow_cruise",
+      "instruction": "Keep cruising smoothly with no unnecessary maneuver.",
+      "seed": 1104,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 105.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 140.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "rear",
+            "lane_offset": -1,
+            "x_offset_m": -80.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_005",
+      "category": "free_flow_cruise",
+      "instruction": "Maintain flow speed and stay composed in the current lane.",
+      "seed": 1105,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 115.0,
+          "speed_mps": 23.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 100.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 90.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_006",
+      "category": "free_flow_cruise",
+      "instruction": "Drive steadily with the traffic stream and avoid low-speed blocking.",
+      "seed": 1106,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 27.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 150.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 65.0,
+            "speed_mps": 28.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_007",
+      "category": "free_flow_cruise",
+      "instruction": "Keep highway flow pace and avoid unnecessary corrections.",
+      "seed": 1107,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 125.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 115.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "rear",
+            "lane_offset": 1,
+            "x_offset_m": -90.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_008",
+      "category": "free_flow_cruise",
+      "instruction": "Continue in a stable lane at normal highway speed.",
+      "seed": 1108,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 130.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_009",
+      "category": "free_flow_cruise",
+      "instruction": "Preserve smooth flow and avoid unnecessary slowdown.",
+      "seed": 1109,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 90.0,
+          "speed_mps": 22.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 105.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 95.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "flow_cruise_010",
+      "category": "free_flow_cruise",
+      "instruction": "Stay in flow with steady speed and no needless lane change.",
+      "seed": 1110,
+      "time_limit_sec": 10,
+      "success_criteria": {
+        "type": "flow_cruise",
+        "min_speed_mps": 20.0,
+        "max_speed_mps": 30.0,
+        "min_survival_steps": 6,
+        "max_lane_changes": 0,
+        "max_low_speed_blocking_steps": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 105.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 145.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "side_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 80.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "flow",
+        "free_flow"
+      ],
+      "difficulty": "easy",
+      "case_group": "flow_control"
+    },
+    {
+      "case_id": "slow_lead_overtake_001",
+      "category": "slow_lead_overtake",
+      "instruction": "Pass the slower vehicle ahead when it is safe, then return to stable highway flow.",
+      "seed": 1201,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 36.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 84.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -58.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_002",
+      "category": "slow_lead_overtake",
+      "instruction": "Use the left lane to pass the slower lead vehicle when the gap is safe.",
+      "seed": 1202,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 105.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 34.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 82.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -60.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_003",
+      "category": "slow_lead_overtake",
+      "instruction": "Overtake the slower vehicle ahead with a clean left-lane pass.",
+      "seed": 1203,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 95.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 40.0,
+            "speed_mps": 19.0,
+            "target_speed_mps": 19.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 88.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -64.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_004",
+      "category": "slow_lead_overtake",
+      "instruction": "Avoid camping behind the slower car; pass left if the lane remains safe.",
+      "seed": 1204,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 42.0,
+            "speed_mps": 18.5,
+            "target_speed_mps": 18.5,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 90.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -62.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_005",
+      "category": "slow_lead_overtake",
+      "instruction": "Pass the slow lead vehicle decisively while preserving safe spacing.",
+      "seed": 1205,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 110.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 48.0,
+            "speed_mps": 20.0,
+            "target_speed_mps": 20.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 96.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -66.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_006",
+      "category": "slow_lead_overtake",
+      "instruction": "Use an available left-lane opportunity to pass the slower vehicle ahead.",
+      "seed": 1206,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 38.0,
+            "speed_mps": 18.5,
+            "target_speed_mps": 18.5,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 92.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -68.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_007",
+      "category": "slow_lead_overtake",
+      "instruction": "When safe, move left and complete the pass of the slower lead vehicle.",
+      "seed": 1207,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 98.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 36.0,
+            "speed_mps": 19.0,
+            "target_speed_mps": 19.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 86.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -58.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_008",
+      "category": "slow_lead_overtake",
+      "instruction": "Complete a safe left-lane overtake and regain normal flow.",
+      "seed": 1208,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 104.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 44.0,
+            "speed_mps": 19.0,
+            "target_speed_mps": 19.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 94.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -70.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_009",
+      "category": "slow_lead_overtake",
+      "instruction": "Pass left when safe instead of remaining blocked behind the slower car.",
+      "seed": 1209,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 34.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 84.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -60.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "slow_lead_overtake_010",
+      "category": "slow_lead_overtake",
+      "instruction": "Use the open left lane to overtake the slower front vehicle cleanly.",
+      "seed": 1210,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "safe_overtake",
+        "direction": "left",
+        "pass_margin_m": 8.0,
+        "min_final_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 112.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 46.0,
+            "speed_mps": 20.0,
+            "target_speed_mps": 20.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 98.0,
+            "speed_mps": 27.0,
+            "target_speed_mps": 27.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -72.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "overtake",
+        "safe_left_gap"
+      ],
+      "difficulty": "medium",
+      "case_group": "overtake_opportunity"
+    },
+    {
+      "case_id": "blocked_lane_patience_001",
+      "category": "blocked_lane_patience",
+      "instruction": "Handle the slower vehicle ahead without forcing an unsafe lane change.",
+      "seed": 1301,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 24.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -8.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 55.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_002",
+      "category": "blocked_lane_patience",
+      "instruction": "Stay patient behind the slower vehicle because the left lane is not safe yet.",
+      "seed": 1302,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 104.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 28.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -10.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 48.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_003",
+      "category": "blocked_lane_patience",
+      "instruction": "Avoid an unsafe left lane change while managing the slow lead vehicle.",
+      "seed": 1303,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 98.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 26.0,
+            "speed_mps": 17.0,
+            "target_speed_mps": 17.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -7.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 38.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_004",
+      "category": "blocked_lane_patience",
+      "instruction": "Preserve safety around the blocked adjacent lane and keep controlled progress.",
+      "seed": 1304,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 110.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 30.0,
+            "speed_mps": 19.0,
+            "target_speed_mps": 19.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -12.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 42.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_005",
+      "category": "blocked_lane_patience",
+      "instruction": "Do not force the overtake while a nearby vehicle blocks the target lane.",
+      "seed": 1305,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 22.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -9.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 36.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_006",
+      "category": "blocked_lane_patience",
+      "instruction": "Manage the slower lead car defensively until the adjacent lane is safe.",
+      "seed": 1306,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 96.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 32.0,
+            "speed_mps": 19.0,
+            "target_speed_mps": 19.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -11.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 40.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_007",
+      "category": "blocked_lane_patience",
+      "instruction": "Avoid cutting into the left lane when the rear vehicle is too close.",
+      "seed": 1307,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 106.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 25.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -6.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 52.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_008",
+      "category": "blocked_lane_patience",
+      "instruction": "Keep safe headway instead of changing left into a close gap.",
+      "seed": 1308,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 27.0,
+            "speed_mps": 17.0,
+            "target_speed_mps": 17.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -8.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 34.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_009",
+      "category": "blocked_lane_patience",
+      "instruction": "Respond to the slow lead vehicle without creating target-lane conflict.",
+      "seed": 1309,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 112.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 29.0,
+            "speed_mps": 19.0,
+            "target_speed_mps": 19.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -10.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 44.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "blocked_lane_patience_010",
+      "category": "blocked_lane_patience",
+      "instruction": "Stay composed behind the slow car when the passing lane is blocked.",
+      "seed": 1310,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "blocked_lane_patience",
+        "min_survival_steps": 8,
+        "min_speed_mps": 18.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 102.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "slow_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 24.0,
+            "speed_mps": 18.0,
+            "target_speed_mps": 18.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear_blocker",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -7.0,
+            "speed_mps": 29.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front_blocker",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 46.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "blocked_lane",
+        "patience"
+      ],
+      "difficulty": "hard",
+      "case_group": "blocked_lane_patience"
+    },
+    {
+      "case_id": "post_brake_recovery_001",
+      "category": "post_brake_recovery",
+      "instruction": "Slow for the front risk, then recover to highway flow when the gap clears.",
+      "seed": 1401,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 17.0,
+            "speed_mps": 15.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_002",
+      "category": "post_brake_recovery",
+      "instruction": "Brake defensively for the close lead vehicle and rebuild speed once safe.",
+      "seed": 1402,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 104.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 18.0,
+            "speed_mps": 16.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_003",
+      "category": "post_brake_recovery",
+      "instruction": "Handle the short front gap first, then return toward normal flow speed.",
+      "seed": 1403,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 96.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 16.0,
+            "speed_mps": 15.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_004",
+      "category": "post_brake_recovery",
+      "instruction": "Avoid the front risk and recover speed after the lead vehicle pulls away.",
+      "seed": 1404,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 110.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 20.0,
+            "speed_mps": 17.0,
+            "target_speed_mps": 30.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_005",
+      "category": "post_brake_recovery",
+      "instruction": "Stabilize behind the lead car, then accelerate when the front risk clears.",
+      "seed": 1405,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 19.0,
+            "speed_mps": 16.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_006",
+      "category": "post_brake_recovery",
+      "instruction": "Respond to the close lead vehicle and do not remain slow after the gap opens.",
+      "seed": 1406,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 94.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 18.0,
+            "speed_mps": 15.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_007",
+      "category": "post_brake_recovery",
+      "instruction": "Prioritize front safety, then regain flow speed as soon as it is safe.",
+      "seed": 1407,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 108.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 21.0,
+            "speed_mps": 17.0,
+            "target_speed_mps": 30.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_008",
+      "category": "post_brake_recovery",
+      "instruction": "Slow early for the front hazard and recover when the lane opens ahead.",
+      "seed": 1408,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 100.0,
+          "speed_mps": 26.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 16.0,
+            "speed_mps": 16.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_009",
+      "category": "post_brake_recovery",
+      "instruction": "After defensive slowing, return to normal highway pace when safe.",
+      "seed": 1409,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 112.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 20.0,
+            "speed_mps": 15.0,
+            "target_speed_mps": 29.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "post_brake_recovery_010",
+      "category": "post_brake_recovery",
+      "instruction": "Clear the front-risk episode and rebuild speed without lingering too slow.",
+      "seed": 1410,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "post_brake_recovery",
+        "clear_front_gap_m": 25.0,
+        "clear_front_ttc_sec": 4.0,
+        "min_recovery_speed_mps": 22.0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 102.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "close_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 18.0,
+            "speed_mps": 16.0,
+            "target_speed_mps": 30.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_flow",
+            "role": "traffic",
+            "lane_offset": 1,
+            "x_offset_m": 60.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "front_risk",
+        "recovery"
+      ],
+      "difficulty": "medium",
+      "case_group": "post_brake_recovery"
+    },
+    {
+      "case_id": "dense_traffic_flow_001",
+      "category": "dense_traffic_flow",
+      "instruction": "Make smooth safe progress in dense highway traffic.",
+      "seed": 1501,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 97.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 35.0,
+            "speed_mps": 22.0,
+            "target_speed_mps": 22.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -39.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 43.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -35.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 47.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -41.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 83.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 79.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_002",
+      "category": "dense_traffic_flow",
+      "instruction": "Navigate moderate traffic density with steady safe progress.",
+      "seed": 1502,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 99.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 36.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -40.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 44.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -36.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 48.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -42.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 84.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 80.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_003",
+      "category": "dense_traffic_flow",
+      "instruction": "Keep moving smoothly while surrounded by nearby highway traffic.",
+      "seed": 1503,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 101.0,
+          "speed_mps": 23.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 37.0,
+            "speed_mps": 22.0,
+            "target_speed_mps": 22.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -41.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 45.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -37.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 49.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -43.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 85.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 81.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_004",
+      "category": "dense_traffic_flow",
+      "instruction": "Maintain safe, non-flapping behavior in dense traffic flow.",
+      "seed": 1504,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 103.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 38.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -42.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 46.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -38.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 50.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -44.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 86.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 82.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_005",
+      "category": "dense_traffic_flow",
+      "instruction": "Progress through dense traffic without abrupt acceleration-deceleration cycles.",
+      "seed": 1505,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 105.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 39.0,
+            "speed_mps": 22.0,
+            "target_speed_mps": 22.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -43.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 47.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -39.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 51.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -45.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 87.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 83.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_006",
+      "category": "dense_traffic_flow",
+      "instruction": "Stay safe and efficient among multiple nearby vehicles.",
+      "seed": 1506,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 107.0,
+          "speed_mps": 23.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 40.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -44.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 48.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -40.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 52.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -46.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 88.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 84.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_007",
+      "category": "dense_traffic_flow",
+      "instruction": "Balance progress and spacing in a crowded highway scene.",
+      "seed": 1507,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 109.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 41.0,
+            "speed_mps": 22.0,
+            "target_speed_mps": 22.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -45.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 49.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -41.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 53.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -47.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 89.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 85.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_008",
+      "category": "dense_traffic_flow",
+      "instruction": "Drive smoothly through mixed-speed traffic around the ego vehicle.",
+      "seed": 1508,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 111.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 42.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -46.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 50.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -42.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 54.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -48.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 90.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 86.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_009",
+      "category": "dense_traffic_flow",
+      "instruction": "Avoid overreacting while maintaining safe dense-flow progress.",
+      "seed": 1509,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 113.0,
+          "speed_mps": 23.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 43.0,
+            "speed_mps": 22.0,
+            "target_speed_mps": 22.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -47.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 51.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -43.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 55.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -49.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 91.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 87.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "dense_traffic_flow_010",
+      "category": "dense_traffic_flow",
+      "instruction": "Continue through dense traffic with stable speed and safe gaps.",
+      "seed": 1510,
+      "time_limit_sec": 16,
+      "success_criteria": {
+        "type": "dense_flow",
+        "min_survival_steps": 10,
+        "min_avg_speed_mps": 18.0,
+        "max_ttc_danger_rate": 0.3,
+        "max_headway_violation_rate": 0.5,
+        "max_flap_accel_decel_count": 3,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 115.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 44.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "rear",
+            "role": "rear",
+            "lane_offset": 0,
+            "x_offset_m": -48.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_front",
+            "role": "left_front",
+            "lane_offset": -1,
+            "x_offset_m": 52.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "left_rear",
+            "role": "left_rear",
+            "lane_offset": -1,
+            "x_offset_m": -44.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 56.0,
+            "speed_mps": 23.0,
+            "target_speed_mps": 23.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -50.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_lead",
+            "role": "traffic",
+            "lane_offset": 0,
+            "x_offset_m": 92.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "far_left",
+            "role": "traffic",
+            "lane_offset": -1,
+            "x_offset_m": 88.0,
+            "speed_mps": 26.0,
+            "target_speed_mps": 26.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "dense",
+        "smoothness"
+      ],
+      "difficulty": "hard",
+      "case_group": "dense_flow"
+    },
+    {
+      "case_id": "lane_discipline_001",
+      "category": "lane_discipline",
+      "instruction": "Keep disciplined highway lane position while maintaining flow.",
+      "seed": 1601,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": true,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 101.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 96.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_safe",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 66.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_safe",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -53.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "medium",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_002",
+      "category": "lane_discipline",
+      "instruction": "Move right when it is safe and continue with the highway stream.",
+      "seed": 1602,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": true,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 102.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 97.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_safe",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 67.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_safe",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -54.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "medium",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_003",
+      "category": "lane_discipline",
+      "instruction": "Use the right lane for lane discipline when the gap is safe.",
+      "seed": 1603,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": true,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 103.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 98.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_safe",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 68.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_safe",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -55.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "medium",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_004",
+      "category": "lane_discipline",
+      "instruction": "Avoid left-lane camping by moving right safely.",
+      "seed": 1604,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": true,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 104.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 99.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_safe",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 69.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_safe",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -56.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "medium",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_005",
+      "category": "lane_discipline",
+      "instruction": "Return to the right lane when safe and keep normal flow.",
+      "seed": 1605,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": true,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 105.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 100.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_safe",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 70.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_safe",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -57.0,
+            "speed_mps": 24.0,
+            "target_speed_mps": 24.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "medium",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_006",
+      "category": "lane_discipline",
+      "instruction": "Keep lane discipline but do not move right into a blocked gap.",
+      "seed": 1606,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": false,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 106.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 101.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_blocker",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -13.0,
+            "speed_mps": 28.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_blocker",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 24.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "hard",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_007",
+      "category": "lane_discipline",
+      "instruction": "Hold the current lane because the right lane has a nearby vehicle.",
+      "seed": 1607,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": false,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 107.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 102.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_blocker",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -14.0,
+            "speed_mps": 28.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_blocker",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 25.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "hard",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_008",
+      "category": "lane_discipline",
+      "instruction": "Do not force a right lane change when the target lane is blocked.",
+      "seed": 1608,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": false,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 108.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 103.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_blocker",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -15.0,
+            "speed_mps": 28.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_blocker",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 26.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "hard",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_009",
+      "category": "lane_discipline",
+      "instruction": "Maintain flow and avoid an unsafe right-lane discipline move.",
+      "seed": 1609,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": false,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 109.0,
+          "speed_mps": 25.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 104.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_blocker",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -16.0,
+            "speed_mps": 28.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_blocker",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 27.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "hard",
+      "case_group": "lane_discipline"
+    },
+    {
+      "case_id": "lane_discipline_010",
+      "category": "lane_discipline",
+      "instruction": "Stay disciplined by moving right only when the right lane is clear.",
+      "seed": 1610,
+      "time_limit_sec": 14,
+      "success_criteria": {
+        "type": "lane_discipline",
+        "direction": "right",
+        "expect_move": false,
+        "min_speed_mps": 20.0,
+        "max_unsafe_lane_change_attempts": 0,
+        "hold_steps": 2
+      },
+      "scenario_spec": {
+        "clear_existing_vehicles": true,
+        "ego": {
+          "lane_rank": 1,
+          "x_m": 110.0,
+          "speed_mps": 24.0
+        },
+        "vehicles": [
+          {
+            "id": "same_lane_far_lead",
+            "role": "lead",
+            "lane_offset": 0,
+            "x_offset_m": 105.0,
+            "speed_mps": 25.0,
+            "target_speed_mps": 25.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_rear_blocker",
+            "role": "right_rear",
+            "lane_offset": 1,
+            "x_offset_m": -17.0,
+            "speed_mps": 28.0,
+            "target_speed_mps": 28.0,
+            "enable_lane_change": false
+          },
+          {
+            "id": "right_front_blocker",
+            "role": "right_front",
+            "lane_offset": 1,
+            "x_offset_m": 28.0,
+            "speed_mps": 21.0,
+            "target_speed_mps": 21.0,
+            "enable_lane_change": false
+          }
+        ]
+      },
+      "tags": [
+        "lane_discipline",
+        "right_lane"
+      ],
+      "difficulty": "hard",
+      "case_group": "lane_discipline"
+    }
+  ]
+}

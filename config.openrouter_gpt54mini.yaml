@@ -1,0 +1,22 @@
+
+base_config: config.example.yaml
+
+OPENAI_API_TYPE: openai
+OPENAI_CHAT_MODEL: openai/gpt-5.4-mini
+OPENAI_REFLECTION_MODEL: openai/gpt-5.4-mini
+OPENAI_BASE_URL: https://openrouter.ai/api/v1
+OPENAI_KEY: ""
+
+OPENROUTER_APP_TITLE: DiLu-Ollama
+OPENROUTER_HTTP_REFERER: ""
+
+reflection_module: false
+few_shot_num: 0
+runtime_max_output_tokens: 128
+
+eval_enable_intent_resolver: false
+eval_decision_timeout_sec: 120
+runtime_decision_timeout_sec: 120
+eval_timeout_policy_mode: disabled
+eval_timeout_early_stop_enabled: false
+eval_save_run_artifacts: true

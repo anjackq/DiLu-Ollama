@@ -4,11 +4,19 @@ import tempfile
 import json
 
 import yaml
-
-from benchmark_energy_latency import translate_benchmark_args_to_eval_argv
-from dilu.runtime import resolve_simulation_env_bundle
-from evaluate_models_ollama import _apply_measurement_runtime_overrides
-from dilu.runtime import load_runtime_config
+from dilu.runtime import (
+    DEFAULT_DILU_SEEDS,
+    load_benchmark_case_set,
+    load_runtime_config,
+)
+from evaluate_models_ollama import (
+    _apply_measurement_runtime_overrides,
+    _filter_benchmark_cases_by_category,
+    _parse_benchmark_category_filter,
+    main as eval_main,
+    parse_seeds,
+    resolve_eval_seeds,
+)
 from merge_eval_reports import (
     _compat_profile,
     _compare_profiles,
@@ -33,6 +41,25 @@ class _Args:
 
 
 class CliMergeTests(unittest.TestCase):
+    def test_eval_seed_bank_accepts_config_list_and_cli_override(self):
+        config = {"eval_seed_bank": list(DEFAULT_DILU_SEEDS)}
+
+        self.assertEqual(len(resolve_eval_seeds(config, None)), 100)
+        self.assertEqual(resolve_eval_seeds(config, None, seed_count=3), [4091, 2125, 9293])
+        self.assertEqual(resolve_eval_seeds(config, "1,2,3"), [1, 2, 3])
+        self.assertEqual(resolve_eval_seeds(config, "1,2,3", seed_count=2), [1, 2])
+        self.assertEqual(parse_seeds([10, "20", 30]), [10, 20, 30])
+        with self.assertRaises(ValueError):
+            resolve_eval_seeds(config, None, seed_count=101)
+
+    def test_active_config_falls_back_to_builtin_100_seed_bank(self):
+        cfg = load_runtime_config("config.yaml")
+
+        self.assertNotIn("eval_seed_bank", cfg)
+        self.assertEqual(cfg["OLLAMA_USE_NATIVE_CHAT"], "auto")
+        self.assertEqual(len(resolve_eval_seeds(cfg, None)), 100)
+        self.assertEqual(resolve_eval_seeds(cfg, None, seed_count=5), [4091, 2125, 9293, 8030, 1620])
+
     def test_merge_eval_reports_discovers_measurement_mode_energy_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             experiment_root = os.path.join(tmpdir, "measurement_exp")
@@ -197,51 +224,87 @@ class CliMergeTests(unittest.TestCase):
         self.assertFalse(updated["OLLAMA_USE_NATIVE_CHAT"])
         self.assertNotIn("_benchmark_ollama_runtime_overrides", updated)
 
-    def test_benchmark_shim_translates_defaults_to_canonical_eval_cli(self):
-        translated = translate_benchmark_args_to_eval_argv(
-            ["--config", "config.yaml", "--models", "qwen3:1.7b"]
+    def test_benchmark_category_filter_parser_accepts_single_and_multiple_categories(self):
+        self.assertEqual(
+            _parse_benchmark_category_filter("slow_lead_overtake"),
+            ["slow_lead_overtake"],
         )
-        self.assertIn("--energy-mode", translated)
-        self.assertIn("latency_only", translated)
-        self.assertIn("--results-root", translated)
-        root_idx = translated.index("--results-root")
-        self.assertEqual(translated[root_idx + 1], "results/energy_benchmarks")
-        self.assertIn("--experiment-id", translated)
-        exp_idx = translated.index("--experiment-id")
-        self.assertEqual(translated[exp_idx + 1], "energy_latency_benchmark")
+        self.assertEqual(
+            _parse_benchmark_category_filter("slow_lead_overtake, lane_discipline"),
+            ["slow_lead_overtake", "lane_discipline"],
+        )
+        self.assertEqual(_parse_benchmark_category_filter(None), [])
 
-    def test_stop_ablation_config_is_a_compatibility_alias_for_default_stop_capable_profile(self):
-        default_cfg = load_runtime_config("config.yaml")
-        alias_cfg = load_runtime_config("config.stop_ablation.yaml")
+    def test_benchmark_category_filter_parser_rejects_empty_tokens(self):
+        with self.assertRaisesRegex(ValueError, "empty category"):
+            _parse_benchmark_category_filter("slow_lead_overtake,,lane_discipline")
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            _parse_benchmark_category_filter(" ")
 
-        default_bundle = resolve_simulation_env_bundle(
-            default_cfg,
-            show_trajectories=False,
-            render_agent=False,
+    def test_benchmark_category_filter_selects_expected_highway_reactive_cases(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_v1")
+
+        filtered_case_set, filtered_cases = _filter_benchmark_cases_by_category(
+            case_set,
+            ["slow_lead_overtake"],
         )
-        alias_bundle = resolve_simulation_env_bundle(
-            alias_cfg,
-            show_trajectories=False,
-            render_agent=False,
+
+        self.assertEqual(len(filtered_cases), 10)
+        self.assertEqual(filtered_case_set["categories"], ["slow_lead_overtake"])
+        self.assertTrue(all(case["category"] == "slow_lead_overtake" for case in filtered_cases))
+
+    def test_benchmark_category_filter_selects_expected_stress_cases(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v1")
+
+        filtered_case_set, filtered_cases = _filter_benchmark_cases_by_category(
+            case_set,
+            ["cut_in_brake_response"],
         )
+
+        self.assertEqual(len(filtered_cases), 10)
+        self.assertEqual(filtered_case_set["categories"], ["cut_in_brake_response"])
+        self.assertTrue(all(case["category"] == "cut_in_brake_response" for case in filtered_cases))
+
+    def test_benchmark_category_filter_supports_multiple_categories_in_original_order(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_v1")
+
+        filtered_case_set, filtered_cases = _filter_benchmark_cases_by_category(
+            case_set,
+            ["slow_lead_overtake", "lane_discipline"],
+        )
+
+        self.assertEqual(len(filtered_cases), 20)
+        self.assertEqual(
+            filtered_case_set["categories"],
+            ["lane_discipline", "slow_lead_overtake"],
+        )
+        self.assertEqual(filtered_cases[0]["case_id"], "slow_lead_overtake_001")
+        self.assertEqual(filtered_cases[9]["case_id"], "slow_lead_overtake_010")
+        self.assertEqual(filtered_cases[10]["case_id"], "lane_discipline_001")
+
+    def test_benchmark_category_filter_rejects_unknown_category(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_v1")
+
+        with self.assertRaisesRegex(ValueError, "Available categories"):
+            _filter_benchmark_cases_by_category(case_set, ["missing_category"])
+
+    def test_benchmark_categories_requires_benchmark_mode(self):
+        with self.assertRaisesRegex(ValueError, "--benchmark-categories requires --benchmark-case-set"):
+            eval_main(["--models", "llama3.2:3b", "--benchmark-categories", "slow_lead_overtake"])
+
+    def test_limit_after_benchmark_category_filter_selects_first_cases_inside_category(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_v1")
+        _, filtered_cases = _filter_benchmark_cases_by_category(
+            case_set,
+            ["slow_lead_overtake"],
+        )
+
+        limited_cases = filtered_cases[:3]
 
         self.assertEqual(
-            list(default_bundle["env_config_snapshot"]["action"]["target_speeds"]),
-            list(alias_bundle["env_config_snapshot"]["action"]["target_speeds"]),
+            [case["case_id"] for case in limited_cases],
+            ["slow_lead_overtake_001", "slow_lead_overtake_002", "slow_lead_overtake_003"],
         )
-        self.assertEqual(default_bundle["env_profile_label"], "default_stop_capable")
-        self.assertEqual(alias_bundle["env_profile_label"], "default_stop_capable")
-
-    def test_lightweight_rerun_config_inherits_default_and_relaxes_timeout_ladder(self):
-        rerun_cfg = load_runtime_config("config.lightweight_rerun.yaml")
-
-        self.assertEqual(rerun_cfg["OPENAI_API_TYPE"], "ollama")
-        self.assertEqual(rerun_cfg["sim_env_id"], "highway-fast-v0")
-        self.assertEqual(rerun_cfg["sim_action_target_speeds"], [0, 5, 10, 15, 20, 25, 30])
-        self.assertEqual(rerun_cfg["eval_timeout_ladder_sec"], [20, 30, 45])
-        self.assertEqual(rerun_cfg["eval_timeout_early_stop_min_decisions"], 8)
-        self.assertEqual(rerun_cfg["eval_timeout_early_stop_consecutive_timeout_fallbacks"], 4)
-        self.assertEqual(rerun_cfg["eval_timeout_model_quarantine_after_collapses"], 4)
 
 
 if __name__ == "__main__":

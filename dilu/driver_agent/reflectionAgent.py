@@ -5,11 +5,12 @@ from rich import print
 
 # UPDATED IMPORTS
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:
-    ChatGoogleGenerativeAI = None
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from dilu.runtime.llm_env import openai_compatible_default_headers_from_env
+
+ChatGoogleGenerativeAI = None
+_GEMINI_IMPORT_ERROR = None
 
 
 def _content_to_text(content) -> str:
@@ -35,6 +36,20 @@ def _content_to_text(content) -> str:
     return str(content)
 
 
+def _load_chat_google_generative_ai():
+    global ChatGoogleGenerativeAI, _GEMINI_IMPORT_ERROR
+    if ChatGoogleGenerativeAI is not None:
+        return ChatGoogleGenerativeAI
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI as GeminiChat
+    except Exception as exc:
+        _GEMINI_IMPORT_ERROR = exc
+        return None
+    ChatGoogleGenerativeAI = GeminiChat
+    _GEMINI_IMPORT_ERROR = None
+    return ChatGoogleGenerativeAI
+
+
 class ReflectionAgent:
     def __init__(
             self, temperature: float = 0.0, verbose: bool = False
@@ -51,7 +66,8 @@ class ReflectionAgent:
             )
         elif oai_api_type == "openai":
             # Check if we are using Ollama (localhost) to avoid hardcoded GPT-4
-            base_url = os.getenv("OPENAI_API_BASE", "")
+            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE", "")
+            default_headers = openai_compatible_default_headers_from_env()
 
             # FORCE the Reflection Agent to use a smarter model
             # distinct from the driving model
@@ -66,8 +82,11 @@ class ReflectionAgent:
             self.llm = ChatOpenAI(
                 temperature=temperature,
                 model_name=model_name,
+                openai_api_base=base_url or None,
+                openai_api_key=os.getenv("OPENAI_API_KEY"),
                 max_tokens=1000,
                 request_timeout=60,
+                **({"default_headers": default_headers} if default_headers else {}),
             )
 
         elif oai_api_type == "ollama":
@@ -93,10 +112,11 @@ class ReflectionAgent:
                 request_timeout=60,
             )
         elif oai_api_type == "gemini":
-            if ChatGoogleGenerativeAI is None:
+            gemini_chat = _load_chat_google_generative_ai()
+            if gemini_chat is None:
                 raise ImportError(
                     "Gemini support requires 'langchain-google-genai'. Install with: pip install langchain-google-genai"
-                )
+                ) from _GEMINI_IMPORT_ERROR
             model_name = os.getenv("GEMINI_REFLECTION_MODEL") or os.getenv("GEMINI_CHAT_MODEL")
             api_key = os.getenv("GEMINI_API_KEY")
             if not model_name:
@@ -104,7 +124,7 @@ class ReflectionAgent:
             if not api_key:
                 raise ValueError("GEMINI_API_KEY is not configured.")
             print(f"[yellow]Reflection Agent using Gemini: {model_name}[/yellow]")
-            self.llm = ChatGoogleGenerativeAI(
+            self.llm = gemini_chat(
                 model=model_name,
                 google_api_key=api_key,
                 temperature=temperature,

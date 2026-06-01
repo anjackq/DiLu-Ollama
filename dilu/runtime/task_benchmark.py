@@ -3,10 +3,24 @@ import hashlib
 import json
 import math
 import os
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
+
+from dilu.runtime.highway_scenario_spec import (
+    apply_highway_scenario_events,
+    apply_highway_scenario_spec,
+    scenario_spec_summary,
+)
+from dilu.runtime.dilu_scoring import SPLIT_SCORE_FIELDS
+from dilu.runtime.safety_shields import (
+    LANE_CHANGE_ACTIONS,
+    TARGET_FRONT_GAP_REQUIRED_M,
+    TARGET_REAR_GAP_REQUIRED_M,
+    TARGET_REAR_TTC_REQUIRED_SEC,
+)
 
 
 DEFAULT_BENCHMARK_CASE_SET = "lampilot_highway_v1"
@@ -59,6 +73,26 @@ _ENV_OVERRIDE_ALIASES = {
     "other_vehicle_type": "other_vehicles_type",
 }
 _ALLOWED_DIFFICULTIES = {"easy", "medium", "hard"}
+_STRESS_CRITERIA_TYPES = {
+    "cut_in_brake_response",
+    "delayed_overtake_gap",
+    "closing_rear_lane_change",
+    "multi_hazard_recovery",
+    "dense_dynamic_flow",
+    "right_lane_opening_discipline",
+    "squeeze_box_patience",
+    "false_alarm_stability",
+}
+_STRESS_RATE_FIELDS = {
+    "cut_in_brake_response": "cut_in_response_success_rate",
+    "delayed_overtake_gap": "delayed_overtake_success_rate",
+    "closing_rear_lane_change": "closing_rear_avoidance_success_rate",
+    "multi_hazard_recovery": "multi_hazard_recovery_success_rate",
+    "dense_dynamic_flow": "dynamic_dense_flow_success_rate",
+    "right_lane_opening_discipline": "right_lane_opening_discipline_success_rate",
+    "squeeze_box_patience": "squeeze_box_patience_success_rate",
+    "false_alarm_stability": "false_alarm_stability_success_rate",
+}
 
 
 def _repo_root() -> str:
@@ -168,6 +202,8 @@ def load_benchmark_case_set(identifier: str) -> Dict[str, Any]:
             "difficulty": difficulty,
             "case_group": case_group,
         }
+        if case.get("scenario_spec"):
+            normalized_case["scenario_spec"] = copy.deepcopy(case["scenario_spec"])
         normalized_cases.append(normalized_case)
 
     categories = sorted({case["category"] for case in normalized_cases})
@@ -202,6 +238,7 @@ def build_benchmark_case_set_fingerprint(case_set: Dict[str, Any]) -> str:
                 "case_group": str(case.get("case_group") or "").strip(),
                 "env_overrides": copy.deepcopy(case.get("env_overrides") or {}),
                 "success_criteria": copy.deepcopy(case.get("success_criteria") or {}),
+                "scenario_spec": copy.deepcopy(case.get("scenario_spec") or {}),
             }
         )
     payload = {
@@ -389,6 +426,23 @@ def _vehicle_x(vehicle) -> Optional[float]:
         return None
 
 
+def _vehicle_speed(vehicle) -> float:
+    try:
+        return float(getattr(vehicle, "speed", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _ttc_from_gap(gap_m: Optional[float], closing_speed_mps: float) -> Optional[float]:
+    if gap_m is None:
+        return None
+    if float(gap_m) <= 0:
+        return 0.0
+    if float(closing_speed_mps) <= 1e-6:
+        return math.inf
+    return float(gap_m) / float(closing_speed_mps)
+
+
 def _vehicle_by_runtime_id(road, runtime_id: Optional[int]):
     if road is None or runtime_id is None:
         return None
@@ -407,6 +461,72 @@ def _resolve_direction_offset(criteria: Dict[str, Any]) -> int:
     if direction == "right":
         return 1
     return 0
+
+
+def _lane_change_action_for_offset(offset: int) -> Optional[int]:
+    for action_id, action_offset in LANE_CHANGE_ACTIONS.items():
+        if int(action_offset) == int(offset):
+            return int(action_id)
+    return None
+
+
+def _lane_count_from_env(env, vehicles: List[Any]) -> Optional[int]:
+    uenv = getattr(env, "unwrapped", env)
+    cfg = dict(getattr(uenv, "config", {}) or {})
+    if cfg.get("lanes_count") is not None:
+        try:
+            return int(cfg["lanes_count"])
+        except Exception:
+            pass
+    ranks = [_lane_rank(vehicle) for vehicle in vehicles]
+    numeric_ranks = [rank for rank in ranks if rank is not None]
+    return max(numeric_ranks) + 1 if numeric_ranks else None
+
+
+def _nearest_front_rear_gaps(
+    *,
+    vehicles: List[Any],
+    ego,
+    target_lane_rank: int,
+) -> Tuple[Optional[Any], Optional[Any], Optional[float], Optional[float]]:
+    ego_x = _vehicle_x(ego)
+    if ego_x is None:
+        return None, None, None, None
+    front_vehicle = None
+    rear_vehicle = None
+    front_gap = None
+    rear_gap = None
+    for vehicle in vehicles:
+        if vehicle is ego or _lane_rank(vehicle) != target_lane_rank:
+            continue
+        vehicle_x = _vehicle_x(vehicle)
+        if vehicle_x is None:
+            continue
+        dx = float(vehicle_x - ego_x)
+        if dx >= 0 and (front_gap is None or dx < front_gap):
+            front_vehicle = vehicle
+            front_gap = dx
+        if dx < 0 and (rear_gap is None or abs(dx) < rear_gap):
+            rear_vehicle = vehicle
+            rear_gap = abs(dx)
+    return front_vehicle, rear_vehicle, front_gap, rear_gap
+
+
+def _optional_float(criteria: Dict[str, Any], key: str) -> Optional[float]:
+    value = criteria.get(key)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _speed_within_optional_band(speed: float, criteria: Dict[str, Any]) -> bool:
+    min_speed = _optional_float(criteria, "min_speed_mps")
+    max_speed = _optional_float(criteria, "max_speed_mps")
+    if min_speed is not None and float(speed) < min_speed:
+        return False
+    if max_speed is not None and float(speed) > max_speed:
+        return False
+    return True
 
 
 def inspect_benchmark_initial_state(env) -> Dict[str, Any]:
@@ -442,6 +562,15 @@ def validate_benchmark_case(case: Dict[str, Any], initial_state: Dict[str, Any])
     reasons: List[str] = []
     criteria = dict(case.get("success_criteria") or {})
     criteria_type = str(criteria.get("type") or "").strip().lower()
+    max_case_steps = max(1, int(math.ceil(float(case.get("time_limit_sec") or 1.0))))
+    for event in ((case.get("scenario_spec") or {}).get("events") or []):
+        try:
+            if int(event.get("step", 0) or 0) > max_case_steps:
+                reasons.append("scenario_event_step_out_of_range")
+                break
+        except Exception:
+            reasons.append("invalid_scenario_event_step")
+            break
 
     if criteria_type == "speed_band":
         speed = initial_state.get("initial_speed_mps")
@@ -504,9 +633,84 @@ def validate_benchmark_case(case: Dict[str, Any], initial_state: Dict[str, Any])
             reasons.append("target_right_lane_unavailable")
         elif lane_rank is None:
             reasons.append("missing_initial_lane_rank")
+        min_speed = _optional_float(criteria, "min_speed_mps")
+        max_speed = _optional_float(criteria, "max_speed_mps")
+        if min_speed is not None and max_speed is not None and min_speed > max_speed:
+            reasons.append("invalid_speed_band")
 
     elif criteria_type == "arrive":
-        pass
+        if bool(criteria.get("requires_yield", False)):
+            min_yield_steps = int(criteria.get("min_yield_steps", 1) or 1)
+            yield_speed_mps = _optional_float(criteria, "yield_speed_mps")
+            if min_yield_steps < 1:
+                reasons.append("invalid_min_yield_steps")
+            if yield_speed_mps is None or yield_speed_mps < 0:
+                reasons.append("invalid_yield_speed_mps")
+
+    elif criteria_type == "flow_cruise":
+        min_speed = _optional_float(criteria, "min_speed_mps")
+        max_speed = _optional_float(criteria, "max_speed_mps")
+        if min_speed is not None and max_speed is not None and min_speed > max_speed:
+            reasons.append("invalid_speed_band")
+
+    elif criteria_type == "safe_overtake":
+        target_offset = _resolve_direction_offset(criteria)
+        if target_offset == 0:
+            reasons.append("invalid_target_lane_offset")
+        elif target_offset < 0 and not initial_state.get("can_change_left"):
+            reasons.append("target_left_lane_unavailable")
+        elif target_offset > 0 and not initial_state.get("can_change_right"):
+            reasons.append("target_right_lane_unavailable")
+        if not initial_state.get("initial_front_vehicle_exists"):
+            reasons.append("missing_initial_front_vehicle")
+        elif not initial_state.get("initial_front_vehicle_is_ahead"):
+            reasons.append("initial_front_vehicle_not_ahead")
+
+    elif criteria_type == "blocked_lane_patience":
+        if not initial_state.get("initial_front_vehicle_exists"):
+            reasons.append("missing_initial_front_vehicle")
+
+    elif criteria_type == "post_brake_recovery":
+        if not initial_state.get("initial_front_vehicle_exists"):
+            reasons.append("missing_initial_front_vehicle")
+        min_recovery_speed = _optional_float(criteria, "min_recovery_speed_mps")
+        if min_recovery_speed is not None and min_recovery_speed < 0:
+            reasons.append("invalid_min_recovery_speed_mps")
+
+    elif criteria_type == "dense_flow":
+        min_steps = int(criteria.get("min_survival_steps", 1) or 1)
+        if min_steps < 1:
+            reasons.append("invalid_min_survival_steps")
+
+    elif criteria_type == "lane_discipline":
+        target_offset = _resolve_direction_offset(criteria)
+        expect_move = bool(criteria.get("expect_move", target_offset != 0))
+        if expect_move and target_offset == 0:
+            reasons.append("invalid_target_lane_offset")
+        elif target_offset > 0 and not initial_state.get("can_change_right"):
+            reasons.append("target_right_lane_unavailable")
+        elif target_offset < 0 and not initial_state.get("can_change_left"):
+            reasons.append("target_left_lane_unavailable")
+
+    elif criteria_type in _STRESS_CRITERIA_TYPES:
+        if criteria_type in {
+            "delayed_overtake_gap",
+            "closing_rear_lane_change",
+            "right_lane_opening_discipline",
+        }:
+            target_offset = _resolve_direction_offset(criteria)
+            if target_offset == 0:
+                reasons.append("invalid_target_lane_offset")
+            elif target_offset > 0 and not initial_state.get("can_change_right"):
+                reasons.append("target_right_lane_unavailable")
+            elif target_offset < 0 and not initial_state.get("can_change_left"):
+                reasons.append("target_left_lane_unavailable")
+        if criteria_type in {"delayed_overtake_gap", "multi_hazard_recovery"}:
+            if not initial_state.get("initial_front_vehicle_exists"):
+                reasons.append("missing_initial_front_vehicle")
+        min_steps = int(criteria.get("min_survival_steps", 1) or 1)
+        if min_steps < 1:
+            reasons.append("invalid_min_survival_steps")
 
     else:
         reasons.append(f"unsupported_success_criteria_type:{criteria_type or 'missing'}")
@@ -514,10 +718,32 @@ def validate_benchmark_case(case: Dict[str, Any], initial_state: Dict[str, Any])
     return reasons
 
 
+def _validate_scheduled_scenario_events(env: Any, case: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    events = list(((case or {}).get("scenario_spec") or {}).get("events") or [])
+    if not events:
+        return False, []
+
+    applied_event_ids: set = set()
+    errors: List[str] = []
+    try:
+        event_steps = sorted({int(event.get("step", -1)) for event in events})
+        for step_idx in event_steps:
+            apply_highway_scenario_events(
+                env,
+                case,
+                step_idx=step_idx,
+                applied_event_ids=applied_event_ids,
+            )
+    except Exception as exc:
+        errors.append(f"scheduled_event_validation_error:{type(exc).__name__}:{exc}")
+    return True, errors
+
+
 def validate_benchmark_case_set(
     case_set: Dict[str, Any],
     base_env_config_map: Dict[str, Dict[str, Any]],
     env_type: str,
+    validate_scheduled_events: bool = True,
 ) -> Dict[str, Any]:
     target_env_id = str(case_set.get("target_env_id") or "").strip()
     if target_env_id and target_env_id != str(env_type):
@@ -527,6 +753,7 @@ def validate_benchmark_case_set(
         )
     invalid_cases: List[Dict[str, Any]] = []
     valid_cases: List[Dict[str, Any]] = []
+    scheduled_event_validated_case_count = 0
 
     for case in case_set.get("cases", []):
         case_env_config_map, _ = build_case_env_config(base_env_config_map, env_type, case)
@@ -534,10 +761,19 @@ def validate_benchmark_case_set(
         initial_state: Dict[str, Any] = {}
         reasons: List[str] = []
         try:
-            env.unwrapped.configure(case_env_config_map[env_type])
-            env.reset(seed=int(case["seed"]))
-            initial_state = inspect_benchmark_initial_state(env)
-            reasons = validate_benchmark_case(case, initial_state)
+            try:
+                env.unwrapped.configure(case_env_config_map[env_type])
+                env.reset(seed=int(case["seed"]))
+                apply_highway_scenario_spec(env, case)
+                initial_state = inspect_benchmark_initial_state(env)
+                reasons = validate_benchmark_case(case, initial_state)
+                if validate_scheduled_events:
+                    has_events, event_reasons = _validate_scheduled_scenario_events(env, case)
+                    if has_events:
+                        scheduled_event_validated_case_count += 1
+                    reasons.extend(event_reasons)
+            except Exception as exc:
+                reasons = [f"scenario_validation_error:{type(exc).__name__}:{exc}"]
         finally:
             env.close()
 
@@ -563,6 +799,8 @@ def validate_benchmark_case_set(
         "valid_categories": sorted({item["category"] for item in valid_cases}),
         "invalid_categories": sorted({item["category"] for item in invalid_cases}),
         "case_group_count": len({str(case.get("case_group") or case.get("category") or "") for case in case_set.get("cases", [])}),
+        "scheduled_event_validation_enabled": bool(validate_scheduled_events),
+        "scheduled_event_validated_case_count": scheduled_event_validated_case_count,
     }
     return {
         "passed": len(invalid_cases) == 0,
@@ -584,11 +822,12 @@ def bootstrap_ci95(
     if values_arr.size == 1:
         only = round(float(values_arr[0]), 4)
         return [only, only]
-    rng = np.random.default_rng(int(seed))
+    rng = random.Random(int(seed))
+    values_list = [float(value) for value in values_arr.tolist()]
     means = []
     for _ in range(max(1, int(iterations))):
-        sample = rng.choice(values_arr, size=values_arr.size, replace=True)
-        means.append(float(np.mean(sample)))
+        sample = [values_list[rng.randrange(len(values_list))] for _ in range(len(values_list))]
+        means.append(float(sum(sample) / len(sample)))
     lower, upper = np.percentile(np.array(means, dtype=float), [2.5, 97.5])
     return [round(float(lower), 4), round(float(upper), 4)]
 
@@ -651,6 +890,15 @@ def _mean_metric(episodes: List[Dict[str, Any]], key: str) -> float:
     return float(sum(float(item.get(key, 0.0) or 0.0) for item in episodes) / max(len(episodes), 1))
 
 
+def _metric_values(episodes: List[Dict[str, Any]], key: str) -> List[float]:
+    values: List[float] = []
+    for episode in episodes:
+        if episode.get(key) is None:
+            continue
+        values.append(float(episode.get(key)))
+    return values
+
+
 def _failure_reason_counts(episodes: List[Dict[str, Any]]) -> Dict[str, int]:
     failure_reasons: Dict[str, int] = {}
     for episode in episodes:
@@ -658,6 +906,41 @@ def _failure_reason_counts(episodes: List[Dict[str, Any]]) -> Dict[str, int]:
         if reason:
             failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
     return failure_reasons
+
+
+def _criteria_subset(episodes: List[Dict[str, Any]], criteria_type: str) -> List[Dict[str, Any]]:
+    target = str(criteria_type or "").strip().lower()
+    return [
+        episode
+        for episode in episodes
+        if str((episode.get("benchmark_success_criteria") or {}).get("type") or "").strip().lower() == target
+    ]
+
+
+def _task_completion_rate(episodes: List[Dict[str, Any]]) -> Optional[float]:
+    if not episodes:
+        return None
+    return round(sum(1 for episode in episodes if episode.get("task_completed")) / len(episodes), 4)
+
+
+def _missed_overtake_opportunity_summary(episodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    opportunity_steps = sum(
+        int(episode.get("benchmark_safe_overtake_opportunity_steps", 0) or 0)
+        for episode in episodes
+    )
+    missed_steps = sum(
+        int(episode.get("benchmark_missed_overtake_opportunity_steps", 0) or 0)
+        for episode in episodes
+    )
+    return {
+        "safe_overtake_opportunity_steps_total": int(opportunity_steps),
+        "missed_overtake_opportunity_steps_total": int(missed_steps),
+        "missed_overtake_opportunity_rate": (
+            round(float(missed_steps) / float(opportunity_steps), 4)
+            if opportunity_steps > 0
+            else None
+        ),
+    }
 
 
 def summarize_benchmark_episodes(episodes: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -707,6 +990,7 @@ def summarize_benchmark_episodes(episodes: List[Dict[str, Any]]) -> Dict[str, An
             "driving_score": round(_mean_metric(subset, "driving_score"), 4),
             "benchmark_failure_reasons": _failure_reason_counts(subset),
         }
+        category_summary.update(_missed_overtake_opportunity_summary(subset))
         category_driving_v2_values = [
             float(episode.get("driving_score_v2"))
             for episode in subset
@@ -737,6 +1021,13 @@ def summarize_benchmark_episodes(episodes: List[Dict[str, Any]]) -> Dict[str, An
                 float(np.mean(np.array(category_behavior_penalty_values, dtype=float))),
                 4,
             )
+        for split_field in SPLIT_SCORE_FIELDS:
+            split_values = _metric_values(subset, split_field)
+            if split_values:
+                category_summary[split_field] = round(
+                    float(np.mean(np.array(split_values, dtype=float))),
+                    4,
+                )
         by_category[category] = category_summary
 
     summary = {
@@ -761,6 +1052,7 @@ def summarize_benchmark_episodes(episodes: List[Dict[str, Any]]) -> Dict[str, An
         "benchmark_failure_reasons": _failure_reason_counts(episodes),
         "benchmark_by_category": by_category,
     }
+    summary.update(_missed_overtake_opportunity_summary(episodes))
     if overall_v2_values:
         summary["overall_score_v2_mean"] = round(
             float(np.mean(np.array(overall_v2_values, dtype=float))),
@@ -791,6 +1083,45 @@ def summarize_benchmark_episodes(episodes: List[Dict[str, Any]]) -> Dict[str, An
             float(np.mean(np.array(runtime_penalty_values, dtype=float))),
             4,
         )
+    for split_index, split_field in enumerate(SPLIT_SCORE_FIELDS):
+        split_values = _metric_values(episodes, split_field)
+        if split_values:
+            summary[split_field] = round(
+                float(np.mean(np.array(split_values, dtype=float))),
+                4,
+            )
+            summary[f"{split_field}_ci95"] = bootstrap_ci95(
+                split_values,
+                iterations=BENCHMARK_BOOTSTRAP_ITERATIONS,
+                seed=BENCHMARK_BOOTSTRAP_SEED + 20 + split_index,
+            )
+    safe_overtake_cases = _criteria_subset(episodes, "safe_overtake")
+    post_brake_cases = _criteria_subset(episodes, "post_brake_recovery")
+    lane_discipline_cases = _criteria_subset(episodes, "lane_discipline")
+    dense_flow_cases = _criteria_subset(episodes, "dense_flow")
+    overtake_rate = _task_completion_rate(safe_overtake_cases)
+    if overtake_rate is not None:
+        summary["overtake_success_rate"] = overtake_rate
+        summary["missed_overtake_rate"] = round(1.0 - overtake_rate, 4)
+    recovery_rate = _task_completion_rate(post_brake_cases)
+    if recovery_rate is not None:
+        summary["post_brake_recovery_success_rate"] = recovery_rate
+    lane_discipline_rate = _task_completion_rate(lane_discipline_cases)
+    if lane_discipline_rate is not None:
+        summary["lane_discipline_success_rate"] = lane_discipline_rate
+    dense_flow_rate = _task_completion_rate(dense_flow_cases)
+    if dense_flow_rate is not None:
+        summary["dense_flow_success_rate"] = dense_flow_rate
+    for criteria_type, field_name in _STRESS_RATE_FIELDS.items():
+        stress_cases = _criteria_subset(episodes, criteria_type)
+        stress_rate = _task_completion_rate(stress_cases)
+        if stress_rate is not None:
+            summary[field_name] = stress_rate
+    summary["unsafe_lane_change_attempt_rate"] = round(
+        sum(1 for episode in episodes if int(episode.get("benchmark_unsafe_lane_change_attempts", 0) or 0) > 0)
+        / max(len(episodes), 1),
+        4,
+    )
     return summary
 
 
@@ -813,7 +1144,12 @@ def benchmark_result_validity(
 
 
 class BenchmarkEpisodeEvaluator:
-    def __init__(self, case: Dict[str, Any], env) -> None:
+    def __init__(
+        self,
+        case: Dict[str, Any],
+        env,
+        scenario_spec_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.case = copy.deepcopy(case)
         self.case_id = str(case["case_id"])
         self.category = str(case["category"])
@@ -861,85 +1197,543 @@ class BenchmarkEpisodeEvaluator:
         self.min_positive_ttc_sec = None
         self.max_progress_m = 0.0
         self.last_info: Dict[str, Any] = {}
+        self.yield_observed_steps = 0
+        self.completion_speed_mps = None
+        self.completion_progress_m = None
+        self.last_criteria_status: Dict[str, Any] = {}
+        self.scenario_spec_report = scenario_spec_summary(self.case)
+        self.scenario_spec_metadata = dict(scenario_spec_metadata or {})
+        self.overtake_latency_steps = None
+        self.recovery_clear_step = None
+        self.recovery_time_steps = None
+        self.unsafe_lane_change_attempts = 0
+        self.benchmark_lane_change_count = 0
+        self.flap_accel_decel_count = 0
+        self.low_speed_blocking_steps = 0
+        self.ttc_danger_steps = 0
+        self.headway_violation_steps = 0
+        self.previous_final_action_id = None
+        self.safe_overtake_opportunity_steps = 0
+        self.missed_overtake_opportunity_steps = 0
+        self.first_safe_overtake_opportunity_step = None
+        self.first_lane_change_attempt_step = None
+        self.applied_benchmark_event_ids: List[str] = []
+        self.applied_benchmark_event_types: List[str] = []
+        self.first_benchmark_event_step = None
+        self.first_event_step_by_type: Dict[str, int] = {}
 
-    def _completion_predicate(self, env, step_metrics: Dict[str, Any]) -> bool:
+    def _safe_overtake_opportunity_available(self, env) -> bool:
+        if str(self.success_criteria.get("type") or "").strip().lower() != "safe_overtake":
+            return False
+        if self.task_completed or self.initial_lane_rank is None:
+            return False
+
+        ego = getattr(env.unwrapped, "vehicle", None)
+        road = getattr(env.unwrapped, "road", None)
+        if ego is None or road is None:
+            return False
+        ego_lane_rank = _lane_rank(ego)
+        if ego_lane_rank != self.initial_lane_rank:
+            return False
+
+        target_offset = _resolve_direction_offset(self.success_criteria)
+        target_lane_rank = int(self.initial_lane_rank) + int(target_offset)
+        target_action_id = _lane_change_action_for_offset(target_offset)
+        if target_action_id is None or target_action_id not in self.available_actions:
+            return False
+
+        vehicles = list(getattr(road, "vehicles", []) or [])
+        lane_count = _lane_count_from_env(env, vehicles)
+        if lane_count is None or target_lane_rank < 0 or target_lane_rank >= lane_count:
+            return False
+
+        target_vehicle = _vehicle_by_runtime_id(road, self.initial_front_vehicle_id)
+        ego_x = _vehicle_x(ego)
+        target_x = _vehicle_x(target_vehicle)
+        if ego_x is None or target_x is None or target_x <= ego_x:
+            return False
+
+        front_vehicle, rear_vehicle, front_gap, rear_gap = _nearest_front_rear_gaps(
+            vehicles=vehicles,
+            ego=ego,
+            target_lane_rank=target_lane_rank,
+        )
+        rear_ttc = (
+            _ttc_from_gap(rear_gap, _vehicle_speed(rear_vehicle) - _vehicle_speed(ego))
+            if rear_vehicle is not None
+            else None
+        )
+        front_safe = front_gap is None or front_gap >= TARGET_FRONT_GAP_REQUIRED_M
+        rear_gap_safe = rear_gap is None or rear_gap >= TARGET_REAR_GAP_REQUIRED_M
+        rear_ttc_safe = rear_ttc is None or rear_ttc >= TARGET_REAR_TTC_REQUIRED_SEC
+        return bool(front_safe and rear_gap_safe and rear_ttc_safe)
+
+    def _arrived(self, env, ego) -> bool:
+        has_arrived = getattr(env.unwrapped, "has_arrived", None)
+        if callable(has_arrived) and ego is not None:
+            try:
+                return bool(has_arrived(ego))
+            except TypeError:
+                return bool(has_arrived())
+        return bool((self.last_info or {}).get("is_success"))
+
+    def _criteria_status(self, env, step_metrics: Dict[str, Any]) -> Dict[str, Any]:
         ego = getattr(env.unwrapped, "vehicle", None)
         road = getattr(env.unwrapped, "road", None)
         lane_rank = _lane_rank(ego)
         current_speed = float(getattr(ego, "speed", 0.0) or 0.0) if ego is not None else 0.0
         front_gap_m = step_metrics.get("front_gap_m")
         criteria_type = str(self.success_criteria.get("type") or "").strip().lower()
+        status: Dict[str, Any] = {
+            "criteria_type": criteria_type,
+            "task_predicate_satisfied": False,
+        }
 
         if criteria_type == "speed_band":
             min_speed = float(self.success_criteria.get("min_speed_mps", 0.0))
             max_speed = float(self.success_criteria.get("max_speed_mps", 999.0))
-            return min_speed <= current_speed <= max_speed
+            speed_in_band = min_speed <= current_speed <= max_speed
+            status.update({"speed_in_band": bool(speed_in_band), "task_predicate_satisfied": bool(speed_in_band)})
+            return status
 
         if criteria_type == "front_gap_band":
             if front_gap_m is None:
-                return False
+                status.update({"front_gap_in_band": False})
+                return status
             min_gap = float(self.success_criteria.get("min_gap_m", 0.0))
             max_gap = float(self.success_criteria.get("max_gap_m", 1e9))
-            return min_gap <= float(front_gap_m) <= max_gap
+            front_gap_in_band = min_gap <= float(front_gap_m) <= max_gap
+            status.update(
+                {"front_gap_in_band": bool(front_gap_in_band), "task_predicate_satisfied": bool(front_gap_in_band)}
+            )
+            return status
 
         if criteria_type == "lane_change":
             if lane_rank is None or self.initial_lane_rank is None:
-                return False
+                status.update({"target_lane_reached": False})
+                return status
             target_offset = _resolve_direction_offset(self.success_criteria)
             target_lane_rank = self.initial_lane_rank + target_offset
-            return lane_rank == target_lane_rank
+            target_lane_reached = lane_rank == target_lane_rank
+            status.update(
+                {"target_lane_reached": bool(target_lane_reached), "task_predicate_satisfied": bool(target_lane_reached)}
+            )
+            return status
 
         if criteria_type == "overtake":
             if lane_rank is None or self.initial_lane_rank is None:
-                return False
+                status.update({"required_lane_used": False, "pass_margin_satisfied": False})
+                return status
             target_offset = _resolve_direction_offset(self.success_criteria)
             used_required_lane = (
                 self.visited_left_lane if target_offset < 0 else self.visited_right_lane
             )
             target_vehicle = _vehicle_by_runtime_id(road, self.initial_front_vehicle_id)
             if target_vehicle is None or ego is None:
-                return False
+                status.update({"required_lane_used": bool(used_required_lane), "pass_margin_satisfied": False})
+                return status
             target_x = _vehicle_x(target_vehicle)
             ego_x = _vehicle_x(ego)
             if target_x is None or ego_x is None:
-                return False
+                status.update({"required_lane_used": bool(used_required_lane), "pass_margin_satisfied": False})
+                return status
             pass_margin_m = float(self.success_criteria.get("pass_margin_m", 5.0))
-            return bool(used_required_lane and target_x <= (ego_x - pass_margin_m))
+            pass_margin_satisfied = target_x <= (ego_x - pass_margin_m)
+            task_satisfied = bool(used_required_lane and pass_margin_satisfied)
+            status.update(
+                {
+                    "required_lane_used": bool(used_required_lane),
+                    "pass_margin_satisfied": bool(pass_margin_satisfied),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
 
         if criteria_type == "merge_complete":
             if lane_rank is None or self.initial_lane_rank is None:
-                return False
+                status.update(
+                    {
+                        "target_lane_reached": False,
+                        "merge_progress_satisfied": False,
+                        "speed_band_satisfied": False,
+                    }
+                )
+                return status
             target_offset = _resolve_direction_offset(self.success_criteria)
             target_lane_rank = self.initial_lane_rank + target_offset
             min_progress_m = float(self.success_criteria.get("min_progress_m", 0.0) or 0.0)
-            return lane_rank == target_lane_rank and float(self.max_progress_m) >= min_progress_m
+            target_lane_reached = lane_rank == target_lane_rank
+            progress_satisfied = float(self.max_progress_m) >= min_progress_m
+            speed_satisfied = _speed_within_optional_band(current_speed, self.success_criteria)
+            task_satisfied = bool(target_lane_reached and progress_satisfied and speed_satisfied)
+            status.update(
+                {
+                    "target_lane_reached": bool(target_lane_reached),
+                    "merge_progress_satisfied": bool(progress_satisfied),
+                    "speed_band_satisfied": bool(speed_satisfied),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
 
         if criteria_type == "arrive":
-            has_arrived = getattr(env.unwrapped, "has_arrived", None)
-            if callable(has_arrived) and ego is not None:
-                try:
-                    return bool(has_arrived(ego))
-                except TypeError:
-                    return bool(has_arrived())
-            return bool((self.last_info or {}).get("is_success"))
+            arrived = self._arrived(env, ego)
+            requires_yield = bool(self.success_criteria.get("requires_yield", False))
+            min_yield_steps = max(1, int(self.success_criteria.get("min_yield_steps", 1) or 1))
+            yield_satisfied = (not requires_yield) or self.yield_observed_steps >= min_yield_steps
+            task_satisfied = bool(arrived and yield_satisfied)
+            status.update(
+                {
+                    "arrived": bool(arrived),
+                    "requires_yield": bool(requires_yield),
+                    "yield_satisfied": bool(yield_satisfied),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
 
-        return False
+        if criteria_type == "flow_cruise":
+            min_steps = max(1, int(self.success_criteria.get("min_survival_steps", self.hold_steps_required) or 1))
+            max_lane_changes = int(self.success_criteria.get("max_lane_changes", 0) or 0)
+            max_low_speed_steps = int(self.success_criteria.get("max_low_speed_blocking_steps", 0) or 0)
+            speed_satisfied = _speed_within_optional_band(current_speed, self.success_criteria)
+            survival_satisfied = len(self.speed_history) >= min_steps
+            lane_satisfied = self.benchmark_lane_change_count <= max_lane_changes
+            low_speed_satisfied = self.low_speed_blocking_steps <= max_low_speed_steps
+            task_satisfied = bool(speed_satisfied and survival_satisfied and lane_satisfied and low_speed_satisfied)
+            status.update(
+                {
+                    "speed_band_satisfied": bool(speed_satisfied),
+                    "survival_satisfied": bool(survival_satisfied),
+                    "lane_change_satisfied": bool(lane_satisfied),
+                    "low_speed_blocking_satisfied": bool(low_speed_satisfied),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
 
-    def update(self, env, step_idx: int, step_metrics: Dict[str, Any], crashed: bool, info: Optional[Dict[str, Any]] = None) -> None:
+        if criteria_type == "safe_overtake":
+            if lane_rank is None or self.initial_lane_rank is None:
+                status.update({"required_lane_used": False, "pass_margin_satisfied": False})
+                return status
+            target_offset = _resolve_direction_offset(self.success_criteria)
+            used_required_lane = self.visited_left_lane if target_offset < 0 else self.visited_right_lane
+            target_vehicle = _vehicle_by_runtime_id(road, self.initial_front_vehicle_id)
+            if target_vehicle is None or ego is None:
+                status.update({"required_lane_used": bool(used_required_lane), "pass_margin_satisfied": False})
+                return status
+            target_x = _vehicle_x(target_vehicle)
+            ego_x = _vehicle_x(ego)
+            if target_x is None or ego_x is None:
+                status.update({"required_lane_used": bool(used_required_lane), "pass_margin_satisfied": False})
+                return status
+            pass_margin_m = float(self.success_criteria.get("pass_margin_m", 8.0))
+            min_final_speed = float(self.success_criteria.get("min_final_speed_mps", 0.0) or 0.0)
+            pass_margin_satisfied = target_x <= (ego_x - pass_margin_m)
+            speed_satisfied = current_speed >= min_final_speed
+            shield_satisfied = self.unsafe_lane_change_attempts == 0
+            task_satisfied = bool(used_required_lane and pass_margin_satisfied and speed_satisfied and shield_satisfied)
+            status.update(
+                {
+                    "required_lane_used": bool(used_required_lane),
+                    "pass_margin_satisfied": bool(pass_margin_satisfied),
+                    "speed_band_satisfied": bool(speed_satisfied),
+                    "unsafe_attempt_satisfied": bool(shield_satisfied),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
+
+        if criteria_type == "blocked_lane_patience":
+            min_steps = max(1, int(self.success_criteria.get("min_survival_steps", self.hold_steps_required) or 1))
+            min_speed = float(self.success_criteria.get("min_speed_mps", 0.0) or 0.0)
+            max_unsafe = int(self.success_criteria.get("max_unsafe_lane_change_attempts", 0) or 0)
+            survival_satisfied = len(self.speed_history) >= min_steps
+            speed_satisfied = current_speed >= min_speed
+            unsafe_satisfied = self.unsafe_lane_change_attempts <= max_unsafe
+            task_satisfied = bool(survival_satisfied and speed_satisfied and unsafe_satisfied)
+            status.update(
+                {
+                    "survival_satisfied": bool(survival_satisfied),
+                    "speed_band_satisfied": bool(speed_satisfied),
+                    "unsafe_attempt_satisfied": bool(unsafe_satisfied),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
+
+        if criteria_type == "post_brake_recovery":
+            min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 22.0) or 22.0)
+            recovery_satisfied = self.recovery_clear_step is not None and current_speed >= min_recovery_speed
+            task_satisfied = bool(recovery_satisfied and self.unsafe_lane_change_attempts == 0)
+            status.update(
+                {
+                    "recovery_clear_observed": bool(self.recovery_clear_step is not None),
+                    "recovery_speed_satisfied": bool(current_speed >= min_recovery_speed),
+                    "unsafe_attempt_satisfied": bool(self.unsafe_lane_change_attempts == 0),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
+
+        if criteria_type == "dense_flow":
+            min_steps = max(1, int(self.success_criteria.get("min_survival_steps", self.hold_steps_required) or 1))
+            min_avg_speed = float(self.success_criteria.get("min_avg_speed_mps", 18.0) or 18.0)
+            max_flaps = int(self.success_criteria.get("max_flap_accel_decel_count", 2) or 2)
+            max_ttc_rate = float(self.success_criteria.get("max_ttc_danger_rate", 0.2) or 0.2)
+            max_headway_rate = float(self.success_criteria.get("max_headway_violation_rate", 0.4) or 0.4)
+            steps = max(len(self.speed_history), 1)
+            avg_speed = float(np.mean(np.array(self.speed_history, dtype=float))) if self.speed_history else 0.0
+            ttc_rate = float(self.ttc_danger_steps) / steps
+            headway_rate = float(self.headway_violation_steps) / steps
+            task_satisfied = bool(
+                len(self.speed_history) >= min_steps
+                and avg_speed >= min_avg_speed
+                and self.flap_accel_decel_count <= max_flaps
+                and ttc_rate <= max_ttc_rate
+                and headway_rate <= max_headway_rate
+            )
+            status.update(
+                {
+                    "survival_satisfied": bool(len(self.speed_history) >= min_steps),
+                    "avg_speed_satisfied": bool(avg_speed >= min_avg_speed),
+                    "flap_satisfied": bool(self.flap_accel_decel_count <= max_flaps),
+                    "ttc_rate_satisfied": bool(ttc_rate <= max_ttc_rate),
+                    "headway_rate_satisfied": bool(headway_rate <= max_headway_rate),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
+
+        if criteria_type == "lane_discipline":
+            if lane_rank is None or self.initial_lane_rank is None:
+                status.update({"target_lane_reached": False})
+                return status
+            target_offset = _resolve_direction_offset(self.success_criteria)
+            expect_move = bool(self.success_criteria.get("expect_move", target_offset != 0))
+            max_unsafe = int(self.success_criteria.get("max_unsafe_lane_change_attempts", 0) or 0)
+            min_speed = float(self.success_criteria.get("min_speed_mps", 0.0) or 0.0)
+            target_lane_reached = lane_rank == (self.initial_lane_rank + target_offset)
+            lane_satisfied = target_lane_reached if expect_move else lane_rank == self.initial_lane_rank
+            unsafe_satisfied = self.unsafe_lane_change_attempts <= max_unsafe
+            speed_satisfied = current_speed >= min_speed
+            task_satisfied = bool(lane_satisfied and unsafe_satisfied and speed_satisfied)
+            status.update(
+                {
+                    "target_lane_reached": bool(target_lane_reached),
+                    "lane_discipline_satisfied": bool(lane_satisfied),
+                    "unsafe_attempt_satisfied": bool(unsafe_satisfied),
+                    "speed_band_satisfied": bool(speed_satisfied),
+                    "task_predicate_satisfied": task_satisfied,
+                }
+            )
+            return status
+
+        if criteria_type in _STRESS_CRITERIA_TYPES:
+            steps = max(len(self.speed_history), 1)
+            min_steps = max(1, int(self.success_criteria.get("min_survival_steps", self.hold_steps_required) or 1))
+            max_ttc_rate = float(self.success_criteria.get("max_ttc_danger_rate", 0.25) or 0.25)
+            max_headway_rate = float(self.success_criteria.get("max_headway_violation_rate", 0.4) or 0.4)
+            max_flaps = int(self.success_criteria.get("max_flap_accel_decel_count", 4))
+            max_lane_changes = int(self.success_criteria.get("max_lane_changes", 99))
+            max_unsafe = int(self.success_criteria.get("max_unsafe_lane_change_attempts", 0) or 0)
+            min_avg_speed = float(self.success_criteria.get("min_avg_speed_mps", 0.0) or 0.0)
+            avg_speed = float(np.mean(np.array(self.speed_history, dtype=float))) if self.speed_history else 0.0
+            ttc_rate = float(self.ttc_danger_steps) / steps
+            headway_rate = float(self.headway_violation_steps) / steps
+            event_satisfied = bool(self.applied_benchmark_event_ids) or not bool(
+                self.success_criteria.get("requires_event", True)
+            )
+            survival_satisfied = len(self.speed_history) >= min_steps
+            safety_satisfied = (
+                self.unsafe_lane_change_attempts <= max_unsafe
+                and ttc_rate <= max_ttc_rate
+                and headway_rate <= max_headway_rate
+            )
+            smooth_satisfied = self.flap_accel_decel_count <= max_flaps
+            lane_change_satisfied = self.benchmark_lane_change_count <= max_lane_changes
+            avg_speed_satisfied = avg_speed >= min_avg_speed
+            speed_band_satisfied = _speed_within_optional_band(current_speed, self.success_criteria)
+            task_satisfied = bool(
+                event_satisfied
+                and survival_satisfied
+                and safety_satisfied
+                and smooth_satisfied
+                and lane_change_satisfied
+                and avg_speed_satisfied
+                and speed_band_satisfied
+            )
+
+            if criteria_type == "cut_in_brake_response":
+                max_current_speed = _optional_float(self.success_criteria, "max_post_event_speed_mps")
+                if max_current_speed is not None and self.applied_benchmark_event_ids:
+                    speed_band_satisfied = current_speed <= max_current_speed
+                    task_satisfied = bool(task_satisfied and speed_band_satisfied)
+            elif criteria_type == "delayed_overtake_gap":
+                target_offset = _resolve_direction_offset(self.success_criteria)
+                used_required_lane = self.visited_left_lane if target_offset < 0 else self.visited_right_lane
+                target_vehicle = _vehicle_by_runtime_id(road, self.initial_front_vehicle_id)
+                target_x = _vehicle_x(target_vehicle)
+                ego_x = _vehicle_x(ego)
+                pass_margin_m = float(self.success_criteria.get("pass_margin_m", 8.0) or 8.0)
+                pass_margin_satisfied = bool(
+                    target_x is not None and ego_x is not None and target_x <= (ego_x - pass_margin_m)
+                )
+                min_final_speed = float(self.success_criteria.get("min_final_speed_mps", 20.0) or 20.0)
+                final_speed_satisfied = current_speed >= min_final_speed
+                task_satisfied = bool(
+                    event_satisfied
+                    and used_required_lane
+                    and pass_margin_satisfied
+                    and final_speed_satisfied
+                    and safety_satisfied
+                )
+                status.update(
+                    {
+                        "required_lane_used": bool(used_required_lane),
+                        "pass_margin_satisfied": bool(pass_margin_satisfied),
+                        "final_speed_satisfied": bool(final_speed_satisfied),
+                    }
+                )
+            elif criteria_type == "closing_rear_lane_change":
+                task_satisfied = bool(task_satisfied and self.benchmark_lane_change_count <= max_lane_changes)
+            elif criteria_type == "multi_hazard_recovery":
+                min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 20.0) or 20.0)
+                recovery_satisfied = self.recovery_clear_step is not None and current_speed >= min_recovery_speed
+                task_satisfied = bool(task_satisfied and recovery_satisfied)
+                status.update(
+                    {
+                        "recovery_clear_observed": bool(self.recovery_clear_step is not None),
+                        "recovery_speed_satisfied": bool(current_speed >= min_recovery_speed),
+                    }
+                )
+            elif criteria_type == "right_lane_opening_discipline":
+                if lane_rank is None or self.initial_lane_rank is None:
+                    task_satisfied = False
+                    target_lane_reached = False
+                else:
+                    target_offset = _resolve_direction_offset(self.success_criteria)
+                    target_lane_reached = lane_rank == (self.initial_lane_rank + target_offset)
+                    task_satisfied = bool(task_satisfied and target_lane_reached)
+                status.update({"target_lane_reached": bool(target_lane_reached)})
+            elif criteria_type == "false_alarm_stability":
+                task_satisfied = bool(task_satisfied and self.benchmark_lane_change_count == 0)
+
+            status.update(
+                {
+                    "event_satisfied": bool(event_satisfied),
+                    "survival_satisfied": bool(survival_satisfied),
+                    "safety_satisfied": bool(safety_satisfied),
+                    "smooth_satisfied": bool(smooth_satisfied),
+                    "lane_change_satisfied": bool(lane_change_satisfied),
+                    "avg_speed_satisfied": bool(avg_speed_satisfied),
+                    "speed_band_satisfied": bool(speed_band_satisfied),
+                    "ttc_rate_satisfied": bool(ttc_rate <= max_ttc_rate),
+                    "headway_rate_satisfied": bool(headway_rate <= max_headway_rate),
+                    "task_predicate_satisfied": bool(task_satisfied),
+                }
+            )
+            return status
+
+        return status
+
+    def _completion_predicate(self, env, step_metrics: Dict[str, Any]) -> bool:
+        self.last_criteria_status = self._criteria_status(env, step_metrics)
+        return bool(self.last_criteria_status.get("task_predicate_satisfied", False))
+
+    def update(
+        self,
+        env,
+        step_idx: int,
+        step_metrics: Dict[str, Any],
+        crashed: bool,
+        info: Optional[Dict[str, Any]] = None,
+        action_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         ego = getattr(env.unwrapped, "vehicle", None)
         self.last_info = dict(info or {})
+        action_context = dict(action_context or {})
+        if bool(action_context.get("benchmark_events_applied", False)):
+            event_ids = [str(item) for item in (action_context.get("benchmark_event_ids") or [])]
+            event_types = [str(item) for item in (action_context.get("benchmark_event_types") or [])]
+            for event_id in event_ids:
+                if event_id not in self.applied_benchmark_event_ids:
+                    self.applied_benchmark_event_ids.append(event_id)
+            self.applied_benchmark_event_types.extend(event_types)
+            if self.first_benchmark_event_step is None:
+                self.first_benchmark_event_step = int(action_context.get("benchmark_event_step") or step_idx)
+            for event_type in event_types:
+                if event_type not in self.first_event_step_by_type:
+                    self.first_event_step_by_type[event_type] = int(
+                        action_context.get("benchmark_event_step") or step_idx
+                    )
         lane_rank = _lane_rank(ego)
         if lane_rank is not None and self.initial_lane_rank is not None:
             if lane_rank < self.initial_lane_rank:
                 self.visited_left_lane = True
             if lane_rank > self.initial_lane_rank:
                 self.visited_right_lane = True
+            criteria_type = str(self.success_criteria.get("type") or "").strip().lower()
+            target_offset = _resolve_direction_offset(self.success_criteria)
+            if (
+                criteria_type in {"overtake", "safe_overtake"}
+                and self.overtake_latency_steps is None
+                and target_offset != 0
+                and ((target_offset < 0 and lane_rank < self.initial_lane_rank) or (target_offset > 0 and lane_rank > self.initial_lane_rank))
+            ):
+                self.overtake_latency_steps = int(step_idx)
+
+        final_action_id = action_context.get("final_action_id", action_context.get("action_id"))
+        try:
+            final_action_id = int(final_action_id) if final_action_id is not None else None
+        except Exception:
+            final_action_id = None
+        lane_change_attempt_action_id = action_context.get(
+            "lane_change_original_action_id",
+            action_context.get("original_action_id", action_context.get("model_action_id", final_action_id)),
+        )
+        try:
+            lane_change_attempt_action_id = (
+                int(lane_change_attempt_action_id)
+                if lane_change_attempt_action_id is not None
+                else None
+            )
+        except Exception:
+            lane_change_attempt_action_id = None
+        if lane_change_attempt_action_id in (0, 2) and self.first_lane_change_attempt_step is None:
+            self.first_lane_change_attempt_step = int(step_idx)
+        if final_action_id in (0, 2):
+            self.benchmark_lane_change_count += 1
+        if (
+            self.previous_final_action_id is not None
+            and ((self.previous_final_action_id == 3 and final_action_id == 4) or (self.previous_final_action_id == 4 and final_action_id == 3))
+        ):
+            self.flap_accel_decel_count += 1
+        if final_action_id is not None:
+            self.previous_final_action_id = final_action_id
+        if bool(action_context.get("lane_change_shield_applied", False)):
+            self.unsafe_lane_change_attempts += 1
+        target_offset = _resolve_direction_offset(self.success_criteria)
+        target_lane_change_action_id = _lane_change_action_for_offset(target_offset)
+        if self._safe_overtake_opportunity_available(env):
+            self.safe_overtake_opportunity_steps += 1
+            if self.first_safe_overtake_opportunity_step is None:
+                self.first_safe_overtake_opportunity_step = int(step_idx)
+            if lane_change_attempt_action_id != target_lane_change_action_id:
+                self.missed_overtake_opportunity_steps += 1
 
         current_speed = float(getattr(ego, "speed", 0.0) or 0.0) if ego is not None else 0.0
         self.speed_history.append(current_speed)
+        if bool(self.success_criteria.get("requires_yield", False)):
+            yield_speed_mps = float(self.success_criteria.get("yield_speed_mps", 2.0) or 2.0)
+            if current_speed <= yield_speed_mps:
+                self.yield_observed_steps += 1
         front_gap_m = step_metrics.get("front_gap_m")
         if front_gap_m is not None:
             self.front_gap_history.append(float(front_gap_m))
+        self.low_speed_blocking_steps += int(bool(step_metrics.get("low_speed_blocking", False)))
+        self.ttc_danger_steps += int(bool(step_metrics.get("ttc_danger", False)))
+        self.headway_violation_steps += int(bool(step_metrics.get("headway_violation", False)))
         ttc_sec = step_metrics.get("ttc_sec")
         if ttc_sec is not None and float(ttc_sec) > 0:
             positive_ttc = float(ttc_sec)
@@ -952,6 +1746,24 @@ class BenchmarkEpisodeEvaluator:
         if ego_x is not None:
             self.max_progress_m = max(self.max_progress_m, float(ego_x - self.initial_x))
 
+        if str(self.success_criteria.get("type") or "").strip().lower() in {
+            "post_brake_recovery",
+            "multi_hazard_recovery",
+        }:
+            clear_gap = float(self.success_criteria.get("clear_front_gap_m", 25.0) or 25.0)
+            clear_ttc = float(self.success_criteria.get("clear_front_ttc_sec", 4.0) or 4.0)
+            front_clear = front_gap_m is None or float(front_gap_m) >= clear_gap
+            ttc_clear = ttc_sec is None or float(ttc_sec) >= clear_ttc
+            if self.recovery_clear_step is None and front_clear and ttc_clear:
+                self.recovery_clear_step = int(step_idx)
+            min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 22.0) or 22.0)
+            if (
+                self.recovery_clear_step is not None
+                and self.recovery_time_steps is None
+                and current_speed >= min_recovery_speed
+            ):
+                self.recovery_time_steps = int(step_idx - self.recovery_clear_step)
+
         if crashed:
             self.failure_reason = self.failure_reason or "crash"
             self.hold_streak = 0
@@ -963,6 +1775,8 @@ class BenchmarkEpisodeEvaluator:
                 self.task_completed = True
                 self.completion_step = int(step_idx)
                 self.completion_time_sec = round(step_idx / max(self.policy_frequency, 1.0), 3)
+                self.completion_speed_mps = round(float(current_speed), 4)
+                self.completion_progress_m = round(float(self.max_progress_m), 4)
         else:
             self.hold_streak = 0
 
@@ -1008,6 +1822,38 @@ class BenchmarkEpisodeEvaluator:
             ),
             "benchmark_completion_step": self.completion_step,
             "benchmark_completion_time_sec": self.completion_time_sec,
+            "benchmark_completion_speed_mps": self.completion_speed_mps,
+            "benchmark_completion_progress_m": self.completion_progress_m,
+            "benchmark_yield_observed_steps": int(self.yield_observed_steps),
+            "benchmark_criteria_status": copy.deepcopy(self.last_criteria_status),
+            "benchmark_scenario_spec": copy.deepcopy(self.scenario_spec_report),
+            "benchmark_scenario_spec_applied": bool(
+                self.scenario_spec_metadata.get("benchmark_scenario_spec_applied", bool(self.scenario_spec_report))
+            ),
+            "benchmark_event_ids_applied": list(self.applied_benchmark_event_ids),
+            "benchmark_event_types_applied": list(self.applied_benchmark_event_types),
+            "benchmark_event_count_applied": int(len(self.applied_benchmark_event_ids)),
+            "benchmark_first_event_step": self.first_benchmark_event_step,
+            "benchmark_overtake_latency_steps": self.overtake_latency_steps,
+            "benchmark_recovery_clear_step": self.recovery_clear_step,
+            "benchmark_recovery_time_steps": self.recovery_time_steps,
+            "benchmark_unsafe_lane_change_attempts": int(self.unsafe_lane_change_attempts),
+            "benchmark_lane_change_count": int(self.benchmark_lane_change_count),
+            "benchmark_safe_overtake_opportunity_steps": int(self.safe_overtake_opportunity_steps),
+            "benchmark_missed_overtake_opportunity_steps": int(self.missed_overtake_opportunity_steps),
+            "benchmark_first_safe_overtake_opportunity_step": self.first_safe_overtake_opportunity_step,
+            "benchmark_first_lane_change_attempt_step": self.first_lane_change_attempt_step,
+            "benchmark_missed_overtake_opportunity_rate": (
+                round(
+                    float(self.missed_overtake_opportunity_steps)
+                    / max(int(self.safe_overtake_opportunity_steps), 1),
+                    4,
+                )
+                if self.safe_overtake_opportunity_steps > 0
+                else 0.0
+            ),
+            "benchmark_flap_accel_decel_count": int(self.flap_accel_decel_count),
+            "benchmark_low_speed_blocking_steps": int(self.low_speed_blocking_steps),
             "task_completed": bool(self.task_completed),
             "completion_rate": score_metrics["completion_rate"],
             "ttc_score": score_metrics["ttc_score"],

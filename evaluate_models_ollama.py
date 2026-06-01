@@ -1,5 +1,7 @@
 import argparse
 import copy
+import gc
+from collections import Counter
 from contextlib import nullcontext
 import json
 import os
@@ -71,11 +73,31 @@ from dilu.runtime import (
     system_hardware_snapshot,
     build_energy_tradeoff_summary,
     aggregate_episode_token_usage,
+    apply_lane_change_safety_shield,
+    apply_low_speed_recovery_shield,
+    apply_longitudinal_safety_shield,
+    annotate_aggregate_with_scientific_reporting,
+    build_primary_metric_spec,
+    write_scientific_analysis_artifacts,
+    SPLIT_SCORING_POLICY_VERSION,
+    SPLIT_SCORE_FIELDS,
+    compute_split_scores_for_episode,
+    normalize_ollama_think_mode,
+    resolve_ollama_native_chat_mode,
 )
+from dilu.runtime.highway_scenario_spec import (
+    apply_highway_scenario_events,
+    apply_highway_scenario_spec,
+)
+from dilu.runtime.scientific_reporting import bootstrap_ci95
 from dilu.scenario.envScenario import EnvScenario
 
 
 STRICT_RESPONSE_PATTERN = re.compile(r"Response to user:\s*\#{4}\s*([0-4])\s*$", re.IGNORECASE)
+STRICT_RESPONSE_FIRST_LINE_PATTERN = re.compile(
+    r"^Response to user:\s*\#{4}\s*([0-4])\s*$",
+    re.IGNORECASE,
+)
 STOP_THRESHOLD_MPS_DEFAULT = 0.5
 NEAR_STOP_THRESHOLD_MPS_DEFAULT = 2.0
 LEGACY_BENCHMARK_VARIANT = "legacy_direct_action"
@@ -87,6 +109,7 @@ def build_env_bundle(
     env_id_override: Optional[str] = None,
     native_env_defaults_override: Optional[bool] = None,
     action_target_speeds_override: Optional[str] = None,
+    env_config_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     return resolve_simulation_env_bundle(
         config,
@@ -95,21 +118,127 @@ def build_env_bundle(
         env_id_override=env_id_override,
         native_env_defaults_override=native_env_defaults_override,
         action_target_speeds_override=action_target_speeds_override,
+        env_config_overrides=env_config_overrides,
         require_discrete_meta_action=True,
     )
 
 
-def parse_seeds(raw: Optional[str]) -> List[int]:
-    if not raw:
-        return DEFAULT_DILU_SEEDS
+def _resolve_benchmark_env_id_override(cli_env_id: Optional[str], benchmark_case_set: Optional[Dict]) -> Optional[str]:
+    if cli_env_id and str(cli_env_id).strip():
+        return str(cli_env_id).strip()
+    if benchmark_case_set is None:
+        return None
+    target_env_id = str(benchmark_case_set.get("target_env_id") or "").strip()
+    return target_env_id or None
+
+
+def _benchmark_default_env_overrides(benchmark_case_set: Optional[Dict]) -> Optional[Dict[str, Any]]:
+    if benchmark_case_set is None:
+        return None
+    defaults = benchmark_case_set.get("defaults") or {}
+    overrides = defaults.get("env_overrides") or {}
+    return copy.deepcopy(overrides) if isinstance(overrides, dict) and overrides else None
+
+
+def parse_seeds(raw: Optional[Any]) -> List[int]:
+    if raw is None or raw == "":
+        return list(DEFAULT_DILU_SEEDS)
+    if isinstance(raw, str):
+        tokens = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        tokens = raw
+    else:
+        tokens = [raw]
     seeds = []
-    for token in raw.split(","):
-        token = token.strip()
+    for token in tokens:
+        token = str(token).strip()
         if token:
             seeds.append(int(token))
     if not seeds:
         raise ValueError("No valid seeds provided.")
     return seeds
+
+
+def _parse_benchmark_category_filter(raw: Optional[str]) -> List[str]:
+    if raw is None:
+        return []
+    text = str(raw).strip()
+    if not text:
+        raise ValueError("--benchmark-categories must not be empty.")
+    categories: List[str] = []
+    for token in str(raw).split(","):
+        category = token.strip()
+        if not category:
+            raise ValueError("--benchmark-categories contains an empty category token.")
+        if category not in categories:
+            categories.append(category)
+    return categories
+
+
+def _filter_benchmark_cases_by_category(
+    case_set: Dict,
+    requested_categories: List[str],
+) -> Tuple[Dict, List[Dict]]:
+    filtered_case_set = dict(case_set)
+    cases = list(case_set.get("cases") or [])
+    if not requested_categories:
+        filtered_case_set["cases"] = list(cases)
+        filtered_case_set["categories"] = sorted({str(case["category"]) for case in cases})
+        return filtered_case_set, list(cases)
+
+    available_categories = sorted({str(case.get("category") or "") for case in cases if case.get("category")})
+    requested_set = set(requested_categories)
+    missing_categories = [category for category in requested_categories if category not in available_categories]
+    if missing_categories:
+        raise ValueError(
+            "Unknown benchmark category filter value(s): {missing}. Available categories: {available}.".format(
+                missing=", ".join(missing_categories),
+                available=", ".join(available_categories),
+            )
+        )
+
+    filtered_cases = [
+        case
+        for case in cases
+        if str(case.get("category") or "") in requested_set
+    ]
+    if not filtered_cases:
+        raise ValueError(
+            "No benchmark cases matched --benchmark-categories={categories}.".format(
+                categories=", ".join(requested_categories)
+            )
+        )
+    filtered_case_set["cases"] = list(filtered_cases)
+    filtered_case_set["categories"] = sorted({str(case["category"]) for case in filtered_cases})
+    return filtered_case_set, filtered_cases
+
+
+def resolve_eval_seeds(
+    config: Optional[Dict[str, Any]],
+    cli_seeds: Optional[str],
+    seed_count: Optional[int] = None,
+) -> List[int]:
+    if cli_seeds is not None:
+        seeds = parse_seeds(cli_seeds)
+    else:
+        config = config or {}
+        seeds = parse_seeds(None)
+        for key in ("eval_seed_bank", "eval_seeds"):
+            if config.get(key) is not None:
+                seeds = parse_seeds(config.get(key))
+                break
+    if seed_count is None:
+        return seeds
+    count = int(seed_count)
+    if count <= 0:
+        raise ValueError("--seed-count must be greater than zero.")
+    if count > len(seeds):
+        raise ValueError(f"--seed-count={count} exceeds available seed bank size {len(seeds)}.")
+    return seeds[:count]
+
+
+def _format_default_seed_count() -> int:
+    return len(DEFAULT_DILU_SEEDS)
 
 
 def parse_action_target_speeds(raw: Optional[str]) -> Optional[str]:
@@ -259,6 +388,15 @@ def _annotate_aggregate_with_ollama_preflight_status(
     probe = preflight_results_by_model.get(str(aggregate.get("model") or "").strip())
     annotated["ollama_preflight_ok"] = None if probe is None else bool(probe.get("ok"))
     annotated["ollama_preflight_transport"] = None if probe is None else probe.get("transport")
+    annotated["ollama_preflight_native_chat_configured"] = (
+        None if probe is None else probe.get("ollama_native_chat_configured")
+    )
+    annotated["ollama_preflight_native_chat_effective"] = (
+        None if probe is None else probe.get("ollama_native_chat_effective")
+    )
+    annotated["ollama_preflight_native_chat_resolution_reason"] = (
+        None if probe is None else probe.get("ollama_native_chat_resolution_reason")
+    )
     annotated["ollama_preflight_elapsed_sec"] = None if probe is None else probe.get("elapsed_sec")
     annotated["ollama_preflight_error"] = None if probe is None else probe.get("error")
     return annotated
@@ -287,6 +425,11 @@ def _build_measurement_integrity_summary(
             {
                 "model": item.get("model"),
                 "transport": item.get("transport"),
+                "ollama_native_chat_configured": item.get("ollama_native_chat_configured"),
+                "ollama_native_chat_effective": item.get("ollama_native_chat_effective"),
+                "ollama_native_chat_resolution_reason": item.get(
+                    "ollama_native_chat_resolution_reason"
+                ),
                 "elapsed_sec": item.get("elapsed_sec"),
                 "timeout_sec": item.get("timeout_sec"),
                 "error": item.get("error"),
@@ -333,11 +476,26 @@ def _build_skipped_model_aggregate(
         "decision_latency_ms_avg": None,
         "timeout_collapse_detected": False,
         "timeout_collapse_reason": None,
+        "split_scoring_policy_version": SPLIT_SCORING_POLICY_VERSION,
         "ollama_preflight_ok": None if preflight_probe is None else bool(preflight_probe.get("ok")),
         "ollama_preflight_transport": None if preflight_probe is None else preflight_probe.get("transport"),
+        "ollama_preflight_native_chat_configured": (
+            None if preflight_probe is None else preflight_probe.get("ollama_native_chat_configured")
+        ),
+        "ollama_preflight_native_chat_effective": (
+            None if preflight_probe is None else preflight_probe.get("ollama_native_chat_effective")
+        ),
+        "ollama_preflight_native_chat_resolution_reason": (
+            None
+            if preflight_probe is None
+            else preflight_probe.get("ollama_native_chat_resolution_reason")
+        ),
         "ollama_preflight_elapsed_sec": None if preflight_probe is None else preflight_probe.get("elapsed_sec"),
         "ollama_preflight_error": None if preflight_probe is None else preflight_probe.get("error"),
     }
+    for split_field in SPLIT_SCORE_FIELDS:
+        aggregate[split_field] = None
+        aggregate[f"{split_field}_ci95"] = None
     if benchmark_mode:
         aggregate.update(
             {
@@ -483,6 +641,224 @@ def _action_histogram(action_trace: List[Dict]) -> Dict[str, int]:
     return counts
 
 
+def _bump_counter(counter: Counter, value: Any) -> None:
+    if value is None:
+        return
+    text = str(value).strip()
+    if text:
+        counter[text] += 1
+
+
+def _counter_dict(counter: Counter) -> Dict[str, int]:
+    return {str(key): int(value) for key, value in sorted(counter.items())}
+
+
+def _merge_count_dicts(episodes: List[Dict], field_name: str) -> Dict[str, int]:
+    merged: Counter = Counter()
+    for episode in episodes:
+        raw_counts = episode.get(field_name, {})
+        if not isinstance(raw_counts, dict):
+            continue
+        for key, value in raw_counts.items():
+            try:
+                increment = int(value)
+            except Exception:
+                continue
+            if increment > 0:
+                merged[str(key)] += increment
+    return _counter_dict(merged)
+
+
+def _scenario_ego_speed_mps(sce: EnvScenario) -> Optional[float]:
+    try:
+        return round(float(getattr(sce.env.unwrapped.vehicle, "speed")), 4)
+    except Exception:
+        return None
+
+
+_TRACE_METADATA_KEYS = (
+    "runtime_parse_path",
+    "fallback_reason",
+    "semantic_recovery_used",
+    "semantic_recovery_label",
+    "semantic_recovery_reason",
+    "intent_resolver_used",
+    "intent_resolver_model",
+    "intent_resolver_action_id",
+    "intent_resolver_abstained",
+    "intent_resolver_reason",
+    "final_action_source",
+    "response_contract_satisfied",
+    "response_contract_recovered",
+    "response_unparseable",
+    "response_truncated_before_contract",
+    "response_action_line",
+    "response_first_line",
+    "lane_change_shield_reason",
+    "lane_change_original_action_id",
+    "lane_change_final_action_id",
+    "lane_change_target_lane_rank",
+    "lane_change_front_gap_m",
+    "lane_change_front_ttc_sec",
+    "lane_change_rear_gap_m",
+    "lane_change_rear_ttc_sec",
+    "lane_change_target_front_gap_m",
+    "lane_change_target_front_ttc_sec",
+    "lane_change_target_rear_gap_m",
+    "lane_change_target_rear_ttc_sec",
+    "lane_change_required_front_gap_m",
+    "lane_change_required_rear_gap_m",
+    "lane_change_required_front_ttc_sec",
+    "lane_change_required_rear_ttc_sec",
+    "longitudinal_safety_shield_reason",
+    "longitudinal_safety_original_action_id",
+    "longitudinal_safety_final_action_id",
+    "longitudinal_safety_front_gap_m",
+    "longitudinal_safety_front_ttc_sec",
+    "longitudinal_safety_current_front_gap_m",
+    "longitudinal_safety_current_front_ttc_sec",
+    "longitudinal_safety_required_front_gap_m",
+    "longitudinal_safety_required_front_ttc_sec",
+    "longitudinal_safety_projected_front_gap_m",
+    "longitudinal_safety_projected_front_ttc_sec",
+    "longitudinal_safety_projected_ego_speed_mps",
+    "longitudinal_safety_projection_horizon_sec",
+    "flow_recovery_shield_reason",
+    "flow_recovery_original_action_id",
+    "flow_recovery_final_action_id",
+    "flow_recovery_reason",
+    "flow_recovery_front_gap_m",
+    "flow_recovery_front_ttc_sec",
+    "reactive_safety_original_action_id",
+    "reactive_safety_final_action_id",
+    "timeout_phase",
+    "warmup_active",
+    "warmup_success_observed",
+    "warmup_timeout_failures",
+    "warmup_timeout_sec",
+    "benchmark_events_applied",
+    "benchmark_event_ids",
+    "benchmark_event_types",
+    "benchmark_event_step",
+    "benchmark_events",
+)
+
+
+def _response_first_nonempty_line(response_text: str) -> str:
+    for line in str(response_text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _decision_trace_item(
+    *,
+    step_idx: int,
+    action_id: int,
+    response_text: str,
+    decision_meta: Dict[str, Any],
+    include_response_text: bool = False,
+) -> Dict[str, Any]:
+    model_action = int(decision_meta.get("original_selected_action", action_id))
+    final_action = int(decision_meta.get("selected_action", action_id))
+    trace_item: Dict[str, Any] = {
+        "step_idx": int(step_idx),
+        "action_id": final_action,
+        "original_action_id": model_action,
+        "model_action_id": model_action,
+        "final_action_id": final_action,
+        "reactive_safety_shield_applied": bool(
+            decision_meta.get("reactive_safety_shield_applied", False)
+        ),
+        "lane_change_shield_applied": bool(decision_meta.get("lane_change_shield_applied", False)),
+        "longitudinal_safety_shield_applied": bool(
+            decision_meta.get("longitudinal_safety_shield_applied", False)
+        ),
+        "flow_recovery_shield_applied": bool(decision_meta.get("flow_recovery_shield_applied", False)),
+        "ego_speed_mps": decision_meta.get("ego_speed_mps"),
+        "decision_elapsed_sec": (
+            round(float(decision_meta.get("decision_elapsed_sec")), 6)
+            if decision_meta.get("decision_elapsed_sec") is not None
+            else None
+        ),
+        "timed_out": bool(decision_meta.get("timed_out", False)),
+        "used_fallback": bool(decision_meta.get("used_fallback", False)),
+        "ollama_transport": decision_meta.get("ollama_transport"),
+        "ollama_native_chat_configured": decision_meta.get("ollama_native_chat_configured"),
+        "ollama_native_chat_effective": decision_meta.get("ollama_native_chat_effective"),
+        "ollama_native_chat_resolution_reason": decision_meta.get(
+            "ollama_native_chat_resolution_reason"
+        ),
+        "ollama_requested_think_mode": decision_meta.get("ollama_requested_think_mode"),
+        "ollama_effective_think_mode": decision_meta.get("ollama_effective_think_mode"),
+        "ollama_native_timeout": bool(decision_meta.get("ollama_native_timeout", False)),
+        "ollama_native_timeout_short_circuit": bool(
+            decision_meta.get("ollama_native_timeout_short_circuit", False)
+        ),
+        "prompt_tokens": int(decision_meta.get("prompt_tokens", 0) or 0),
+        "completion_tokens": int(decision_meta.get("completion_tokens", 0) or 0),
+        "total_tokens": int(decision_meta.get("total_tokens", 0) or 0),
+        "token_count_method": decision_meta.get("token_count_method"),
+        "token_usage_source": decision_meta.get("token_usage_source"),
+        "response_first_line": _response_first_nonempty_line(response_text),
+    }
+    for key in _TRACE_METADATA_KEYS:
+        if key in decision_meta:
+            trace_item[key] = decision_meta.get(key)
+    if include_response_text:
+        trace_item["response_text"] = response_text
+    return trace_item
+
+
+def _apply_reactive_safety_shields(
+    action: int,
+    sce: EnvScenario,
+    decision_meta: Dict,
+) -> Tuple[int, Dict[str, Any]]:
+    original_action = _safe_int_action(action)
+    final_action = original_action
+    shield_meta: Dict[str, Any] = {
+        "reactive_safety_shield_applied": False,
+        "reactive_safety_original_action_id": int(original_action),
+        "reactive_safety_final_action_id": int(final_action),
+    }
+
+    lane_result = apply_lane_change_safety_shield(sce, final_action)
+    shield_meta.update(lane_result.to_metadata("lane_change"))
+    if lane_result.applied:
+        final_action = int(lane_result.action_id)
+        shield_meta["reactive_safety_shield_applied"] = True
+        decision_meta["runtime_override_reason_class"] = "safety_shield"
+        decision_meta["runtime_override_reason"] = lane_result.reason
+
+    longitudinal_result = apply_longitudinal_safety_shield(sce, final_action)
+    shield_meta.update(longitudinal_result.to_metadata("longitudinal_safety"))
+    if longitudinal_result.applied:
+        final_action = int(longitudinal_result.action_id)
+        shield_meta["reactive_safety_shield_applied"] = True
+        decision_meta["runtime_override_reason_class"] = "longitudinal_safety_shield"
+        decision_meta["runtime_override_reason"] = longitudinal_result.reason
+
+    safety_shield_applied = bool(lane_result.applied or longitudinal_result.applied)
+    flow_result = apply_low_speed_recovery_shield(
+        sce,
+        final_action,
+        safety_shield_applied=safety_shield_applied,
+    )
+    shield_meta.update(flow_result.to_metadata("flow_recovery"))
+    shield_meta["flow_recovery_reason"] = flow_result.reason
+    if flow_result.applied:
+        final_action = int(flow_result.action_id)
+        decision_meta["runtime_override_reason_class"] = "flow_recovery_shield"
+        decision_meta["runtime_override_reason"] = flow_result.reason
+
+    shield_meta["reactive_safety_final_action_id"] = int(final_action)
+    decision_meta.update(shield_meta)
+    decision_meta["original_selected_action"] = int(original_action)
+    decision_meta["selected_action"] = int(final_action)
+    return int(final_action), shield_meta
+
+
 def _resolve_measurement_output_root(
     *,
     args,
@@ -515,6 +891,26 @@ def _resolve_eval_performance_mode(config: Dict, cli_override: Optional[str]) ->
     if cli_override is not None:
         return _normalize_performance_mode(cli_override)
     return _normalize_performance_mode(config.get("eval_performance_mode", "default"))
+
+
+def _resolve_eval_artifact_modes(config: Dict, args, *, measurement_mode: bool) -> Tuple[bool, bool]:
+    save_run_artifacts = _config_as_bool(config.get("eval_save_run_artifacts", False), default=False) or bool(
+        getattr(args, "save_run_artifacts", False)
+    )
+    if bool(getattr(args, "no_save_run_artifacts", False)):
+        save_run_artifacts = False
+
+    record_video = _config_as_bool(config.get("eval_record_video", False), default=False) or bool(
+        getattr(args, "record_video", False)
+    )
+    if bool(getattr(args, "no_record_video", False)) or bool(getattr(args, "no_save_run_artifacts", False)):
+        record_video = False
+
+    if record_video:
+        save_run_artifacts = True
+    if measurement_mode:
+        return False, False
+    return bool(save_run_artifacts), bool(record_video)
 
 
 def _config_as_bool(value, default: bool) -> bool:
@@ -641,8 +1037,13 @@ def _ollama_v1_chat_completions_url(api_base: str) -> str:
 def _ollama_preflight_probe(config: Dict, model_name: str, timeout_sec: float) -> Dict:
     api_base = str(config.get("OLLAMA_API_BASE", "http://localhost:11434/v1"))
     api_key = str(config.get("OLLAMA_API_KEY", "ollama"))
-    use_native_chat = _config_as_bool(config.get("OLLAMA_USE_NATIVE_CHAT", True), default=True)
-    think_mode = str(config.get("OLLAMA_THINK_MODE", "auto")).strip().lower()
+    think_mode = normalize_ollama_think_mode(config.get("OLLAMA_THINK_MODE", "auto"))
+    native_resolution = resolve_ollama_native_chat_mode(
+        model_name,
+        config.get("OLLAMA_USE_NATIVE_CHAT", "auto"),
+        think_mode,
+    )
+    use_native_chat = native_resolution.effective_native_chat
     headers = {"Authorization": f"Bearer {api_key}"}
     prompt = "Reply with exactly: 4"
     transport = "native_api_chat" if use_native_chat else "openai_compat_v1"
@@ -687,6 +1088,9 @@ def _ollama_preflight_probe(config: Dict, model_name: str, timeout_sec: float) -
         "model": model_name,
         "ok": True,
         "transport": transport,
+        "ollama_native_chat_configured": native_resolution.configured_mode,
+        "ollama_native_chat_effective": bool(native_resolution.effective_native_chat),
+        "ollama_native_chat_resolution_reason": native_resolution.reason,
         "elapsed_sec": elapsed_sec,
         "timeout_sec": float(timeout_sec),
         "response_preview": text_preview[:80],
@@ -720,14 +1124,21 @@ def _run_ollama_preflight(
             status_code = None
             if isinstance(exc, requests.HTTPError) and exc.response is not None:
                 status_code = exc.response.status_code
+            think_mode = normalize_ollama_think_mode(config.get("OLLAMA_THINK_MODE", "auto"))
+            native_resolution = resolve_ollama_native_chat_mode(
+                model_name,
+                config.get("OLLAMA_USE_NATIVE_CHAT", "auto"),
+                think_mode,
+            )
             failure = {
                 "model": model_name,
                 "ok": False,
-                "transport": (
-                    "native_api_chat"
-                    if _config_as_bool(config.get("OLLAMA_USE_NATIVE_CHAT", True), default=True)
-                    else "openai_compat_v1"
-                ),
+                "transport": "native_api_chat"
+                if native_resolution.effective_native_chat
+                else "openai_compat_v1",
+                "ollama_native_chat_configured": native_resolution.configured_mode,
+                "ollama_native_chat_effective": bool(native_resolution.effective_native_chat),
+                "ollama_native_chat_resolution_reason": native_resolution.reason,
                 "timeout_sec": float(timeout_sec),
                 "error": f"{type(exc).__name__}: {exc}",
                 "status_code": status_code,
@@ -840,11 +1251,20 @@ def _safe_int_action(action) -> int:
 def _response_format_metrics(response_content: str) -> Dict:
     response_content = (response_content or "").strip()
     has_delimiter = "####" in response_content
-    strict_match = STRICT_RESPONSE_PATTERN.search(response_content)
+    nonempty_lines = [line.strip() for line in response_content.splitlines() if line.strip()]
+    first_line_match = (
+        STRICT_RESPONSE_FIRST_LINE_PATTERN.fullmatch(nonempty_lines[0])
+        if nonempty_lines
+        else None
+    )
+    strict_match = first_line_match or STRICT_RESPONSE_PATTERN.search(response_content)
     direct_action_parseable = False
     parsed_action = None
 
-    if has_delimiter:
+    if first_line_match:
+        parsed_action = int(first_line_match.group(1))
+        direct_action_parseable = True
+    elif has_delimiter:
         tail = response_content.split("####")[-1].strip()
         try:
             parsed_action = int(tail)
@@ -965,6 +1385,7 @@ def run_episode(
     slow_decision_threshold_sec: float,
     timeout_penalty_state: Optional[Dict] = None,
     save_artifacts: bool = False,
+    record_video: bool = False,
     run_dir: Optional[str] = None,
     run_id: Optional[str] = None,
     model_name: Optional[str] = None,
@@ -987,10 +1408,11 @@ def run_episode(
     if isinstance(env_config, dict):
         env_snapshot = env_config.get(env_type) if isinstance(env_config.get(env_type), dict) else None
     episode_max_steps = int(max_steps_override or _resolve_simulation_duration(config, env_snapshot))
-    if save_artifacts:
+    if save_artifacts or record_video:
         if not run_dir:
-            raise ValueError("run_dir is required when save_artifacts is enabled.")
+            raise ValueError("run_dir is required when save_artifacts or record_video is enabled.")
         ensure_dir(run_dir)
+    if save_artifacts:
         database_path = os.path.join(run_dir, f"{result_prefix}.db")
     elif enable_db_logging:
         database_path = os.path.join(temp_dir, f"eval_{seed}_{int(time.time() * 1000)}.db")
@@ -1010,6 +1432,9 @@ def run_episode(
     fallback_action_count = 0
     first_timeout_step = None
     ollama_requested_think_mode = None
+    ollama_native_chat_configured = None
+    ollama_native_chat_effective_seen = set()
+    ollama_native_chat_resolution_reasons: Counter = Counter()
     ollama_effective_think_modes_seen = set()
     ollama_native_retry_count = 0
     ollama_openai_fallback_count = 0
@@ -1032,9 +1457,26 @@ def run_episode(
     stop_steps = 0
     near_stop_steps = 0
     lane_change_count = 0
+    lane_change_shield_count = 0
+    unsafe_lane_change_attempt_count = 0
+    longitudinal_safety_shield_count = 0
+    unsafe_longitudinal_action_attempt_count = 0
+    flow_recovery_shield_count = 0
+    semantic_recovery_count = 0
+    intent_resolver_used_count = 0
+    intent_resolver_recovery_count = 0
+    intent_resolver_abstain_count = 0
     flap_accel_decel_count = 0
     prev_action_id = None
     alignment_samples = []
+    run_action_trace = []
+    fallback_reason_counts: Counter = Counter()
+    runtime_parse_path_counts: Counter = Counter()
+    lane_change_shield_reason_counts: Counter = Counter()
+    longitudinal_safety_shield_reason_counts: Counter = Counter()
+    flow_recovery_reason_counts: Counter = Counter()
+    semantic_recovery_label_counts: Counter = Counter()
+    timeout_phase_counts: Counter = Counter()
     decision_latencies_sec = []
     slow_decision_count = 0
     penalty_start_events = (
@@ -1069,11 +1511,17 @@ def run_episode(
     timeout_early_stop_step = None
     consecutive_timeout_fallbacks = 0
     benchmark_evaluator: Optional[BenchmarkEpisodeEvaluator] = None
+    scenario_spec_metadata: Dict[str, Any] = {
+        "benchmark_scenario_spec_applied": False,
+        "benchmark_scenario_spec": {},
+        "benchmark_scenario_vehicle_count": None,
+    }
+    benchmark_applied_event_ids = set()
 
     try:
         env = gym.make(env_type, render_mode="rgb_array")
         env.unwrapped.configure(env_config[env_type])
-        if save_artifacts:
+        if record_video:
             env = RecordVideo(
                 env,
                 run_dir,
@@ -1085,12 +1533,18 @@ def run_episode(
             except Exception:
                 pass
         obs, info = env.reset(seed=seed)
+        if benchmark_case is not None:
+            scenario_spec_metadata = apply_highway_scenario_spec(env, benchmark_case)
         final_info = info
 
         sce = EnvScenario(env, env_type, seed, database_path or None, enable_db=bool(enable_db_logging or save_artifacts))
         agent = DriverAgent(sce, verbose=True)
         if benchmark_case is not None:
-            benchmark_evaluator = BenchmarkEpisodeEvaluator(benchmark_case, env)
+            benchmark_evaluator = BenchmarkEpisodeEvaluator(
+                benchmark_case,
+                env,
+                scenario_spec_metadata=scenario_spec_metadata,
+            )
             episode_max_steps = int(max_steps_override or benchmark_evaluator.max_steps)
         initial_penalty_snapshot = decision_timeout_penalty_snapshot(timeout_penalty_state)
         timeout_policy_mode = initial_penalty_snapshot.get("policy_mode")
@@ -1112,6 +1566,20 @@ def run_episode(
         prev_action = "Not available"
         effective_driving_instruction = driving_instruction or "Drive safely and avoid collisons"
         for frame_id in range(episode_max_steps):
+            benchmark_event_meta: Dict[str, Any] = {
+                "benchmark_events_applied": False,
+                "benchmark_event_ids": [],
+                "benchmark_event_types": [],
+                "benchmark_event_step": int(frame_id + 1),
+                "benchmark_events": [],
+            }
+            if benchmark_case is not None:
+                benchmark_event_meta = apply_highway_scenario_events(
+                    env,
+                    benchmark_case,
+                    step_idx=int(frame_id + 1),
+                    applied_event_ids=benchmark_applied_event_ids,
+                )
             _ = np.array(obs, dtype=float)
 
             fewshot_results = (
@@ -1149,6 +1617,18 @@ def run_episode(
             timed_out = bool(decision_meta.get("timed_out", False))
             used_fallback = bool(decision_meta.get("used_fallback", False))
             ollama_requested_think_mode = decision_meta.get("ollama_requested_think_mode") or ollama_requested_think_mode
+            ollama_native_chat_configured = (
+                decision_meta.get("ollama_native_chat_configured")
+                or ollama_native_chat_configured
+            )
+            if decision_meta.get("ollama_native_chat_effective") is not None:
+                ollama_native_chat_effective_seen.add(
+                    bool(decision_meta.get("ollama_native_chat_effective"))
+                )
+            _bump_counter(
+                ollama_native_chat_resolution_reasons,
+                decision_meta.get("ollama_native_chat_resolution_reason"),
+            )
             ollama_effective_mode = decision_meta.get("ollama_effective_think_mode")
             ollama_transport = decision_meta.get("ollama_transport")
             ollama_native_retry_used = bool(decision_meta.get("ollama_native_retry_used", False))
@@ -1159,6 +1639,22 @@ def run_episode(
             decision_elapsed_sec = float(decision_meta.get("decision_elapsed_sec", 0.0) or 0.0)
             decision_timeout_count += int(timed_out)
             fallback_action_count += int(used_fallback)
+            _bump_counter(runtime_parse_path_counts, decision_meta.get("runtime_parse_path"))
+            if used_fallback:
+                _bump_counter(
+                    fallback_reason_counts,
+                    decision_meta.get("fallback_reason") or decision_meta.get("runtime_parse_path"),
+                )
+            semantic_recovery_used = bool(decision_meta.get("semantic_recovery_used", False))
+            intent_resolver_used = bool(decision_meta.get("intent_resolver_used", False))
+            intent_resolver_abstained = bool(decision_meta.get("intent_resolver_abstained", False))
+            runtime_parse_path = str(decision_meta.get("runtime_parse_path") or "")
+            semantic_recovery_count += int(semantic_recovery_used)
+            intent_resolver_used_count += int(intent_resolver_used)
+            intent_resolver_recovery_count += int(intent_resolver_used and runtime_parse_path == "intent_resolver_direct")
+            intent_resolver_abstain_count += int(intent_resolver_used and intent_resolver_abstained)
+            if semantic_recovery_used:
+                _bump_counter(semantic_recovery_label_counts, decision_meta.get("semantic_recovery_label"))
             consecutive_timeout_fallbacks = (
                 consecutive_timeout_fallbacks + 1
                 if (timed_out and used_fallback)
@@ -1177,14 +1673,38 @@ def run_episode(
                 decision_elapsed_sec=decision_elapsed_sec,
                 slow_threshold_sec=slow_decision_threshold_sec,
             )
+            post_penalty_snapshot = decision_timeout_penalty_snapshot(timeout_penalty_state)
+            decision_meta.update(
+                {
+                    "timeout_phase": post_penalty_snapshot.get("timeout_phase"),
+                    "warmup_active": bool(post_penalty_snapshot.get("warmup_active", False)),
+                    "warmup_success_observed": bool(
+                        post_penalty_snapshot.get("warmup_success_observed", False)
+                    ),
+                    "warmup_timeout_failures": int(
+                        post_penalty_snapshot.get("warmup_timeout_failures", 0) or 0
+                    ),
+                    "warmup_timeout_sec": post_penalty_snapshot.get("warmup_timeout_sec"),
+                    "ego_speed_mps": _scenario_ego_speed_mps(sce),
+                }
+            )
+            decision_meta.update(benchmark_event_meta)
+            _bump_counter(timeout_phase_counts, decision_meta.get("timeout_phase"))
             timeout_penalty_stage_max = max(timeout_penalty_stage_max, int(penalty_update.get("stage", 0)))
-            if penalty_update.get("escalated") or penalty_update.get("recovered"):
+            if penalty_update.get("escalated") or penalty_update.get("recovered") or penalty_update.get("warmup_completed"):
                 effective_decision_timeout_sec = penalty_update.get("effective_decision_timeout_sec")
                 if effective_decision_timeout_sec is not None:
                     try:
                         agent.set_decision_timeout_sec(float(effective_decision_timeout_sec))
                     except Exception:
                         pass
+            if penalty_update.get("warmup_completed") and not quiet_mode:
+                effective_decision_timeout_sec = penalty_update.get("effective_decision_timeout_sec")
+                print(
+                    "[green]Eval timeout warmup completed[/green] "
+                    f"(phase=active, decision_timeout="
+                    f"{round(float(effective_decision_timeout_sec), 3) if effective_decision_timeout_sec is not None else 'n/a'}s)"
+                )
             if penalty_update.get("escalated"):
                 timeout_escalation_count += 1
                 if not quiet_mode:
@@ -1214,6 +1734,61 @@ def run_episode(
             format_failure_count += int(not fmt["strict_format_match"])
 
             action = _safe_int_action(action)
+            action, shield_meta = _apply_reactive_safety_shields(action, sce, decision_meta)
+            benchmark_action_context = dict(shield_meta)
+            benchmark_action_context.update(benchmark_event_meta)
+            benchmark_action_context.update(
+                {
+                    "action_id": int(action),
+                    "final_action_id": int(action),
+                    "runtime_parse_path": decision_meta.get("runtime_parse_path"),
+                    "fallback_reason": decision_meta.get("fallback_reason"),
+                }
+            )
+            lane_change_shield_count += int(bool(shield_meta.get("lane_change_shield_applied", False)))
+            unsafe_lane_change_attempt_count += int(bool(shield_meta.get("lane_change_shield_applied", False)))
+            longitudinal_safety_shield_count += int(
+                bool(shield_meta.get("longitudinal_safety_shield_applied", False))
+            )
+            unsafe_longitudinal_action_attempt_count += int(
+                bool(shield_meta.get("longitudinal_safety_shield_applied", False))
+            )
+            flow_recovery_shield_count += int(bool(shield_meta.get("flow_recovery_shield_applied", False)))
+            if shield_meta.get("lane_change_shield_applied"):
+                _bump_counter(lane_change_shield_reason_counts, shield_meta.get("lane_change_shield_reason"))
+            if shield_meta.get("longitudinal_safety_shield_applied"):
+                _bump_counter(
+                    longitudinal_safety_shield_reason_counts,
+                    shield_meta.get("longitudinal_safety_shield_reason"),
+                )
+            if shield_meta.get("flow_recovery_shield_applied"):
+                _bump_counter(flow_recovery_reason_counts, shield_meta.get("flow_recovery_reason"))
+            if save_artifacts:
+                try:
+                    pre_step_metrics = extract_step_traffic_metrics(
+                        env,
+                        ttc_threshold_sec,
+                        headway_threshold_m,
+                        rear_ttc_threshold_sec,
+                        rear_headway_threshold_m,
+                        low_speed_blocking_threshold_mps,
+                        blocking_front_gap_safe_m,
+                        blocking_front_ttc_safe_sec,
+                        stop_threshold_mps,
+                        near_stop_threshold_mps,
+                    )
+                except Exception:
+                    pre_step_metrics = {}
+                if pre_step_metrics.get("ego_speed_mps") is not None:
+                    decision_meta["ego_speed_mps"] = pre_step_metrics.get("ego_speed_mps")
+                run_action_trace.append(
+                    _decision_trace_item(
+                        step_idx=int(frame_id + 1),
+                        action_id=int(action),
+                        response_text=response,
+                        decision_meta=decision_meta,
+                    )
+                )
             if on_decision is not None:
                 try:
                     on_decision(int(frame_id + 1), int(action), response, dict(decision_meta))
@@ -1278,6 +1853,7 @@ def run_episode(
                     step_metrics=step_metrics,
                     crashed=crashed,
                     info=info,
+                    action_context=benchmark_action_context,
                 )
 
             if enable_db_logging or save_artifacts:
@@ -1328,6 +1904,8 @@ def run_episode(
                 os.remove(database_path)
             except Exception:
                 pass
+        if save_artifacts or record_video:
+            gc.collect()
 
     duration_sec = time.time() - started
     episode_reward_avg = episode_reward_sum / max(steps, 1)
@@ -1340,6 +1918,13 @@ def run_episode(
     stop_rate = stop_steps / max(steps, 1)
     near_stop_rate = near_stop_steps / max(steps, 1)
     lane_change_rate = lane_change_count / max(steps, 1)
+    lane_change_shield_rate = lane_change_shield_count / max(decision_calls_total, 1)
+    longitudinal_safety_shield_rate = longitudinal_safety_shield_count / max(decision_calls_total, 1)
+    flow_recovery_shield_rate = flow_recovery_shield_count / max(decision_calls_total, 1)
+    semantic_recovery_rate = semantic_recovery_count / max(decision_calls_total, 1)
+    intent_resolver_used_rate = intent_resolver_used_count / max(decision_calls_total, 1)
+    intent_resolver_recovery_rate = intent_resolver_recovery_count / max(decision_calls_total, 1)
+    intent_resolver_abstain_rate = intent_resolver_abstain_count / max(decision_calls_total, 1)
     flap_accel_decel_rate = flap_accel_decel_count / max(steps, 1)
     format_failure_rate = format_failure_count / max(decisions_made, 1)
     decision_timeout_rate = decision_timeout_count / max(decision_calls_total, 1)
@@ -1404,10 +1989,21 @@ def run_episode(
                 "time_limit_sec": round(float(benchmark_case.get("time_limit_sec") or 0.0), 3),
                 "benchmark_case_env_overrides": copy.deepcopy(benchmark_case.get("env_overrides") or {}),
                 "benchmark_success_criteria": copy.deepcopy(benchmark_case.get("success_criteria") or {}),
+                "benchmark_scenario_spec": copy.deepcopy(scenario_spec_metadata.get("benchmark_scenario_spec") or {}),
+                "benchmark_scenario_spec_applied": bool(
+                    scenario_spec_metadata.get("benchmark_scenario_spec_applied", False)
+                ),
                 "benchmark_initial_lane_rank": None,
                 "benchmark_initial_front_gap_m": None,
                 "benchmark_completion_step": None,
                 "benchmark_completion_time_sec": None,
+                "benchmark_overtake_latency_steps": None,
+                "benchmark_recovery_clear_step": None,
+                "benchmark_recovery_time_steps": None,
+                "benchmark_unsafe_lane_change_attempts": 0,
+                "benchmark_lane_change_count": 0,
+                "benchmark_flap_accel_decel_count": 0,
+                "benchmark_low_speed_blocking_steps": 0,
                 "task_completed": False,
                 "completion_rate": 0.0,
                 "ttc_score": 0.0,
@@ -1444,6 +2040,11 @@ def run_episode(
         "decision_timeout_rate": round(decision_timeout_rate, 4),
         "fallback_action_count": fallback_action_count,
         "fallback_action_rate": round(fallback_action_rate, 4),
+        "ollama_native_chat_configured": ollama_native_chat_configured,
+        "ollama_native_chat_effective_seen": sorted(ollama_native_chat_effective_seen),
+        "ollama_native_chat_resolution_reason_counts": _counter_dict(
+            ollama_native_chat_resolution_reasons
+        ),
         "ollama_requested_think_mode": ollama_requested_think_mode,
         "ollama_effective_think_modes_seen": sorted(ollama_effective_think_modes_seen),
         "ollama_native_retry_count": ollama_native_retry_count,
@@ -1474,6 +2075,16 @@ def run_episode(
         "timeout_level_15_rate": round(timeout_level_15_rate, 4),
         "timeout_level_20_rate": round(timeout_level_20_rate, 4),
         "timeout_level_30_rate": round(timeout_level_30_rate, 4),
+        "timeout_phase": penalty_snapshot.get("timeout_phase"),
+        "timeout_phase_counts": _counter_dict(timeout_phase_counts),
+        "warmup_active": bool(penalty_snapshot.get("warmup_active", False)),
+        "warmup_success_observed": bool(penalty_snapshot.get("warmup_success_observed", False)),
+        "warmup_timeout_failures": int(penalty_snapshot.get("warmup_timeout_failures", 0) or 0),
+        "warmup_timeout_sec": (
+            round(float(penalty_snapshot.get("warmup_timeout_sec")), 4)
+            if penalty_snapshot.get("warmup_timeout_sec") is not None
+            else None
+        ),
         # Deprecated alias for one transition cycle.
         "timeout_penalty_final_native_timeout_sec": (
             round(float(penalty_snapshot.get("effective_decision_timeout_sec")), 4)
@@ -1486,6 +2097,17 @@ def run_episode(
         "responses_direct_parseable": responses_direct_parseable,
         "format_failure_count": format_failure_count,
         "format_failure_rate": round(format_failure_rate, 4),
+        "fallback_reason_counts": _counter_dict(fallback_reason_counts),
+        "runtime_parse_path_counts": _counter_dict(runtime_parse_path_counts),
+        "semantic_recovery_count": int(semantic_recovery_count),
+        "semantic_recovery_rate": round(semantic_recovery_rate, 4),
+        "semantic_recovery_label_counts": _counter_dict(semantic_recovery_label_counts),
+        "intent_resolver_used_count": int(intent_resolver_used_count),
+        "intent_resolver_used_rate": round(intent_resolver_used_rate, 4),
+        "intent_resolver_recovery_count": int(intent_resolver_recovery_count),
+        "intent_resolver_recovery_rate": round(intent_resolver_recovery_rate, 4),
+        "intent_resolver_abstain_count": int(intent_resolver_abstain_count),
+        "intent_resolver_abstain_rate": round(intent_resolver_abstain_rate, 4),
         "episode_reward_sum": round(episode_reward_sum, 4),
         "episode_reward_avg": round(episode_reward_avg, 4),
         "avg_ego_speed_mps": round(avg_ego_speed_mps, 4),
@@ -1507,22 +2129,36 @@ def run_episode(
         "near_stop_rate": round(near_stop_rate, 4),
         "lane_change_count": lane_change_count,
         "lane_change_rate": round(lane_change_rate, 4),
+        "lane_change_shield_count": int(lane_change_shield_count),
+        "lane_change_shield_rate": round(lane_change_shield_rate, 4),
+        "lane_change_shield_reason_counts": _counter_dict(lane_change_shield_reason_counts),
+        "unsafe_lane_change_attempt_count": int(unsafe_lane_change_attempt_count),
+        "longitudinal_safety_shield_count": int(longitudinal_safety_shield_count),
+        "longitudinal_safety_shield_rate": round(longitudinal_safety_shield_rate, 4),
+        "longitudinal_safety_shield_reason_counts": _counter_dict(
+            longitudinal_safety_shield_reason_counts
+        ),
+        "unsafe_longitudinal_action_attempt_count": int(unsafe_longitudinal_action_attempt_count),
+        "flow_recovery_shield_count": int(flow_recovery_shield_count),
+        "flow_recovery_shield_rate": round(flow_recovery_shield_rate, 4),
+        "flow_recovery_reason_counts": _counter_dict(flow_recovery_reason_counts),
+        "action_trace": run_action_trace if save_artifacts else None,
         "flap_accel_decel_count": flap_accel_decel_count,
         "flap_accel_decel_rate": round(flap_accel_decel_rate, 4),
         "decision_latency_ms_avg": decision_latency_ms_avg,
         "alignment_samples": alignment_samples,
         "model": model_name,
         "database_path": database_path if save_artifacts else None,
-        "video_prefix": result_prefix if save_artifacts else None,
-        "run_id": run_id if save_artifacts else None,
-        "run_dir": run_dir if save_artifacts else None,
+        "video_prefix": result_prefix if record_video else None,
+        "run_id": run_id if (save_artifacts or record_video) else None,
+        "run_dir": run_dir if (save_artifacts or record_video) else None,
         "error": error,
         "final_info": copy.deepcopy(final_info),
         **benchmark_metrics,
     }
     if benchmark_case is not None:
-        return augment_behavior_aware_benchmark_episode(episode_result)
-    return episode_result
+        episode_result = augment_behavior_aware_benchmark_episode(episode_result)
+    return compute_split_scores_for_episode(episode_result)
 
 
 def aggregate_results(
@@ -1534,6 +2170,7 @@ def aggregate_results(
     model_quarantine_reason: Optional[str] = None,
     model_skipped_due_to_preflight: bool = False,
     model_skipped_reason: Optional[str] = None,
+    primary_metric_spec: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     total = len(episodes)
     planned_total = max(total, int(planned_episode_count if planned_episode_count is not None else total))
@@ -1551,10 +2188,37 @@ def aggregate_results(
     total_decision_timeouts = sum(e.get("decision_timeout_count", 0) for e in episodes)
     timeout_episode_count = sum(1 for e in episodes if e.get("timeout_triggered", False))
     total_fallback_actions = sum(e.get("fallback_action_count", 0) for e in episodes)
+    total_semantic_recoveries = sum(int(e.get("semantic_recovery_count", 0)) for e in episodes)
+    semantic_recovery_label_counts = _merge_count_dicts(episodes, "semantic_recovery_label_counts")
+    total_intent_resolver_used = sum(int(e.get("intent_resolver_used_count", 0)) for e in episodes)
+    total_intent_resolver_recoveries = sum(
+        int(e.get("intent_resolver_recovery_count", 0)) for e in episodes
+    )
+    total_intent_resolver_abstains = sum(
+        int(e.get("intent_resolver_abstain_count", 0)) for e in episodes
+    )
     total_ollama_native_retries = sum(e.get("ollama_native_retry_count", 0) for e in episodes)
     total_ollama_openai_fallbacks = sum(e.get("ollama_openai_fallback_count", 0) for e in episodes)
     total_ollama_native_decisions = sum(e.get("ollama_native_decision_count", 0) for e in episodes)
     total_ollama_native_timeouts = sum(e.get("ollama_native_timeout_count", 0) for e in episodes)
+    ollama_native_chat_configured_values = sorted(
+        {
+            str(e.get("ollama_native_chat_configured"))
+            for e in episodes
+            if e.get("ollama_native_chat_configured") is not None
+        }
+    )
+    ollama_native_chat_effective_values = sorted(
+        {
+            bool(value)
+            for e in episodes
+            for value in (e.get("ollama_native_chat_effective_seen") or [])
+        }
+    )
+    ollama_native_chat_resolution_reason_counts = _merge_count_dicts(
+        episodes,
+        "ollama_native_chat_resolution_reason_counts",
+    )
     total_ollama_native_timeout_short_circuits = sum(
         e.get("ollama_native_timeout_short_circuit_count", 0) for e in episodes
     )
@@ -1565,6 +2229,8 @@ def aggregate_results(
     total_strict = sum(e.get("responses_strict_format", 0) for e in episodes)
     total_direct = sum(e.get("responses_direct_parseable", 0) for e in episodes)
     total_format_failures = sum(e.get("format_failure_count", 0) for e in episodes)
+    fallback_reason_counts = _merge_count_dicts(episodes, "fallback_reason_counts")
+    runtime_parse_path_counts = _merge_count_dicts(episodes, "runtime_parse_path_counts")
     total_reward_sum = sum(float(e.get("episode_reward_sum", 0.0)) for e in episodes)
     total_speed = sum(float(e.get("avg_ego_speed_mps", 0.0)) for e in episodes)
     total_ttc_danger_rate = sum(float(e.get("ttc_danger_rate", 0.0)) for e in episodes)
@@ -1575,6 +2241,21 @@ def aggregate_results(
     total_stop_rate = sum(float(e.get("stop_rate", 0.0)) for e in episodes)
     total_near_stop_rate = sum(float(e.get("near_stop_rate", 0.0)) for e in episodes)
     total_lane_change_rate = sum(float(e.get("lane_change_rate", 0.0)) for e in episodes)
+    total_lane_change_shields = sum(int(e.get("lane_change_shield_count", 0)) for e in episodes)
+    lane_change_shield_reason_counts = _merge_count_dicts(episodes, "lane_change_shield_reason_counts")
+    total_longitudinal_safety_shields = sum(
+        int(e.get("longitudinal_safety_shield_count", 0)) for e in episodes
+    )
+    longitudinal_safety_shield_reason_counts = _merge_count_dicts(
+        episodes,
+        "longitudinal_safety_shield_reason_counts",
+    )
+    total_flow_recovery_shields = sum(int(e.get("flow_recovery_shield_count", 0)) for e in episodes)
+    flow_recovery_reason_counts = _merge_count_dicts(episodes, "flow_recovery_reason_counts")
+    total_unsafe_lane_change_attempts = sum(int(e.get("unsafe_lane_change_attempt_count", 0)) for e in episodes)
+    total_unsafe_longitudinal_action_attempts = sum(
+        int(e.get("unsafe_longitudinal_action_attempt_count", 0)) for e in episodes
+    )
     total_flap_rate = sum(float(e.get("flap_accel_decel_rate", 0.0)) for e in episodes)
     decision_latency_ms_values = [
         float(e.get("decision_latency_ms_avg"))
@@ -1600,6 +2281,12 @@ def aggregate_results(
     total_timeout_level_15_rate = sum(float(e.get("timeout_level_15_rate", 0.0)) for e in episodes)
     total_timeout_level_20_rate = sum(float(e.get("timeout_level_20_rate", 0.0)) for e in episodes)
     total_timeout_level_30_rate = sum(float(e.get("timeout_level_30_rate", 0.0)) for e in episodes)
+    timeout_phase_counts = _merge_count_dicts(episodes, "timeout_phase_counts")
+    total_warmup_timeout_failures = sum(int(e.get("warmup_timeout_failures", 0) or 0) for e in episodes)
+    warmup_active_episode_count = sum(1 for e in episodes if bool(e.get("warmup_active", False)))
+    warmup_success_observed_episode_count = sum(
+        1 for e in episodes if bool(e.get("warmup_success_observed", False))
+    )
     timeout_penalty_stage_max_values = [int(e.get("timeout_penalty_stage_max", 0)) for e in episodes]
     timeout_penalty_final_values = [
         float(e.get("timeout_penalty_final_decision_timeout_sec"))
@@ -1656,10 +2343,29 @@ def aggregate_results(
         "timeout_episode_rate": round(timeout_episode_count / total, 4) if total else None,
         "fallback_actions_total": total_fallback_actions,
         "fallback_action_rate_mean": fallback_action_rate_mean,
+        "fallback_reason_counts": fallback_reason_counts,
+        "semantic_recoveries_total": int(total_semantic_recoveries),
+        "semantic_recovery_rate_mean": round(total_semantic_recoveries / max(total_decision_calls, 1), 4),
+        "semantic_recovery_label_counts": semantic_recovery_label_counts,
+        "intent_resolver_used_total": int(total_intent_resolver_used),
+        "intent_resolver_used_rate_mean": round(total_intent_resolver_used / max(total_decision_calls, 1), 4),
+        "intent_resolver_recoveries_total": int(total_intent_resolver_recoveries),
+        "intent_resolver_recovery_rate_mean": round(
+            total_intent_resolver_recoveries / max(total_decision_calls, 1),
+            4,
+        ),
+        "intent_resolver_abstains_total": int(total_intent_resolver_abstains),
+        "intent_resolver_abstain_rate_mean": round(
+            total_intent_resolver_abstains / max(total_decision_calls, 1),
+            4,
+        ),
         "ollama_native_retries_total": total_ollama_native_retries,
         "ollama_native_retry_rate_mean": round(total_ollama_native_retries / max(total_decision_calls, 1), 4),
         "ollama_openai_fallbacks_total": total_ollama_openai_fallbacks,
         "ollama_openai_fallback_rate_mean": round(total_ollama_openai_fallbacks / max(total_decision_calls, 1), 4),
+        "ollama_native_chat_configured_values": ollama_native_chat_configured_values,
+        "ollama_native_chat_effective_values": ollama_native_chat_effective_values,
+        "ollama_native_chat_resolution_reason_counts": ollama_native_chat_resolution_reason_counts,
         "ollama_native_decisions_total": total_ollama_native_decisions,
         "ollama_native_decision_rate_mean": round(total_ollama_native_decisions / max(total_decision_calls, 1), 4),
         "ollama_native_timeouts_total": total_ollama_native_timeouts,
@@ -1673,6 +2379,7 @@ def aggregate_results(
         "response_delimiter_rate": round(total_delimiters / total_decisions, 4) if total_decisions else None,
         "response_strict_format_rate": round(total_strict / total_decisions, 4) if total_decisions else None,
         "response_direct_parseable_rate": round(total_direct / total_decisions, 4) if total_decisions else None,
+        "runtime_parse_path_counts": runtime_parse_path_counts,
         "avg_reward_sum": round(total_reward_sum / total, 4) if total else None,
         "avg_reward_per_step": round(total_reward_sum / max(total_steps, 1), 4),
         "avg_ego_speed_mps": round(total_speed / total, 4) if total else None,
@@ -1687,6 +2394,20 @@ def aggregate_results(
         "near_stop_episode_rate": round(near_stop_episode_count / total, 4) if total else None,
         "near_stop_rate_mean": round(total_near_stop_rate / total, 4) if total else None,
         "lane_change_rate_mean": round(total_lane_change_rate / total, 4) if total else None,
+        "lane_change_shields_total": int(total_lane_change_shields),
+        "lane_change_shield_rate_mean": round(total_lane_change_shields / max(total_decision_calls, 1), 4),
+        "lane_change_shield_reason_counts": lane_change_shield_reason_counts,
+        "unsafe_lane_change_attempts_total": int(total_unsafe_lane_change_attempts),
+        "longitudinal_safety_shields_total": int(total_longitudinal_safety_shields),
+        "longitudinal_safety_shield_rate_mean": round(
+            total_longitudinal_safety_shields / max(total_decision_calls, 1),
+            4,
+        ),
+        "longitudinal_safety_shield_reason_counts": longitudinal_safety_shield_reason_counts,
+        "unsafe_longitudinal_action_attempts_total": int(total_unsafe_longitudinal_action_attempts),
+        "flow_recovery_shields_total": int(total_flow_recovery_shields),
+        "flow_recovery_shield_rate_mean": round(total_flow_recovery_shields / max(total_decision_calls, 1), 4),
+        "flow_recovery_reason_counts": flow_recovery_reason_counts,
         "flap_accel_decel_rate_mean": round(total_flap_rate / total, 4) if total else None,
         "format_failure_rate_mean": round(total_format_failures / max(total_decisions, 1), 4),
         "decision_latency_ms_avg": (
@@ -1711,6 +2432,10 @@ def aggregate_results(
         "timeout_level_15_rate_mean": round(total_timeout_level_15_rate / total, 4) if total else None,
         "timeout_level_20_rate_mean": round(total_timeout_level_20_rate / total, 4) if total else None,
         "timeout_level_30_rate_mean": round(total_timeout_level_30_rate / total, 4) if total else None,
+        "timeout_phase_counts": timeout_phase_counts,
+        "warmup_timeout_failures_total": int(total_warmup_timeout_failures),
+        "warmup_active_episode_count": int(warmup_active_episode_count),
+        "warmup_success_observed_episode_count": int(warmup_success_observed_episode_count),
         "timeout_penalty_final_decision_timeout_sec_mean": (
             round(sum(timeout_penalty_final_values) / len(timeout_penalty_final_values), 4)
             if timeout_penalty_final_values else None
@@ -1722,7 +2447,23 @@ def aggregate_results(
         ),
         "timeout_collapse_detected": timeout_collapse_detected,
         "timeout_collapse_reason": timeout_collapse_reason,
+        "split_scoring_policy_version": SPLIT_SCORING_POLICY_VERSION,
     }
+    for idx, split_field in enumerate(SPLIT_SCORE_FIELDS):
+        split_values = [
+            float(episode.get(split_field))
+            for episode in episodes
+            if episode.get(split_field) is not None
+        ]
+        if split_values:
+            aggregate[split_field] = round(sum(split_values) / len(split_values), 4)
+            aggregate[f"{split_field}_ci95"] = bootstrap_ci95(
+                split_values,
+                seed=20260327 + idx,
+            )
+        else:
+            aggregate[split_field] = None
+            aggregate[f"{split_field}_ci95"] = None
 
     benchmark_episodes = [episode for episode in episodes if "task_completed" in episode]
     if benchmark_episodes:
@@ -1752,7 +2493,11 @@ def aggregate_results(
                 model_quarantine_reason,
             )
 
-    return aggregate
+    return annotate_aggregate_with_scientific_reporting(
+        aggregate,
+        episodes,
+        primary_metric_spec,
+    )
 
 
 def _append_eval_run_log(log_path: str, model_name: str, episode: Dict) -> None:
@@ -1838,6 +2583,11 @@ def _build_model_extract(
         "execution_mode": metrics_config.get("execution_mode") if benchmark_mode else None,
         "benchmark_fingerprint": metrics_config.get("benchmark_fingerprint") if benchmark_mode else None,
         "headline_task_metric": (
+            "driving_score_behavior_v1" if benchmark_mode else None
+        ),
+        "headline_llm_metric": "llm_driver_score_v1" if benchmark_mode else None,
+        "headline_joint_metric": "dilu_joint_score_v1" if benchmark_mode else None,
+        "legacy_headline_task_metric": (
             metrics_config.get("benchmark_metric_config", {}) or {}
         ).get("recommended_headline_metric") if benchmark_mode else None,
         "efficiency_metrics_reported": bool(aggregate.get("decision_latency_ms_avg_mean") is not None),
@@ -1892,14 +2642,28 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Compare DiLu agent behavior across Ollama models on fixed seeds.")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--models", nargs="+", required=False, help="Model names to compare (e.g. deepseek-r1:14b dilu-llama3_1-8b-v1)")
-    parser.add_argument("--seeds", default=None, help="Comma-separated seeds. Defaults to DiLu fixed seed list.")
-    parser.add_argument("--limit", type=int, default=None, help="Limit number of seeds after parsing.")
+    parser.add_argument("--seeds", default=None, help="Comma-separated seeds. Defaults to the configured seed bank.")
+    parser.add_argument(
+        "--seed-count",
+        type=int,
+        default=None,
+        help=f"Run the first N seeds from the selected seed bank/list; default bank has {_format_default_seed_count()} seeds.",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of seeds/cases after parsing.")
     parser.add_argument(
         "--benchmark-case-set",
         default=None,
         help=(
             "Optional LaMPilot-style task case set. Use a JSON path or a built-in name such as "
             f"`{DEFAULT_BENCHMARK_CASE_SET}`."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-categories",
+        default=None,
+        help=(
+            "Optional comma-separated benchmark category filter. Requires --benchmark-case-set; "
+            "applied before --limit."
         ),
     )
     parser.add_argument("--few-shot-num", type=int, default=None, help="Override config few_shot_num.")
@@ -1945,7 +2709,26 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Use legacy DiLu env builder behavior.",
     )
     parser.set_defaults(native_env_defaults=None)
-    parser.add_argument("--save-run-artifacts", action="store_true", help="Save run-style artifacts (video/db/log/run_metrics) per model during evaluation.")
+    parser.add_argument(
+        "--save-run-artifacts",
+        action="store_true",
+        help="Save run-style artifacts (db/log/run_metrics/action_traces) per model during evaluation.",
+    )
+    parser.add_argument(
+        "--no-save-run-artifacts",
+        action="store_true",
+        help="Disable run-style artifacts even when eval_save_run_artifacts is enabled in config.",
+    )
+    parser.add_argument(
+        "--record-video",
+        action="store_true",
+        help="Record per-episode videos. Implies run artifacts and should be used only for small debug runs.",
+    )
+    parser.add_argument(
+        "--no-record-video",
+        action="store_true",
+        help="Disable video recording even when eval_record_video is enabled in config.",
+    )
     parser.add_argument("--eval-run-id", default=None, help="Run id used under models/<slug>/runs/<eval_run_id> when --save-run-artifacts is enabled.")
     parser.add_argument("--quiet", action="store_true", help="Suppress high-frequency step/decision logs.")
     parser.add_argument("--no-quiet", action="store_true", help="Force step/decision logs on even if config quiet mode is enabled.")
@@ -2029,8 +2812,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         raise ValueError("Use only one of --quiet or --no-quiet.")
     if args.progress and args.no_progress:
         raise ValueError("Use only one of --progress or --no-progress.")
+    if args.save_run_artifacts and args.no_save_run_artifacts:
+        raise ValueError("Use only one of --save-run-artifacts or --no-save-run-artifacts.")
+    if args.record_video and args.no_record_video:
+        raise ValueError("Use only one of --record-video or --no-record-video.")
+    if args.record_video and args.no_save_run_artifacts:
+        raise ValueError("--record-video requires run artifacts; remove --no-save-run-artifacts.")
     if args.ollama_use_native_chat and args.ollama_disable_native_chat:
         raise ValueError("Use only one of --ollama-use-native-chat or --ollama-disable-native-chat/--no-ollama-use-native-chat.")
+    benchmark_category_filter_requested = _parse_benchmark_category_filter(args.benchmark_categories)
+    if benchmark_category_filter_requested and not args.benchmark_case_set:
+        raise ValueError("--benchmark-categories requires --benchmark-case-set.")
 
     config = load_runtime_config(args.config)
     energy_mode = _normalize_energy_mode(args.energy_mode)
@@ -2070,16 +2862,20 @@ def main(argv: Optional[List[str]] = None) -> None:
     requested_performance_mode = _resolve_eval_performance_mode(config, args.performance_mode)
     performance_mode_effective = requested_performance_mode
     performance_optimizations_applied: List[str] = []
-    if requested_performance_mode == "fast" and args.save_run_artifacts:
-        raise ValueError("--performance-mode fast cannot be combined with --save-run-artifacts.")
+    if requested_performance_mode == "fast" and (args.save_run_artifacts or args.record_video):
+        raise ValueError("--performance-mode fast cannot be combined with --save-run-artifacts or --record-video.")
     if requested_performance_mode == "fast":
         if bool(config.get("eval_save_run_artifacts", False)):
-            print("[yellow]Fast performance mode overrides config eval_save_run_artifacts=false.[/yellow]")
+            print("[yellow]Fast performance mode overrides config eval_save_run_artifacts=true.[/yellow]")
+        if bool(config.get("eval_record_video", False)):
+            print("[yellow]Fast performance mode overrides config eval_record_video=true.[/yellow]")
         config["eval_save_run_artifacts"] = False
+        config["eval_record_video"] = False
         config["eval_disable_checker_llm"] = True
         performance_optimizations_applied.extend(
             [
                 "save_run_artifacts_disabled",
+                "video_recording_disabled",
                 "checker_llm_disabled",
             ]
         )
@@ -2113,11 +2909,19 @@ def main(argv: Optional[List[str]] = None) -> None:
     benchmark_cases: List[Dict] = []
     benchmark_mode = bool(args.benchmark_case_set)
     benchmark_fingerprint = None
+    benchmark_category_filter_effective: List[str] = []
+    if args.limit is not None and args.seed_count is not None:
+        raise ValueError("--seed-count cannot be combined with --limit.")
     if benchmark_mode:
         if args.seeds:
             raise ValueError("--seeds cannot be combined with --benchmark-case-set. Cases define their own seeds.")
+        if args.seed_count is not None:
+            raise ValueError("--seed-count cannot be combined with --benchmark-case-set. Cases define their own seeds.")
         benchmark_case_set = load_benchmark_case_set(args.benchmark_case_set)
-        benchmark_cases = list(benchmark_case_set["cases"])
+        benchmark_case_set, benchmark_cases = _filter_benchmark_cases_by_category(
+            benchmark_case_set,
+            benchmark_category_filter_requested,
+        )
         if args.limit is not None:
             benchmark_cases = benchmark_cases[:args.limit]
         if not benchmark_cases:
@@ -2125,10 +2929,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         benchmark_case_set = dict(benchmark_case_set)
         benchmark_case_set["cases"] = list(benchmark_cases)
         benchmark_case_set["categories"] = sorted({case["category"] for case in benchmark_cases})
+        benchmark_category_filter_effective = (
+            list(benchmark_case_set["categories"])
+            if benchmark_category_filter_requested
+            else []
+        )
         benchmark_fingerprint = build_benchmark_case_set_fingerprint(benchmark_case_set)
         seeds = [int(case["seed"]) for case in benchmark_cases]
     else:
-        seeds = parse_seeds(args.seeds)
+        seeds = resolve_eval_seeds(config, args.seeds, args.seed_count)
         if args.limit is not None:
             seeds = seeds[:args.limit]
         if not seeds:
@@ -2151,7 +2960,17 @@ def main(argv: Optional[List[str]] = None) -> None:
     alignment_sample_rate = max(0.0, min(1.0, float(args.alignment_sample_rate)))
     alignment_max_samples = max(0, int(args.alignment_max_samples))
     structured_output = not args.no_structured_output
-    save_run_artifacts = bool(config.get("eval_save_run_artifacts", False)) or bool(args.save_run_artifacts)
+    artifact_modes_requested = (
+        _config_as_bool(config.get("eval_save_run_artifacts", False), default=False)
+        or bool(args.save_run_artifacts)
+        or _config_as_bool(config.get("eval_record_video", False), default=False)
+        or bool(args.record_video)
+    )
+    save_run_artifacts, record_video = _resolve_eval_artifact_modes(
+        config,
+        args,
+        measurement_mode=measurement_mode,
+    )
     eval_run_id = str(
         args.eval_run_id
         or config.get("eval_run_id")
@@ -2161,9 +2980,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         eval_run_id = f"eval_run_{current_timestamp()}"
     if measurement_mode and not structured_output:
         raise ValueError("--energy-mode requires structured output. Remove --no-structured-output.")
-    if measurement_mode and save_run_artifacts:
+    if measurement_mode and artifact_modes_requested:
         print("[yellow]Measurement mode disables eval run artifacts to preserve benchmark-compatible outputs.[/yellow]")
-        save_run_artifacts = False
     if save_run_artifacts and not structured_output:
         raise ValueError("--save-run-artifacts requires structured output. Remove --no-structured-output.")
     if not save_run_artifacts:
@@ -2283,6 +3101,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
 
     config["eval_save_run_artifacts"] = bool(save_run_artifacts)
+    config["eval_record_video"] = bool(record_video)
     config["eval_run_id"] = eval_run_id
 
     if measurement_mode:
@@ -2321,11 +3140,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         else:
             compare_dir = ensure_dir(args.output_root) if args.output_root else ensure_dir("results")
 
+    effective_env_id_override = _resolve_benchmark_env_id_override(args.env_id, benchmark_case_set)
+    benchmark_env_overrides = _benchmark_default_env_overrides(benchmark_case_set)
     env_bundle = build_env_bundle(
         config,
-        env_id_override=args.env_id,
+        env_id_override=effective_env_id_override,
         native_env_defaults_override=args.native_env_defaults,
         action_target_speeds_override=parse_action_target_speeds(args.action_target_speeds),
+        env_config_overrides=benchmark_env_overrides,
     )
     for warning_msg in env_bundle.get("warnings", []):
         print(f"[yellow]{warning_msg}[/yellow]")
@@ -2356,6 +3178,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"{invalid_preview}"
             )
     temp_dir = ensure_dir(os.path.join("temp", "eval_compare"))
+    primary_metric_spec = build_primary_metric_spec(config)
     ollama_preflight_results: List[Dict] = []
     ollama_preflight_warning = None
     preflight_skip_models: Dict[str, Dict[str, Any]] = {}
@@ -2474,6 +3297,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         "compare_dir": compare_dir,
         "structured_output": structured_output,
         "save_run_artifacts": bool(save_run_artifacts),
+        "record_video": bool(record_video),
         "eval_run_id": eval_run_id if save_run_artifacts else None,
         "performance_mode_requested": requested_performance_mode,
         "performance_mode_effective": performance_mode_effective,
@@ -2496,6 +3320,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         "openai_api_type": config["OPENAI_API_TYPE"],
         "benchmark_mode": bool(benchmark_mode),
         "headline_task_metric": (
+            "driving_score_behavior_v1"
+            if benchmark_mode
+            else None
+        ),
+        "headline_llm_metric": "llm_driver_score_v1" if benchmark_mode else None,
+        "headline_joint_metric": "dilu_joint_score_v1" if benchmark_mode else None,
+        "legacy_headline_task_metric": (
             benchmark_metric_config(
                 benchmark_case_set.get("scenario_family") if benchmark_case_set is not None else "highway"
             ).get("recommended_headline_metric")
@@ -2519,6 +3350,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         "benchmark_categories": (
             list(benchmark_case_set["categories"]) if benchmark_case_set is not None else []
         ),
+        "benchmark_category_filter_requested": list(benchmark_category_filter_requested),
+        "benchmark_category_filter_effective": list(benchmark_category_filter_effective),
         "resolved_action_target_speeds": list(resolved_action_target_speeds),
         "env_profile_label": env_profile_label,
         "benchmark_validation_passed": (
@@ -2585,6 +3418,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "timeout_penalty_final_native_timeout_sec_mean": "timeout_penalty_final_decision_timeout_sec_mean",
             },
             "save_run_artifacts": bool(save_run_artifacts),
+            "record_video": bool(record_video),
             "eval_run_id": eval_run_id if save_run_artifacts else None,
             "performance_mode_requested": requested_performance_mode,
             "performance_mode_effective": performance_mode_effective,
@@ -2612,6 +3446,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             "benchmark_categories": (
                 list(benchmark_case_set["categories"]) if benchmark_case_set is not None else []
             ),
+            "benchmark_category_filter_requested": list(benchmark_category_filter_requested),
+            "benchmark_category_filter_effective": list(benchmark_category_filter_effective),
             "benchmark_metric_config": (
                 benchmark_metric_config(
                     benchmark_case_set.get("scenario_family") if benchmark_case_set is not None else "highway"
@@ -2619,6 +3455,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if benchmark_mode
                 else None
             ),
+            "split_scoring_policy": {
+                "version": SPLIT_SCORING_POLICY_VERSION,
+                "headline_policy": "split_primary",
+                "primary_driving_metric": "driving_score_behavior_v1",
+                "primary_llm_metric": "llm_driver_score_v1",
+                "secondary_joint_metric": "dilu_joint_score_v1",
+                "legacy_compatibility_metrics": ["driving_score", "driving_score_v2"],
+                "llm_score_revision_note": (
+                    "llm_driver_score_v1 uses intervention-dependence scoring under "
+                    "dilu_split_score_v1.1; do not directly mix LLM-score comparisons "
+                    "with dilu_split_score_v1 reports."
+                ),
+            },
+            "primary_metric_spec": primary_metric_spec,
             "benchmark_validation_passed": (
                 bool(benchmark_validation.get("passed")) if benchmark_validation is not None else None
             ),
@@ -2665,10 +3515,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             }
         )
     if benchmark_mode and benchmark_case_set is not None:
+        filter_suffix = (
+            f" | filter={', '.join(benchmark_category_filter_requested)}"
+            if benchmark_category_filter_requested
+            else ""
+        )
         print(
             "[bold cyan]Benchmark mode[/bold cyan]: "
             f"{benchmark_case_set['benchmark_name']} | cases={len(benchmark_cases)} | "
             f"categories={', '.join(benchmark_case_set['categories'])}"
+            f"{filter_suffix}"
         )
         if benchmark_validation is not None:
             summary = benchmark_validation.get("summary", {})
@@ -2854,6 +3710,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     preflight_probe=preflight_skip_models.get(model_name),
                     benchmark_mode=benchmark_mode,
                 )
+                agg = annotate_aggregate_with_scientific_reporting(agg, [], primary_metric_spec)
                 report["aggregates"].append(agg)
                 aggregate_by_model[model_name] = agg
                 if model_task is not None:
@@ -2958,32 +3815,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                         decision_token_usage_records.append(token_usage_record)
                         if first_action_latency_sec is None and decision_meta.get("decision_elapsed_sec") is not None:
                             first_action_latency_sec = float(decision_meta.get("decision_elapsed_sec"))
-                        action_trace.append(
-                            {
-                                "step_idx": int(step_idx),
-                                "action_id": int(action_id),
-                                "decision_elapsed_sec": (
-                                    round(float(decision_meta.get("decision_elapsed_sec")), 6)
-                                    if decision_meta.get("decision_elapsed_sec") is not None
-                                    else None
-                                ),
-                                "timed_out": bool(decision_meta.get("timed_out", False)),
-                                "used_fallback": bool(decision_meta.get("used_fallback", False)),
-                                "ollama_transport": decision_meta.get("ollama_transport"),
-                                "ollama_requested_think_mode": decision_meta.get("ollama_requested_think_mode"),
-                                "ollama_effective_think_mode": decision_meta.get("ollama_effective_think_mode"),
-                                "ollama_native_timeout": bool(decision_meta.get("ollama_native_timeout", False)),
-                                "ollama_native_timeout_short_circuit": bool(
-                                    decision_meta.get("ollama_native_timeout_short_circuit", False)
-                                ),
-                                "prompt_tokens": int(decision_meta.get("prompt_tokens", 0) or 0),
-                                "completion_tokens": int(decision_meta.get("completion_tokens", 0) or 0),
-                                "total_tokens": int(decision_meta.get("total_tokens", 0) or 0),
-                                "token_count_method": decision_meta.get("token_count_method"),
-                                "token_usage_source": decision_meta.get("token_usage_source"),
-                                "response_text": response_text,
-                            }
+                    if measurement_mode or save_run_artifacts:
+                        trace_item = _decision_trace_item(
+                            step_idx=int(step_idx),
+                            action_id=int(action_id),
+                            response_text=response_text,
+                            decision_meta=decision_meta,
+                            include_response_text=measurement_mode,
                         )
+                        action_trace.append(trace_item)
                     if effective_eval_progress_reply_mode == "compact":
                         emit(_compact_reply_preview(step_idx, action_id, response_text))
                     elif effective_eval_progress_reply_mode == "full":
@@ -3022,6 +3862,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     slow_decision_threshold_sec=slow_decision_threshold_sec,
                     timeout_penalty_state=timeout_penalty_state,
                     save_artifacts=save_run_artifacts,
+                    record_video=record_video,
                     run_dir=model_run_dir,
                     run_id=eval_run_id if save_run_artifacts else None,
                     model_name=model_name,
@@ -3057,6 +3898,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     episode_result["energy_measurement_meta"] = measurement.get("measurement_meta", {})
                     episode_result["action_sequence"] = [int(item["action_id"]) for item in action_trace]
                     episode_result["action_histogram"] = _action_histogram(action_trace)
+                    episode_result = compute_split_scores_for_episode(episode_result)
                 episode_alignment_samples = episode_result.pop("alignment_samples", [])
                 for sample in episode_alignment_samples:
                     sample["model"] = model_name
@@ -3084,14 +3926,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                 status = "CRASH" if episode_result["crashed"] else ("ERROR" if episode_result["error"] else ("TIMEOUT" if episode_result.get("timeout_triggered") else "OK"))
                 benchmark_suffix = ""
                 if "task_completed" in episode_result:
-                    driving_score_value = episode_result.get("driving_score_v2")
-                    driving_score_label = "driving_score_v2"
+                    driving_score_value = episode_result.get("driving_score_behavior_v1")
+                    driving_score_label = "driving_score_behavior_v1"
+                    if driving_score_value is None:
+                        driving_score_value = episode_result.get("driving_score_v2")
+                        driving_score_label = "driving_score_v2"
                     if driving_score_value is None:
                         driving_score_value = episode_result.get("driving_score")
                         driving_score_label = "driving_score"
                     benchmark_suffix = (
                         f" | task_completed={episode_result.get('task_completed')} "
-                        f"| {driving_score_label}={driving_score_value}"
+                        f"| {driving_score_label}={driving_score_value} "
+                        f"| llm_driver_score_v1={episode_result.get('llm_driver_score_v1')}"
                     )
                 emit(
                     f"    -> {status} | steps={episode_result['steps']}/{episode_result['max_steps']} "
@@ -3153,6 +3999,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 planned_episode_count=planned_episode_count,
                 model_quarantined_due_to_timeout_collapse=model_quarantined_due_to_timeout_collapse,
                 model_quarantine_reason=model_quarantine_reason,
+                primary_metric_spec=primary_metric_spec,
             )
             agg = _annotate_aggregate_with_ollama_preflight_status(
                 agg,
@@ -3181,6 +4028,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                             "timeout_collapse_quarantine",
                             agg.get("model_quarantine_reason"),
                         )
+                agg = annotate_aggregate_with_scientific_reporting(
+                    agg,
+                    episodes,
+                    primary_metric_spec,
+                )
             report["aggregates"].append(agg)
             aggregate_by_model[model_name] = agg
             report["alignment_samples"].extend(model_alignment_samples[:alignment_max_samples] if alignment_max_samples > 0 else [])
@@ -3245,12 +4097,36 @@ def main(argv: Optional[List[str]] = None) -> None:
                 )
                 run_metrics_path = timestamped_results_path("run_metrics", ext=".json", results_dir=model_run_dir)
                 write_json_atomic(run_metrics_path, run_metrics_report)
+                run_action_traces_path = os.path.join(model_run_dir, "action_traces.json")
+                write_json_atomic(
+                    run_action_traces_path,
+                    {
+                        "created_at": datetime.now().isoformat(timespec="seconds"),
+                        "source": "evaluate_models_ollama:save_run_artifacts:action_traces",
+                        "model": model_name,
+                        "experiment_id": experiment_id,
+                        "episodes": [
+                            {
+                                "episode_id": str(episode.get("case_id") or f"seed_{episode.get('seed')}"),
+                                "seed": episode.get("seed"),
+                                "case_id": episode.get("case_id"),
+                                "category": episode.get("category"),
+                                "crashed": bool(episode.get("crashed", False)),
+                                "trace": list(episode.get("action_trace") or []),
+                            }
+                            for episode in episodes
+                        ],
+                    },
+                )
                 model_run_outputs[model_name] = {
                     "run_id": eval_run_id,
                     "run_dir": model_run_dir,
                     "log_path": model_log_path,
                     "run_metrics": run_metrics_path,
+                    "action_traces": run_action_traces_path,
                 }
+                if record_video:
+                    model_run_outputs[model_name]["videos_dir"] = model_run_dir
 
             if progress is not None and model_task is not None:
                 progress.update(model_task, advance=1)
@@ -3283,6 +4159,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         report["energy_tradeoff_summary"] = build_energy_tradeoff_summary(report["aggregates"])
         out_path = timestamped_results_path("energy_latency_compare", ext=".json", results_dir=compare_dir)
         report["compare_report_path"] = out_path
+        if structured_output and experiment_root:
+            report["scientific_outputs"] = write_scientific_analysis_artifacts(
+                report,
+                os.path.join(experiment_root, "analysis"),
+            )
         write_json_atomic(out_path, report)
         for model_name, outputs in report.get("model_outputs", {}).items():
             if not outputs.get("summary"):
@@ -3314,14 +4195,19 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"p95_decision_latency_sec_mean={row.get('p95_decision_latency_sec_mean')}"
             )
             if row.get("task_completion_rate") is not None:
-                driving_score_value = row.get("driving_score_v2")
-                driving_score_label = "driving_score_v2"
+                driving_score_value = row.get("driving_score_behavior_v1")
+                driving_score_label = "driving_score_behavior_v1"
+                if driving_score_value is None:
+                    driving_score_value = row.get("driving_score_v2")
+                    driving_score_label = "driving_score_v2"
                 if driving_score_value is None:
                     driving_score_value = row.get("driving_score")
                     driving_score_label = "driving_score"
                 summary += (
                     f", task_completion_rate={row.get('task_completion_rate')}, "
                     f"{driving_score_label}={driving_score_value}, "
+                    f"llm_driver_score_v1={row.get('llm_driver_score_v1')}, "
+                    f"dilu_joint_score_v1={row.get('dilu_joint_score_v1')}, "
                     f"benchmark_result_valid={row.get('benchmark_result_valid')}"
                 )
             if row.get("ollama_preflight_ok") is False:
@@ -3340,6 +4226,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     else:
         if structured_output:
             out_path = timestamped_results_path("eval_compare", ext=".json", results_dir=compare_dir)
+            report["compare_report_path"] = out_path
             write_json_atomic(out_path, report)
         else:
             if user_out_path:
@@ -3347,6 +4234,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             else:
                 out_path = timestamped_results_path("eval_compare", ext=".json", results_dir=compare_dir)
                 write_json_atomic(out_path, report)
+            report["compare_report_path"] = out_path
 
         model_summary_paths: Dict[str, Dict[str, str]] = {}
         compare_base = os.path.basename(out_path)
@@ -3381,6 +4269,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 }
 
             report["model_eval_outputs"] = model_summary_paths
+            report["scientific_outputs"] = write_scientific_analysis_artifacts(
+                report,
+                os.path.join(experiment_root, "analysis"),
+            )
             write_json_atomic(out_path, report)
 
             _update_experiment_manifest_for_eval(
@@ -3414,8 +4306,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"avg_episode_runtime_sec={row['avg_episode_runtime_sec']}"
             )
             if row.get("task_completion_rate") is not None:
-                driving_score_value = row.get("driving_score_v2")
-                driving_score_label = "driving_score_v2"
+                driving_score_value = row.get("driving_score_behavior_v1")
+                driving_score_label = "driving_score_behavior_v1"
+                if driving_score_value is None:
+                    driving_score_value = row.get("driving_score_v2")
+                    driving_score_label = "driving_score_v2"
                 if driving_score_value is None:
                     driving_score_value = row.get("driving_score")
                     driving_score_label = "driving_score"
@@ -3423,7 +4318,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                     f", task_completion_rate={row.get('task_completion_rate')}, "
                     f"ttc_score_mean={row.get('ttc_score_mean')}, "
                     f"time_efficiency_score_mean={row.get('time_efficiency_score_mean')}, "
-                    f"{driving_score_label}={driving_score_value}"
+                    f"{driving_score_label}={driving_score_value}, "
+                    f"llm_driver_score_v1={row.get('llm_driver_score_v1')}, "
+                    f"dilu_joint_score_v1={row.get('dilu_joint_score_v1')}"
                 )
                 if row.get("benchmark_result_valid") is not None:
                     summary += (

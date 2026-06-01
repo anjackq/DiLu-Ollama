@@ -61,6 +61,15 @@ def _base_episode(**overrides):
         "timeout_level_15_rate": 1.0,
         "timeout_level_20_rate": 0.0,
         "timeout_level_30_rate": 0.0,
+        "timeout_phase_counts": {"active": 10},
+        "warmup_active": False,
+        "warmup_success_observed": True,
+        "warmup_timeout_failures": 0,
+        "fallback_reason_counts": {},
+        "runtime_parse_path_counts": {},
+        "lane_change_shield_reason_counts": {},
+        "longitudinal_safety_shield_reason_counts": {},
+        "flow_recovery_reason_counts": {},
         "episode_stop_reason": "completed",
         "timeout_early_stop_triggered": False,
     }
@@ -81,6 +90,96 @@ class TimeoutPolicyTests(unittest.TestCase):
         self.assertEqual(snapshot["baseline_decision_timeout_sec"], 15.0)
         self.assertEqual(snapshot["effective_decision_timeout_sec"], 15.0)
         self.assertEqual(snapshot["timeout_ladder_sec"], [15.0, 20.0, 30.0])
+        self.assertFalse(snapshot["warmup_active"])
+        self.assertEqual(snapshot["timeout_phase"], "active")
+
+    def test_eval_timeout_policy_can_be_disabled(self):
+        state = build_decision_timeout_penalty_state(
+            config={"eval_timeout_policy_mode": "disabled"},
+            provider="openai",
+            mode="eval",
+            baseline_decision_timeout_sec=45.0,
+        )
+        snapshot = decision_timeout_penalty_snapshot(state)
+        self.assertFalse(snapshot["enabled"])
+        self.assertEqual(snapshot["policy_mode"], "disabled")
+        self.assertEqual(snapshot["effective_decision_timeout_sec"], 45.0)
+        self.assertEqual(snapshot["timeout_phase"], "disabled")
+
+        result = update_decision_timeout_penalty_state(
+            state,
+            timed_out=True,
+            decision_elapsed_sec=45.0,
+            slow_threshold_sec=5.0,
+        )
+        self.assertFalse(result["escalated"])
+        self.assertEqual(result["effective_decision_timeout_sec"], 45.0)
+
+    def test_remote_ladder_starts_in_first_response_warmup(self):
+        state = build_decision_timeout_penalty_state(
+            config={
+                "eval_first_response_warmup_timeout_sec": 75,
+                "eval_first_response_warmup_max_failures": 3,
+            },
+            provider="openai",
+            mode="eval",
+            baseline_decision_timeout_sec=60.0,
+        )
+        snapshot = decision_timeout_penalty_snapshot(state)
+        self.assertEqual(snapshot["policy_mode"], "laddered")
+        self.assertTrue(snapshot["warmup_active"])
+        self.assertFalse(snapshot["warmup_success_observed"])
+        self.assertEqual(snapshot["effective_decision_timeout_sec"], 75.0)
+        self.assertEqual(snapshot["warmup_timeout_sec"], 75.0)
+        self.assertEqual(snapshot["warmup_max_failures"], 3)
+        self.assertEqual(snapshot["timeout_phase"], "warmup")
+
+    def test_local_ollama_ladder_skips_first_response_warmup(self):
+        state = build_decision_timeout_penalty_state(
+            config={"eval_first_response_warmup_timeout_sec": 75},
+            provider="ollama",
+            mode="eval",
+            baseline_decision_timeout_sec=60.0,
+        )
+        snapshot = decision_timeout_penalty_snapshot(state)
+        self.assertFalse(snapshot["warmup_active"])
+        self.assertTrue(snapshot["warmup_success_observed"])
+        self.assertEqual(snapshot["effective_decision_timeout_sec"], 15.0)
+        self.assertEqual(snapshot["timeout_phase"], "active")
+
+    def test_remote_warmup_timeout_counts_failures_until_success(self):
+        state = build_decision_timeout_penalty_state(
+            config={
+                "eval_first_response_warmup_timeout_sec": 75,
+                "eval_first_response_warmup_max_failures": 2,
+            },
+            provider="gemini",
+            mode="eval",
+            baseline_decision_timeout_sec=60.0,
+        )
+        result = update_decision_timeout_penalty_state(
+            state,
+            timed_out=True,
+            decision_elapsed_sec=75.0,
+            slow_threshold_sec=5.0,
+        )
+        self.assertEqual(result["reason"], "warmup_timeout")
+        self.assertTrue(result["warmup_active"])
+        self.assertEqual(result["warmup_timeout_failures"], 1)
+        self.assertEqual(result["effective_decision_timeout_sec"], 75.0)
+
+        result = update_decision_timeout_penalty_state(
+            state,
+            timed_out=False,
+            decision_elapsed_sec=2.0,
+            slow_threshold_sec=5.0,
+        )
+        self.assertTrue(result["warmup_completed"])
+        self.assertFalse(result["warmup_active"])
+        self.assertEqual(result["effective_decision_timeout_sec"], 15.0)
+        snapshot = decision_timeout_penalty_snapshot(state)
+        self.assertTrue(snapshot["warmup_success_observed"])
+        self.assertEqual(snapshot["timeout_phase"], "active")
 
     def test_eval_ladder_escalates_only_on_timeout(self):
         state = build_decision_timeout_penalty_state(
@@ -206,6 +305,47 @@ class TimeoutPolicyTests(unittest.TestCase):
         self.assertEqual(summary["timeout_level_15_rate_mean"], 0.5)
         self.assertEqual(summary["timeout_level_20_rate_mean"], 0.3)
         self.assertEqual(summary["timeout_level_30_rate_mean"], 0.2)
+
+    def test_aggregate_includes_runtime_reason_counts_and_warmup_totals(self):
+        summary = aggregate_results(
+            "diagnostic_model",
+            [
+                _base_episode(
+                    fallback_reason_counts={"parse_fallback": 2},
+                    runtime_parse_path_counts={"strict_action_line": 3, "parse_fallback": 2},
+                    lane_change_shield_reason_counts={"target_rear_gap_below_required": 1},
+                    longitudinal_safety_shield_reason_counts={"front_clearance_blocks_accelerate": 2},
+                    flow_recovery_reason_counts={"low_speed_recovery_after_front_risk": 1},
+                    timeout_phase_counts={"warmup": 1, "active": 4},
+                    warmup_timeout_failures=1,
+                    warmup_active=True,
+                    warmup_success_observed=False,
+                ),
+                _base_episode(
+                    fallback_reason_counts={"decision_timeout": 1},
+                    runtime_parse_path_counts={"timeout_fallback": 1, "strict_action_line": 4},
+                    timeout_phase_counts={"active": 5},
+                    warmup_timeout_failures=0,
+                    warmup_active=False,
+                    warmup_success_observed=True,
+                ),
+            ],
+        )
+
+        self.assertEqual(summary["fallback_reason_counts"]["parse_fallback"], 2)
+        self.assertEqual(summary["fallback_reason_counts"]["decision_timeout"], 1)
+        self.assertEqual(summary["runtime_parse_path_counts"]["strict_action_line"], 7)
+        self.assertEqual(summary["lane_change_shield_reason_counts"]["target_rear_gap_below_required"], 1)
+        self.assertEqual(
+            summary["longitudinal_safety_shield_reason_counts"]["front_clearance_blocks_accelerate"],
+            2,
+        )
+        self.assertEqual(summary["flow_recovery_reason_counts"]["low_speed_recovery_after_front_risk"], 1)
+        self.assertEqual(summary["timeout_phase_counts"]["active"], 9)
+        self.assertEqual(summary["timeout_phase_counts"]["warmup"], 1)
+        self.assertEqual(summary["warmup_timeout_failures_total"], 1)
+        self.assertEqual(summary["warmup_active_episode_count"], 1)
+        self.assertEqual(summary["warmup_success_observed_episode_count"], 1)
 
     def test_early_stop_policy_triggers_after_three_consecutive_timeout_fallbacks_at_max_level(self):
         should_stop, reason = _should_early_stop_timeout_episode(

@@ -12,7 +12,7 @@ from plot_eval_compare import (
 
 
 class PlotEvalCompareTests(unittest.TestCase):
-    def test_shorten_model_name_humanizes_fine_tuned_and_base_tags(self):
+    def test_shorten_model_name_humanizes_local_and_base_tags(self):
         self.assertEqual(
             _shorten_model_name("dilu-phi4-mini-3_8b-instruct-v1"),
             "dilu-phi4-mini:3.8-instruct",

@@ -1,7 +1,0 @@
-base_config: "config.yaml"
-
-# Deprecated compatibility alias for the default stop-capable benchmark profile.
-# Use config.yaml for canonical benchmark and evaluation runs.
-sim_env_id: "highway-fast-v0"
-sim_use_native_env_defaults: true
-sim_action_target_speeds: [0, 5, 10, 15, 20, 25, 30]
