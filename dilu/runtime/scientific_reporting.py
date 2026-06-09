@@ -36,6 +36,9 @@ CONTINUOUS_EPISODE_METRICS: Tuple[Tuple[str, str], ...] = (
     ("driving_score", "driving_score"),
     ("driving_score_v2", "driving_score_v2"),
     ("overall_score_v2", "overall_score_v2"),
+    ("driving_score_balanced_v1", "driving_score_balanced_v1"),
+    ("driving_task_score_v2", "driving_task_score_v2"),
+    ("driving_behavior_task_gap_v1", "driving_behavior_task_gap_v1"),
     ("driving_score_behavior_v1", "driving_score_behavior_v1"),
     ("driving_safety_score_v1", "driving_safety_score_v1"),
     ("driving_comfort_score_v1", "driving_comfort_score_v1"),
@@ -223,6 +226,7 @@ def build_primary_metric_spec(config: Optional[Dict[str, Any]] = None) -> Dict[s
         },
         "headline_metric_order": {
             "benchmark": [
+                "driving_score_balanced_v1",
                 "driving_score_behavior_v1",
                 "driving_score_v2",
                 "driving_score",
@@ -231,7 +235,10 @@ def build_primary_metric_spec(config: Optional[Dict[str, Any]] = None) -> Dict[s
             "seed_mode": ["avg_ego_speed_mps"],
         },
         "split_headline_metrics": {
-            "primary_driving_metric": "driving_score_behavior_v1",
+            "primary_driving_metric": "driving_score_balanced_v1",
+            "driving_behavior_component": "driving_score_behavior_v1",
+            "driving_task_component": "driving_score_v2",
+            "balanced_driving_formula": "sqrt(driving_score_behavior_v1 * driving_score_v2)",
             "primary_llm_metric": "llm_driver_score_v1",
             "secondary_joint_metric": "dilu_joint_score_v1",
             "score_fields": list(SPLIT_SCORE_FIELDS),

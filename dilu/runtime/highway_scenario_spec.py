@@ -13,6 +13,7 @@ _EVENT_TYPES = {
     "set_lane_change",
     "spawn_vehicle",
 }
+_LANE_REFERENCES = {"scenario_ego", "current_ego", "vehicle_current"}
 
 
 def _as_float(value: Any, field_name: str) -> float:
@@ -34,6 +35,16 @@ def _validate_speed(value: Any, field_name: str) -> float:
     if speed < 0:
         raise ValueError(f"scenario_spec.{field_name} must be non-negative.")
     return speed
+
+
+def _normalize_lane_reference(value: Any, field_name: str) -> str:
+    lane_reference = str(value or "scenario_ego").strip().lower()
+    if lane_reference not in _LANE_REFERENCES:
+        raise ValueError(
+            f"scenario_spec.{field_name} has unsupported lane_reference `{lane_reference}`; "
+            f"allowed={sorted(_LANE_REFERENCES)}."
+        )
+    return lane_reference
 
 
 def _normalize_vehicle_spec(item: Dict[str, Any], field_prefix: str, seen_ids: Optional[set] = None) -> Dict[str, Any]:
@@ -107,6 +118,11 @@ def _normalize_event(
         if not isinstance(vehicle_raw, dict):
             raise ValueError(f"scenario_spec event `{event_id}` must define a vehicle object.")
         vehicle = _normalize_vehicle_spec(vehicle_raw, f"{field_prefix}.vehicle")
+        if "lane_offset" in vehicle:
+            vehicle["lane_reference"] = _normalize_lane_reference(
+                vehicle_raw.get("lane_reference", item.get("lane_reference", "scenario_ego")),
+                f"{field_prefix}.vehicle.lane_reference",
+            )
         vehicle_id = vehicle["id"]
         if vehicle_id in all_vehicle_ids:
             raise ValueError(f"scenario_spec contains duplicate vehicle id `{vehicle_id}`.")
@@ -125,6 +141,15 @@ def _normalize_event(
         event["lane_rank"] = _as_int(item["lane_rank"], f"{field_prefix}.lane_rank")
     if "lane_offset" in item:
         event["lane_offset"] = _as_int(item["lane_offset"], f"{field_prefix}.lane_offset")
+        event["lane_reference"] = _normalize_lane_reference(
+            item.get("lane_reference", "scenario_ego"),
+            f"{field_prefix}.lane_reference",
+        )
+    elif "lane_reference" in item:
+        event["lane_reference"] = _normalize_lane_reference(
+            item["lane_reference"],
+            f"{field_prefix}.lane_reference",
+        )
     if "x_m" in item:
         event["x_m"] = _as_float(item["x_m"], f"{field_prefix}.x_m")
     if "x_offset_m" in item:
@@ -311,6 +336,56 @@ def _add_idm_vehicle(env: Any, vehicle_spec: Dict[str, Any], ego_lane_rank: int,
     return vehicle
 
 
+def _scenario_ego_lane_rank(spec: Dict[str, Any], current_ego_lane_rank: int) -> int:
+    ego_spec = spec.get("ego") or {}
+    if "lane_rank" in ego_spec:
+        return int(ego_spec["lane_rank"])
+    return int(current_ego_lane_rank)
+
+
+def _resolve_lane_offset_reference(
+    event: Dict[str, Any],
+    *,
+    scenario_ego_lane_rank: int,
+    current_ego_lane_rank: int,
+    vehicle_current_lane_rank: Optional[int],
+) -> Tuple[str, int]:
+    lane_reference = str(event.get("lane_reference") or "scenario_ego")
+    if lane_reference == "scenario_ego":
+        return lane_reference, int(scenario_ego_lane_rank)
+    if lane_reference == "current_ego":
+        return lane_reference, int(current_ego_lane_rank)
+    if lane_reference == "vehicle_current":
+        return lane_reference, int(
+            vehicle_current_lane_rank
+            if vehicle_current_lane_rank is not None
+            else current_ego_lane_rank
+        )
+    raise ValueError(
+        f"scenario_spec event `{event.get('id', '')}` has unsupported lane_reference `{lane_reference}`; "
+        f"allowed={sorted(_LANE_REFERENCES)}."
+    )
+
+
+def _event_with_lane_resolution(
+    event: Dict[str, Any],
+    *,
+    lane_reference: Optional[str],
+    reference_lane_rank: Optional[int],
+    resolved_lane_rank: Optional[int],
+) -> Dict[str, Any]:
+    item = copy.deepcopy(event)
+    if lane_reference is not None:
+        item["resolved_lane_reference"] = lane_reference
+    if reference_lane_rank is not None:
+        item["reference_lane_rank"] = int(reference_lane_rank)
+    if resolved_lane_rank is not None:
+        item["resolved_lane_rank"] = int(resolved_lane_rank)
+    if "lane_offset" in event:
+        item["original_lane_offset"] = int(event["lane_offset"])
+    return item
+
+
 def _vehicle_by_benchmark_id(env: Any, vehicle_id: str) -> Any:
     road = getattr(env.unwrapped, "road", None)
     for vehicle in list(getattr(road, "vehicles", []) or []):
@@ -401,14 +476,31 @@ def apply_highway_scenario_events(
     if ego is None or road is None:
         raise ValueError("scenario_spec events require an env with ego vehicle and road.")
     ego_lane_rank = int(getattr(ego, "lane_index", (None, None, 0))[2])
+    scenario_ego_lane_rank = _scenario_ego_lane_rank(spec, ego_lane_rank)
     ego_x = _vehicle_x(ego) or 0.0
 
     applied: List[Dict[str, Any]] = []
     for event in due_events:
         event_type = str(event["type"])
         event_id = str(event["id"])
+        resolved_lane_reference = None
+        reference_lane_rank = None
+        resolved_lane_rank = None
         if event_type == "spawn_vehicle":
-            vehicle = _add_idm_vehicle(env, event["vehicle"], ego_lane_rank, ego_x)
+            vehicle_spec = dict(event["vehicle"])
+            if "lane_rank" in vehicle_spec:
+                resolved_lane_rank = int(vehicle_spec["lane_rank"])
+            elif "lane_offset" in vehicle_spec:
+                resolved_lane_reference, reference_lane_rank = _resolve_lane_offset_reference(
+                    vehicle_spec,
+                    scenario_ego_lane_rank=scenario_ego_lane_rank,
+                    current_ego_lane_rank=ego_lane_rank,
+                    vehicle_current_lane_rank=None,
+                )
+                resolved_lane_rank = int(reference_lane_rank) + int(vehicle_spec["lane_offset"])
+                vehicle_spec["lane_rank"] = resolved_lane_rank
+                vehicle_spec.pop("lane_offset", None)
+            vehicle = _add_idm_vehicle(env, vehicle_spec, ego_lane_rank, ego_x)
             road.vehicles.append(vehicle)
         else:
             vehicle = _vehicle_by_benchmark_id(env, str(event["vehicle_id"]))
@@ -420,10 +512,19 @@ def apply_highway_scenario_events(
                 current_lane_rank = int(getattr(vehicle, "lane_index", (None, None, ego_lane_rank))[2])
                 if "lane_rank" in event:
                     lane_rank = int(event["lane_rank"])
+                    resolved_lane_rank = lane_rank
                 elif "lane_offset" in event:
-                    lane_rank = ego_lane_rank + int(event["lane_offset"])
+                    resolved_lane_reference, reference_lane_rank = _resolve_lane_offset_reference(
+                        event,
+                        scenario_ego_lane_rank=scenario_ego_lane_rank,
+                        current_ego_lane_rank=ego_lane_rank,
+                        vehicle_current_lane_rank=current_lane_rank,
+                    )
+                    lane_rank = int(reference_lane_rank) + int(event["lane_offset"])
+                    resolved_lane_rank = lane_rank
                 else:
                     lane_rank = current_lane_rank
+                    resolved_lane_rank = lane_rank
                 current_x = _vehicle_x(vehicle) or ego_x
                 x_m = float(event.get("x_m", ego_x + float(event["x_offset_m"]) if "x_offset_m" in event else current_x))
                 _move_vehicle(
@@ -444,7 +545,14 @@ def apply_highway_scenario_events(
             elif event_type == "set_lane_change":
                 vehicle.enable_lane_change = bool(event["enable_lane_change"])
         applied_event_ids.add(event_id)
-        applied.append(copy.deepcopy(event))
+        applied.append(
+            _event_with_lane_resolution(
+                event,
+                lane_reference=resolved_lane_reference,
+                reference_lane_rank=reference_lane_rank,
+                resolved_lane_rank=resolved_lane_rank,
+            )
+        )
 
     return {
         "benchmark_events_applied": bool(applied),

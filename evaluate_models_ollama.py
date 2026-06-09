@@ -2583,7 +2583,7 @@ def _build_model_extract(
         "execution_mode": metrics_config.get("execution_mode") if benchmark_mode else None,
         "benchmark_fingerprint": metrics_config.get("benchmark_fingerprint") if benchmark_mode else None,
         "headline_task_metric": (
-            "driving_score_behavior_v1" if benchmark_mode else None
+            "driving_score_balanced_v1" if benchmark_mode else None
         ),
         "headline_llm_metric": "llm_driver_score_v1" if benchmark_mode else None,
         "headline_joint_metric": "dilu_joint_score_v1" if benchmark_mode else None,
@@ -3320,7 +3320,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         "openai_api_type": config["OPENAI_API_TYPE"],
         "benchmark_mode": bool(benchmark_mode),
         "headline_task_metric": (
-            "driving_score_behavior_v1"
+            "driving_score_balanced_v1"
             if benchmark_mode
             else None
         ),
@@ -3458,14 +3458,22 @@ def main(argv: Optional[List[str]] = None) -> None:
             "split_scoring_policy": {
                 "version": SPLIT_SCORING_POLICY_VERSION,
                 "headline_policy": "split_primary",
-                "primary_driving_metric": "driving_score_behavior_v1",
+                "primary_driving_metric": "driving_score_balanced_v1",
+                "driving_behavior_component": "driving_score_behavior_v1",
+                "driving_task_component": "driving_score_v2",
+                "balanced_driving_score_formula": "sqrt(driving_score_behavior_v1 * driving_score_v2)",
                 "primary_llm_metric": "llm_driver_score_v1",
                 "secondary_joint_metric": "dilu_joint_score_v1",
                 "legacy_compatibility_metrics": ["driving_score", "driving_score_v2"],
                 "llm_score_revision_note": (
                     "llm_driver_score_v1 uses intervention-dependence scoring under "
-                    "dilu_split_score_v1.1; do not directly mix LLM-score comparisons "
+                    "dilu_split_score_v1.1+; do not directly mix LLM-score comparisons "
                     "with dilu_split_score_v1 reports."
+                ),
+                "balanced_driving_score_revision_note": (
+                    "dilu_split_score_v1.2 uses driving_score_balanced_v1 as the "
+                    "benchmark driving headline; do not directly mix headline "
+                    "driving-score comparisons with dilu_split_score_v1.1 reports."
                 ),
             },
             "primary_metric_spec": primary_metric_spec,
@@ -3926,8 +3934,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 status = "CRASH" if episode_result["crashed"] else ("ERROR" if episode_result["error"] else ("TIMEOUT" if episode_result.get("timeout_triggered") else "OK"))
                 benchmark_suffix = ""
                 if "task_completed" in episode_result:
-                    driving_score_value = episode_result.get("driving_score_behavior_v1")
-                    driving_score_label = "driving_score_behavior_v1"
+                    driving_score_value = episode_result.get("driving_score_balanced_v1")
+                    driving_score_label = "driving_score_balanced_v1"
+                    if driving_score_value is None:
+                        driving_score_value = episode_result.get("driving_score_behavior_v1")
+                        driving_score_label = "driving_score_behavior_v1"
                     if driving_score_value is None:
                         driving_score_value = episode_result.get("driving_score_v2")
                         driving_score_label = "driving_score_v2"
@@ -4195,8 +4206,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"p95_decision_latency_sec_mean={row.get('p95_decision_latency_sec_mean')}"
             )
             if row.get("task_completion_rate") is not None:
-                driving_score_value = row.get("driving_score_behavior_v1")
-                driving_score_label = "driving_score_behavior_v1"
+                driving_score_value = row.get("driving_score_balanced_v1")
+                driving_score_label = "driving_score_balanced_v1"
+                if driving_score_value is None:
+                    driving_score_value = row.get("driving_score_behavior_v1")
+                    driving_score_label = "driving_score_behavior_v1"
                 if driving_score_value is None:
                     driving_score_value = row.get("driving_score_v2")
                     driving_score_label = "driving_score_v2"
@@ -4306,8 +4320,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"avg_episode_runtime_sec={row['avg_episode_runtime_sec']}"
             )
             if row.get("task_completion_rate") is not None:
-                driving_score_value = row.get("driving_score_behavior_v1")
-                driving_score_label = "driving_score_behavior_v1"
+                driving_score_value = row.get("driving_score_balanced_v1")
+                driving_score_label = "driving_score_balanced_v1"
+                if driving_score_value is None:
+                    driving_score_value = row.get("driving_score_behavior_v1")
+                    driving_score_label = "driving_score_behavior_v1"
                 if driving_score_value is None:
                     driving_score_value = row.get("driving_score_v2")
                     driving_score_label = "driving_score_v2"

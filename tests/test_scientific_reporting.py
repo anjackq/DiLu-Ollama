@@ -71,7 +71,7 @@ class ScientificReportingTests(unittest.TestCase):
         self.assertEqual(single["ci95"], [4.0, 4.0])
         self.assertIn("low_n_warning", single["warnings"])
 
-    def test_primary_metric_prefers_benchmark_driving_score_v2(self):
+    def test_primary_metric_prefers_balanced_benchmark_driving_score(self):
         aggregate = {
             "model": "test-model",
             "episodes": 30,
@@ -84,6 +84,8 @@ class ScientificReportingTests(unittest.TestCase):
             "decision_timeout_rate_mean": 0.0,
             "fallback_action_rate_mean": 0.0,
             "response_strict_format_rate": 1.0,
+            "driving_score_balanced_v1": 0.76,
+            "driving_task_score_v2": 0.72,
             "driving_score_v2": 0.72,
             "driving_score_behavior_v1": 0.81,
             "llm_driver_score_v1": 0.91,
@@ -91,8 +93,8 @@ class ScientificReportingTests(unittest.TestCase):
             "avg_reward_per_step": 1.0,
         }
         annotated = annotate_aggregate_with_scientific_reporting(aggregate, [_clean_episode() for _ in range(30)])
-        self.assertEqual(annotated["primary_metric_name"], "driving_score_behavior_v1")
-        self.assertEqual(annotated["primary_metric_value"], 0.81)
+        self.assertEqual(annotated["primary_metric_name"], "driving_score_balanced_v1")
+        self.assertEqual(annotated["primary_metric_value"], 0.76)
         self.assertEqual(annotated["primary_llm_metric_name"], "llm_driver_score_v1")
         self.assertEqual(annotated["primary_llm_metric_value"], 0.91)
         self.assertEqual(annotated["secondary_joint_metric_name"], "dilu_joint_score_v1")
@@ -159,6 +161,9 @@ class ScientificReportingTests(unittest.TestCase):
                         "fallback_action_rate_mean": 0.0,
                         "response_strict_format_rate": 1.0,
                         "avg_ego_speed_mps": 24.0,
+                        "driving_score_balanced_v1": 0.77,
+                        "driving_task_score_v2": 0.74,
+                        "driving_behavior_task_gap_v1": 0.06,
                         "driving_score_behavior_v1": 0.8,
                         "llm_driver_score_v1": 0.9,
                         "llm_flow_recovery_independence_score_v1": 1.0,
@@ -176,6 +181,9 @@ class ScientificReportingTests(unittest.TestCase):
             self.assertTrue(Path(outputs["stats_appendix_md"]).is_file())
             self.assertTrue(Path(outputs["metrics_table_csv"]).is_file())
             table_text = Path(outputs["metrics_table_csv"]).read_text(encoding="utf-8")
+            self.assertIn("driving_score_balanced_v1", table_text)
+            self.assertIn("driving_task_score_v2", table_text)
+            self.assertIn("driving_behavior_task_gap_v1", table_text)
             self.assertIn("driving_score_behavior_v1", table_text)
             self.assertIn("llm_driver_score_v1", table_text)
             self.assertIn("llm_flow_recovery_independence_score_v1", table_text)
@@ -185,6 +193,9 @@ class ScientificReportingTests(unittest.TestCase):
         episodes = [
             _clean_episode(
                 seed=i,
+                driving_score_balanced_v1=0.8,
+                driving_task_score_v2=0.75,
+                driving_behavior_task_gap_v1=0.05,
                 llm_flow_recovery_independence_score_v1=1.0,
                 llm_safety_intervention_independence_score_v1=1.0,
                 llm_parser_independence_score_v1=1.0,
@@ -195,6 +206,9 @@ class ScientificReportingTests(unittest.TestCase):
         aggregate = aggregate_results("diagnostic-model", episodes)
         continuous = aggregate["scientific_stats"]["continuous_metrics"]
 
+        self.assertIn("driving_score_balanced_v1", continuous)
+        self.assertIn("driving_task_score_v2", continuous)
+        self.assertIn("driving_behavior_task_gap_v1", continuous)
         self.assertIn("llm_flow_recovery_independence_score_v1", continuous)
         self.assertIn("llm_safety_intervention_independence_score_v1", continuous)
         self.assertIn("llm_parser_independence_score_v1", continuous)

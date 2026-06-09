@@ -7,6 +7,8 @@ import numpy as np
 import yaml
 
 from dilu.runtime.highway_scenario_spec import (
+    _set_vehicle_state,
+    _vehicle_x,
     apply_highway_scenario_events,
     apply_highway_scenario_spec,
     normalize_scenario_spec,
@@ -251,7 +253,7 @@ class TaskBenchmarkTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_highway_scenario_reposition_lane_offset_is_ego_relative(self):
+    def test_highway_scenario_reposition_lane_offset_defaults_to_scenario_ego_reference(self):
         env = gym.make("highway-fast-v0", render_mode="rgb_array")
         try:
             env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
@@ -284,33 +286,154 @@ class TaskBenchmarkTests(unittest.TestCase):
                 }
             }
             apply_highway_scenario_spec(env, case)
+            ego_vehicle = env.unwrapped.vehicle
+            _set_vehicle_state(
+                ego_vehicle,
+                env,
+                0,
+                _vehicle_x(ego_vehicle) or 100.0,
+                float(ego_vehicle.speed),
+            )
 
             meta = apply_highway_scenario_events(env, case, step_idx=2, applied_event_ids=set())
 
-            ego_vehicle = env.unwrapped.vehicle
             vehicles_by_id = {
                 getattr(vehicle, "dilu_benchmark_id", ""): vehicle
                 for vehicle in env.unwrapped.road.vehicles
             }
             self.assertTrue(meta["benchmark_events_applied"])
-            self.assertEqual(vehicles_by_id["left_car"].lane_index[2], ego_vehicle.lane_index[2] - 1)
+            self.assertEqual(vehicles_by_id["left_car"].lane_index[2], 0)
             self.assertAlmostEqual(float(ego_vehicle.lane_distance_to(vehicles_by_id["left_car"])), 70.0, places=3)
+            self.assertEqual(meta["benchmark_events"][0]["resolved_lane_reference"], "scenario_ego")
+            self.assertEqual(meta["benchmark_events"][0]["resolved_lane_rank"], 0)
         finally:
             env.close()
 
-    def test_stress_reposition_events_apply_for_delayed_and_closing_cases(self):
+    def test_highway_scenario_reposition_lane_offset_can_use_current_ego_reference(self):
+        env = gym.make("highway-fast-v0", render_mode="rgb_array")
+        try:
+            env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
+            env.reset(seed=655)
+            case = {
+                "scenario_spec": {
+                    "clear_existing_vehicles": True,
+                    "ego": {"lane_rank": 1, "x_m": 100.0, "speed_mps": 25.0},
+                    "vehicles": [
+                        {
+                            "id": "same_lane_car",
+                            "role": "lead",
+                            "lane_offset": 0,
+                            "x_offset_m": 35.0,
+                            "speed_mps": 20.0,
+                            "target_speed_mps": 20.0,
+                        }
+                    ],
+                    "events": [
+                        {
+                            "id": "current_ego_cut_in",
+                            "step": 2,
+                            "type": "reposition_vehicle",
+                            "vehicle_id": "same_lane_car",
+                            "lane_offset": 0,
+                            "lane_reference": "current_ego",
+                            "x_offset_m": 18.0,
+                            "speed_mps": 18.0,
+                        }
+                    ],
+                }
+            }
+            apply_highway_scenario_spec(env, case)
+            ego_vehicle = env.unwrapped.vehicle
+            _set_vehicle_state(
+                ego_vehicle,
+                env,
+                2,
+                _vehicle_x(ego_vehicle) or 100.0,
+                float(ego_vehicle.speed),
+            )
+
+            meta = apply_highway_scenario_events(env, case, step_idx=2, applied_event_ids=set())
+
+            moved = next(
+                vehicle
+                for vehicle in env.unwrapped.road.vehicles
+                if getattr(vehicle, "dilu_benchmark_id", "") == "same_lane_car"
+            )
+            self.assertEqual(moved.lane_index[2], 2)
+            self.assertEqual(meta["benchmark_events"][0]["resolved_lane_reference"], "current_ego")
+            self.assertEqual(meta["benchmark_events"][0]["resolved_lane_rank"], 2)
+        finally:
+            env.close()
+
+    def test_highway_scenario_reposition_lane_offset_can_use_vehicle_current_reference(self):
+        env = gym.make("highway-fast-v0", render_mode="rgb_array")
+        try:
+            env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
+            env.reset(seed=656)
+            case = {
+                "scenario_spec": {
+                    "clear_existing_vehicles": True,
+                    "ego": {"lane_rank": 1, "x_m": 100.0, "speed_mps": 25.0},
+                    "vehicles": [
+                        {
+                            "id": "left_car",
+                            "role": "left_front",
+                            "lane_offset": -1,
+                            "x_offset_m": 30.0,
+                            "speed_mps": 20.0,
+                            "target_speed_mps": 20.0,
+                        }
+                    ],
+                    "events": [
+                        {
+                            "id": "vehicle_relative_move",
+                            "step": 2,
+                            "type": "reposition_vehicle",
+                            "vehicle_id": "left_car",
+                            "lane_offset": 1,
+                            "lane_reference": "vehicle_current",
+                            "x_offset_m": 45.0,
+                        }
+                    ],
+                }
+            }
+            apply_highway_scenario_spec(env, case)
+
+            meta = apply_highway_scenario_events(env, case, step_idx=2, applied_event_ids=set())
+
+            moved = next(
+                vehicle
+                for vehicle in env.unwrapped.road.vehicles
+                if getattr(vehicle, "dilu_benchmark_id", "") == "left_car"
+            )
+            self.assertEqual(moved.lane_index[2], 1)
+            self.assertEqual(meta["benchmark_events"][0]["resolved_lane_reference"], "vehicle_current")
+            self.assertEqual(meta["benchmark_events"][0]["resolved_lane_rank"], 1)
+        finally:
+            env.close()
+
+    def test_stress_reposition_events_apply_after_ego_moves_to_edge_lanes(self):
         case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v1")
         cases_by_id = {case["case_id"]: case for case in case_set["cases"]}
 
-        for case_id, step_idx in [
-            ("delayed_overtake_gap_001", 6),
-            ("closing_rear_lane_change_001", 4),
+        for case_id, step_idx, forced_lane in [
+            ("delayed_overtake_gap_001", 6, 0),
+            ("closing_rear_lane_change_001", 4, 0),
+            ("right_lane_opening_discipline_001", 6, 2),
         ]:
             env = gym.make("highway-fast-v0", render_mode="rgb_array")
             try:
                 env.unwrapped.configure(self.env_bundle["env_config_map"][self.env_bundle["env_id"]])
                 env.reset(seed=int(cases_by_id[case_id]["seed"]))
                 apply_highway_scenario_spec(env, cases_by_id[case_id])
+                ego_vehicle = env.unwrapped.vehicle
+                _set_vehicle_state(
+                    ego_vehicle,
+                    env,
+                    forced_lane,
+                    _vehicle_x(ego_vehicle) or 100.0,
+                    float(ego_vehicle.speed),
+                )
 
                 meta = apply_highway_scenario_events(
                     env,
@@ -320,6 +443,9 @@ class TaskBenchmarkTests(unittest.TestCase):
                 )
 
                 self.assertTrue(meta["benchmark_events_applied"], case_id)
+                for event in meta["benchmark_events"]:
+                    self.assertGreaterEqual(event["resolved_lane_rank"], 0, case_id)
+                    self.assertLess(event["resolved_lane_rank"], 3, case_id)
             finally:
                 env.close()
 
@@ -360,6 +486,22 @@ class TaskBenchmarkTests(unittest.TestCase):
                     "vehicles": [{"id": "lead", "role": "lead", "x_offset_m": 40, "speed_mps": 20}],
                     "events": [
                         {"id": "bad_ref", "step": 1, "type": "set_speed", "vehicle_id": "missing", "speed_mps": 18}
+                    ],
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported lane_reference"):
+            normalize_scenario_spec(
+                {
+                    "vehicles": [{"id": "lead", "role": "lead", "x_offset_m": 40, "speed_mps": 20}],
+                    "events": [
+                        {
+                            "id": "bad_lane_reference",
+                            "step": 1,
+                            "type": "reposition_vehicle",
+                            "vehicle_id": "lead",
+                            "lane_offset": 0,
+                            "lane_reference": "future_ego",
+                        }
                     ],
                 }
             )

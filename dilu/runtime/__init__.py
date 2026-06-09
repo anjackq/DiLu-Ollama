@@ -90,9 +90,23 @@ from .scientific_reporting import (
     write_scientific_analysis_artifacts,
 )
 from .dilu_scoring import (
+    BALANCED_DRIVING_SCORE_POLICY_VERSION,
     SPLIT_SCORING_POLICY_VERSION,
     SPLIT_SCORE_FIELDS,
     compute_split_scores_for_episode,
+)
+from .non_llm_baselines import (
+    BaselineDecision,
+    BaselinePolicy,
+    BaselineSpec,
+    DEFAULT_BASELINE_NAMES,
+    EXPERT_BASELINE_NAME,
+    baseline_names_for_levels,
+    configure_true_idm_ego,
+    get_baseline_spec,
+    iter_baseline_specs,
+    parse_baseline_levels,
+    resolve_baseline_names,
 )
 
 __all__ = [
@@ -165,7 +179,19 @@ __all__ = [
     "annotate_aggregate_with_scientific_reporting",
     "build_primary_metric_spec",
     "write_scientific_analysis_artifacts",
+    "BALANCED_DRIVING_SCORE_POLICY_VERSION",
     "SPLIT_SCORING_POLICY_VERSION",
     "SPLIT_SCORE_FIELDS",
     "compute_split_scores_for_episode",
+    "BaselineDecision",
+    "BaselinePolicy",
+    "BaselineSpec",
+    "DEFAULT_BASELINE_NAMES",
+    "EXPERT_BASELINE_NAME",
+    "baseline_names_for_levels",
+    "configure_true_idm_ego",
+    "get_baseline_spec",
+    "iter_baseline_specs",
+    "parse_baseline_levels",
+    "resolve_baseline_names",
 ]

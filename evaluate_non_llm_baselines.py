@@ -11,19 +11,26 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
-import hashlib
 import json
 import logging
-import math
 import random
+import sys
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 import gymnasium as gym
 import numpy as np
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 from evaluate_models_ollama import (
     _apply_reactive_safety_shields,
@@ -50,6 +57,17 @@ from dilu.runtime.highway_scenario_spec import (
     apply_highway_scenario_events,
     apply_highway_scenario_spec,
 )
+from dilu.runtime.non_llm_baselines import (
+    DEFAULT_BASELINE_NAMES,
+    EXPERT_CONTROL_MODE,
+    BaselinePolicy,
+    configure_true_idm_ego,
+    iter_baseline_specs,
+    parse_baseline_levels,
+    resolve_baseline_names,
+    stable_seed,
+    vehicle_snapshot,
+)
 from dilu.runtime.safety_shields import (
     FASTER_ACTION_ID,
     IDLE_ACTION_ID,
@@ -61,7 +79,7 @@ from dilu.scenario.envScenario import EnvScenario
 
 
 LOGGER = logging.getLogger("evaluate_non_llm_baselines")
-DEFAULT_BASELINES = ("idle_always", "random_seeded", "keep_lane_cruise", "idm_mobil")
+DEFAULT_BASELINES = DEFAULT_BASELINE_NAMES
 LLM_SCORE_FIELDS = {
     "llm_driver_score_v1",
     "llm_output_contract_score_v1",
@@ -75,276 +93,6 @@ LLM_SCORE_FIELDS = {
     "llm_resource_efficiency_score_v1",
     "dilu_joint_score_v1",
 }
-
-
-@dataclass(frozen=True)
-class VehicleSnapshot:
-    lane_rank: Optional[int]
-    x: Optional[float]
-    speed: float
-
-
-@dataclass(frozen=True)
-class LaneSnapshot:
-    front_gap_m: Optional[float]
-    rear_gap_m: Optional[float]
-    front_ttc_sec: Optional[float]
-    rear_ttc_sec: Optional[float]
-    front_speed_mps: Optional[float]
-
-
-@dataclass(frozen=True)
-class BaselineDecision:
-    action_id: int
-    reason: str
-    metadata: dict[str, Any]
-
-
-def stable_seed(*parts: Any) -> int:
-    text = "|".join(str(part) for part in parts)
-    return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:8], 16)
-
-
-def available_actions(env: Any) -> list[int]:
-    try:
-        actions = env.unwrapped.get_available_actions()
-        return [int(action_id) for action_id in actions]
-    except Exception:
-        return [0, 1, 2, 3, 4]
-
-
-def choose_available(action_id: int, available: Iterable[int], fallback_order: Iterable[int]) -> int:
-    available_set = {int(action) for action in available}
-    if int(action_id) in available_set:
-        return int(action_id)
-    for fallback in fallback_order:
-        if int(fallback) in available_set:
-            return int(fallback)
-    return min(available_set) if available_set else IDLE_ACTION_ID
-
-
-def vehicle_snapshot(vehicle: Any) -> VehicleSnapshot:
-    lane_rank = None
-    x = None
-    try:
-        lane_rank = int(getattr(vehicle, "lane_index")[2])
-    except Exception:
-        pass
-    try:
-        x = float(getattr(vehicle, "position")[0])
-    except Exception:
-        pass
-    try:
-        speed = float(getattr(vehicle, "speed", 0.0) or 0.0)
-    except Exception:
-        speed = 0.0
-    return VehicleSnapshot(lane_rank=lane_rank, x=x, speed=speed)
-
-
-def lane_count(env: Any) -> int:
-    try:
-        return int(env.unwrapped.config.get("lanes_count", 3))
-    except Exception:
-        return 3
-
-
-def lane_snapshot(env: Any, target_lane_rank: int) -> LaneSnapshot:
-    ego = getattr(env.unwrapped, "vehicle", None)
-    road = getattr(env.unwrapped, "road", None)
-    ego_state = vehicle_snapshot(ego)
-    front_gap = rear_gap = front_ttc = rear_ttc = front_speed = None
-    if ego is None or road is None or ego_state.x is None:
-        return LaneSnapshot(front_gap, rear_gap, front_ttc, rear_ttc, front_speed)
-
-    vehicles = [vehicle for vehicle in list(getattr(road, "vehicles", []) or []) if vehicle is not ego]
-    front_candidates: list[tuple[float, Any]] = []
-    rear_candidates: list[tuple[float, Any]] = []
-    for vehicle in vehicles:
-        state = vehicle_snapshot(vehicle)
-        if state.lane_rank != int(target_lane_rank) or state.x is None:
-            continue
-        delta = float(state.x - ego_state.x)
-        if delta >= 0:
-            front_candidates.append((delta, vehicle))
-        else:
-            rear_candidates.append((-delta, vehicle))
-
-    if front_candidates:
-        front_gap, front_vehicle = min(front_candidates, key=lambda item: item[0])
-        front_state = vehicle_snapshot(front_vehicle)
-        front_speed = front_state.speed
-        closing_speed = ego_state.speed - front_state.speed
-        if closing_speed > 1e-6:
-            front_ttc = front_gap / closing_speed
-    if rear_candidates:
-        rear_gap, rear_vehicle = min(rear_candidates, key=lambda item: item[0])
-        rear_state = vehicle_snapshot(rear_vehicle)
-        closing_speed = rear_state.speed - ego_state.speed
-        if closing_speed > 1e-6:
-            rear_ttc = rear_gap / closing_speed
-
-    return LaneSnapshot(front_gap, rear_gap, front_ttc, rear_ttc, front_speed)
-
-
-def lane_is_safe(snapshot: LaneSnapshot) -> bool:
-    front_safe = snapshot.front_gap_m is None or snapshot.front_gap_m >= 14.0
-    rear_gap_safe = snapshot.rear_gap_m is None or snapshot.rear_gap_m >= 10.0
-    rear_ttc_safe = snapshot.rear_ttc_sec is None or snapshot.rear_ttc_sec >= 2.5
-    return bool(front_safe and rear_gap_safe and rear_ttc_safe)
-
-
-def target_speed_mps(config: dict[str, Any]) -> float:
-    reward_range = config.get("reward_speed_range")
-    if isinstance(reward_range, list) and len(reward_range) >= 2:
-        return float(sum(float(value) for value in reward_range[:2]) / 2.0)
-    return 25.0
-
-
-class BaselinePolicy:
-    def __init__(self, name: str, config: dict[str, Any]) -> None:
-        self.name = str(name)
-        self.config = dict(config)
-        self.target_speed = target_speed_mps(config)
-
-    def decide(self, env: Any, case: dict[str, Any], step_idx: int, rng: random.Random) -> BaselineDecision:
-        available = available_actions(env)
-        if self.name == "idle_always":
-            return BaselineDecision(
-                choose_available(IDLE_ACTION_ID, available, (SLOWER_ACTION_ID, FASTER_ACTION_ID)),
-                "fixed_idle",
-                {},
-            )
-        if self.name == "random_seeded":
-            return BaselineDecision(int(rng.choice(available)), "seeded_uniform_available_action", {})
-        if self.name == "keep_lane_cruise":
-            return self._keep_lane_cruise(env, available)
-        if self.name == "idm_mobil":
-            return self._idm_mobil_style(env, case, available)
-        raise ValueError(f"Unknown baseline policy: {self.name}")
-
-    def _keep_lane_cruise(self, env: Any, available: list[int]) -> BaselineDecision:
-        ego = getattr(env.unwrapped, "vehicle", None)
-        ego_state = vehicle_snapshot(ego)
-        current_lane = ego_state.lane_rank if ego_state.lane_rank is not None else 1
-        current_lane_snapshot = lane_snapshot(env, current_lane)
-        action = IDLE_ACTION_ID
-        reason = "target_speed_hold"
-        if (
-            current_lane_snapshot.front_gap_m is not None
-            and current_lane_snapshot.front_gap_m < 12.0
-        ) or (
-            current_lane_snapshot.front_ttc_sec is not None
-            and current_lane_snapshot.front_ttc_sec < 3.0
-        ):
-            action = SLOWER_ACTION_ID
-            reason = "front_gap_or_ttc_caution"
-        elif ego_state.speed < self.target_speed - 1.0:
-            action = FASTER_ACTION_ID
-            reason = "below_target_speed"
-        elif ego_state.speed > self.target_speed + 2.0:
-            action = SLOWER_ACTION_ID
-            reason = "above_target_speed"
-        return BaselineDecision(
-            choose_available(action, available, (IDLE_ACTION_ID, SLOWER_ACTION_ID, FASTER_ACTION_ID)),
-            reason,
-            {"target_speed_mps": round(self.target_speed, 3)},
-        )
-
-    def _target_lane_action_from_case(self, env: Any, case: dict[str, Any]) -> Optional[int]:
-        criteria = case.get("success_criteria") or {}
-        if str(criteria.get("type") or "").strip().lower() not in {
-            "lane_change",
-            "overtake",
-            "safe_overtake",
-            "delayed_overtake_gap",
-            "right_lane_opening_discipline",
-        }:
-            return None
-        direction = str(criteria.get("direction") or criteria.get("target_direction") or "").strip().lower()
-        offset = int(criteria.get("target_lane_offset", 0) or 0)
-        if direction in {"left", "lane_left"} or offset < 0:
-            return LANE_LEFT_ACTION_ID
-        if direction in {"right", "lane_right"} or offset > 0:
-            return LANE_RIGHT_ACTION_ID
-        return None
-
-    def _best_safe_lane_action(self, env: Any, available: list[int], preferred: Optional[int] = None) -> Optional[int]:
-        ego = getattr(env.unwrapped, "vehicle", None)
-        ego_state = vehicle_snapshot(ego)
-        if ego_state.lane_rank is None:
-            return None
-        candidates: list[tuple[float, int]] = []
-        action_to_offset = {LANE_LEFT_ACTION_ID: -1, LANE_RIGHT_ACTION_ID: 1}
-        ordered_actions = [preferred] if preferred is not None else []
-        ordered_actions.extend([LANE_LEFT_ACTION_ID, LANE_RIGHT_ACTION_ID])
-        for action in ordered_actions:
-            if action is None or action not in action_to_offset or action not in available:
-                continue
-            target_lane = ego_state.lane_rank + action_to_offset[action]
-            if target_lane < 0 or target_lane >= lane_count(env):
-                continue
-            snapshot = lane_snapshot(env, target_lane)
-            if not lane_is_safe(snapshot):
-                continue
-            front_gap = snapshot.front_gap_m if snapshot.front_gap_m is not None else 1e6
-            rear_gap = snapshot.rear_gap_m if snapshot.rear_gap_m is not None else 1e6
-            candidates.append((min(float(front_gap), 120.0) + 0.25 * min(float(rear_gap), 80.0), int(action)))
-        if not candidates:
-            return None
-        return max(candidates, key=lambda item: item[0])[1]
-
-    def _idm_mobil_style(self, env: Any, case: dict[str, Any], available: list[int]) -> BaselineDecision:
-        ego = getattr(env.unwrapped, "vehicle", None)
-        ego_state = vehicle_snapshot(ego)
-        current_lane = ego_state.lane_rank if ego_state.lane_rank is not None else 1
-        current = lane_snapshot(env, current_lane)
-        preferred_lane_action = self._target_lane_action_from_case(env, case)
-        safe_target_action = self._best_safe_lane_action(env, available, preferred_lane_action)
-        metadata = {
-            "target_speed_mps": round(self.target_speed, 3),
-            "front_gap_m": None if current.front_gap_m is None else round(current.front_gap_m, 3),
-            "front_ttc_sec": None if current.front_ttc_sec is None else round(current.front_ttc_sec, 3),
-        }
-
-        severe_front = (
-            current.front_gap_m is not None
-            and current.front_gap_m < 10.0
-        ) or (
-            current.front_ttc_sec is not None
-            and current.front_ttc_sec < 2.5
-        )
-        slow_front = (
-            current.front_gap_m is not None
-            and current.front_gap_m < 28.0
-            and current.front_speed_mps is not None
-            and current.front_speed_mps + 1.0 < ego_state.speed
-        )
-
-        if preferred_lane_action is not None and safe_target_action == preferred_lane_action:
-            return BaselineDecision(preferred_lane_action, "case_target_lane_safe", metadata)
-        if severe_front and safe_target_action is not None:
-            return BaselineDecision(safe_target_action, "mobil_gap_escape", metadata)
-        if severe_front:
-            return BaselineDecision(
-                choose_available(SLOWER_ACTION_ID, available, (IDLE_ACTION_ID,)),
-                "idm_brake_for_front_risk",
-                metadata,
-            )
-        if slow_front and safe_target_action is not None:
-            return BaselineDecision(safe_target_action, "mobil_overtake_slow_front_vehicle", metadata)
-        if ego_state.speed < self.target_speed - 1.0 and (current.front_gap_m is None or current.front_gap_m > 18.0):
-            return BaselineDecision(
-                choose_available(FASTER_ACTION_ID, available, (IDLE_ACTION_ID,)),
-                "idm_accelerate_to_desired_speed",
-                metadata,
-            )
-        if ego_state.speed > self.target_speed + 2.0:
-            return BaselineDecision(
-                choose_available(SLOWER_ACTION_ID, available, (IDLE_ACTION_ID,)),
-                "idm_decelerate_to_desired_speed",
-                metadata,
-            )
-        return BaselineDecision(choose_available(IDLE_ACTION_ID, available, (SLOWER_ACTION_ID,)), "idm_hold_speed", metadata)
 
 
 def filter_cases(case_set: dict[str, Any], categories: Optional[str], limit: Optional[int]) -> dict[str, Any]:
@@ -385,7 +133,10 @@ def scrub_non_llm_scores(episode: dict[str, Any]) -> dict[str, Any]:
     for field in LLM_SCORE_FIELDS:
         cleaned[field] = None
     cleaned["baseline_llm_contract_applicable"] = False
-    cleaned["baseline_claim_scope"] = "behavior_reference_only"
+    if cleaned.get("baseline_control_mode") == EXPERT_CONTROL_MODE:
+        cleaned["baseline_claim_scope"] = "expert_behavior_reference_only"
+    else:
+        cleaned["baseline_claim_scope"] = "behavior_reference_only"
     return cleaned
 
 
@@ -403,6 +154,9 @@ def run_baseline_episode(
     max_steps = benchmark_max_steps(case, case_env_snapshot, int(config.get("simulation_duration", 30)))
     thresholds = metric_thresholds(config)
     rng = random.Random(stable_seed(policy.name, case.get("case_id"), seed))
+    expert_mode = policy.control_mode == EXPERT_CONTROL_MODE
+    effective_safety_shields = bool(safety_shields_enabled and policy.spec.safety_shield_compatible)
+    baseline_metadata = policy.spec.to_metadata(safety_shields_enabled=effective_safety_shields)
     started = time.time()
     env = gym.make(env_type, render_mode="rgb_array")
 
@@ -419,13 +173,24 @@ def run_baseline_episode(
     previous_action: Optional[int] = None
     benchmark_evaluator: Optional[BenchmarkEpisodeEvaluator] = None
     applied_event_ids: set[str] = set()
+    expert_meta: dict[str, Any] = {}
 
     try:
         env.unwrapped.configure(case_env_config[env_type])
         _, info = env.reset(seed=seed)
         scenario_meta = apply_highway_scenario_spec(env, case)
+        if expert_mode:
+            expert_meta = configure_true_idm_ego(
+                env,
+                target_speed_mps=float(policy.target_speed),
+                enable_lane_change=True,
+            )
         scenario = EnvScenario(env, env_type, seed, database=None, enable_db=False)
-        benchmark_evaluator = BenchmarkEpisodeEvaluator(case, env, scenario_spec_metadata=scenario_meta)
+        benchmark_evaluator = BenchmarkEpisodeEvaluator(
+            case,
+            env,
+            scenario_spec_metadata={**scenario_meta, **expert_meta},
+        )
         final_info = dict(info or {})
 
         for step_idx in range(1, max_steps + 1):
@@ -436,45 +201,97 @@ def run_baseline_episode(
                 applied_event_ids=applied_event_ids,
             )
             decision_started = time.time()
-            decision = policy.decide(env, case, step_idx, rng)
-            decision_elapsed = max(0.0, time.time() - decision_started)
-            proposed_action = int(decision.action_id)
-            decision_meta = {
-                "baseline_policy": policy.name,
-                "baseline_decision_reason": decision.reason,
-                "decision_elapsed_sec": round(decision_elapsed, 6),
-                "runtime_parse_path": "non_llm_baseline",
-                "timed_out": False,
-                "used_fallback": False,
-                **dict(decision.metadata),
-                **dict(event_meta),
-            }
-            if safety_shields_enabled:
-                action, shield_meta = _apply_reactive_safety_shields(proposed_action, scenario, decision_meta)
-            else:
-                action = proposed_action
+            previous_lane_rank = vehicle_snapshot(getattr(env.unwrapped, "vehicle", None)).lane_rank
+            if expert_mode:
+                decision = policy.decide(env, case, step_idx, rng)
+                decision_elapsed = max(0.0, time.time() - decision_started)
+                proposed_action = None
+                action = None
                 shield_meta = {
                     "reactive_safety_shield_applied": False,
-                    "reactive_safety_original_action_id": int(proposed_action),
-                    "reactive_safety_final_action_id": int(action),
+                    "reactive_safety_original_action_id": None,
+                    "reactive_safety_final_action_id": None,
                     "lane_change_shield_applied": False,
                     "longitudinal_safety_shield_applied": False,
                     "flow_recovery_shield_applied": False,
                 }
-            action_context = {**shield_meta, **event_meta, "action_id": int(action), "final_action_id": int(action)}
-            counts["lane_change_shield"] += int(bool(shield_meta.get("lane_change_shield_applied", False)))
-            counts["longitudinal_safety_shield"] += int(bool(shield_meta.get("longitudinal_safety_shield_applied", False)))
-            counts["flow_recovery_shield"] += int(bool(shield_meta.get("flow_recovery_shield_applied", False)))
-            counts["lane_change"] += int(action in (LANE_LEFT_ACTION_ID, LANE_RIGHT_ACTION_ID))
-            if previous_action is not None and {previous_action, action} == {FASTER_ACTION_ID, SLOWER_ACTION_ID}:
-                counts["flap_accel_decel"] += 1
-            previous_action = int(action)
-
+                decision_meta = {
+                    "baseline_policy": policy.name,
+                    "baseline_decision_reason": decision.reason,
+                    "decision_elapsed_sec": round(decision_elapsed, 6),
+                    "runtime_parse_path": "non_llm_expert_vehicle",
+                    "timed_out": False,
+                    "used_fallback": False,
+                    **dict(expert_meta),
+                    **dict(event_meta),
+                }
+            else:
+                decision = policy.decide(env, case, step_idx, rng)
+                decision_elapsed = max(0.0, time.time() - decision_started)
+                proposed_action = int(decision.action_id)
+                decision_meta = {
+                    "baseline_policy": policy.name,
+                    "baseline_decision_reason": decision.reason,
+                    "decision_elapsed_sec": round(decision_elapsed, 6),
+                    "runtime_parse_path": "non_llm_baseline",
+                    "timed_out": False,
+                    "used_fallback": False,
+                    **dict(decision.metadata),
+                    **dict(event_meta),
+                }
+                if effective_safety_shields:
+                    action, shield_meta = _apply_reactive_safety_shields(proposed_action, scenario, decision_meta)
+                else:
+                    action = proposed_action
+                    shield_meta = {
+                        "reactive_safety_shield_applied": False,
+                        "reactive_safety_original_action_id": int(proposed_action),
+                        "reactive_safety_final_action_id": int(action),
+                        "lane_change_shield_applied": False,
+                        "longitudinal_safety_shield_applied": False,
+                        "flow_recovery_shield_applied": False,
+                    }
             _, reward, terminated, truncated, info = env.step(action)
             final_info = dict(info or {})
             crashed = bool(final_info.get("crashed", False))
             steps += 1
             reward_sum += float(reward)
+            current_lane_rank = vehicle_snapshot(getattr(env.unwrapped, "vehicle", None)).lane_rank
+            if expert_mode:
+                if (
+                    previous_lane_rank is not None
+                    and current_lane_rank is not None
+                    and current_lane_rank < previous_lane_rank
+                ):
+                    inferred_action = LANE_LEFT_ACTION_ID
+                elif (
+                    previous_lane_rank is not None
+                    and current_lane_rank is not None
+                    and current_lane_rank > previous_lane_rank
+                ):
+                    inferred_action = LANE_RIGHT_ACTION_ID
+                else:
+                    inferred_action = IDLE_ACTION_ID
+                action_context = {
+                    **shield_meta,
+                    **event_meta,
+                    "action_id": int(inferred_action),
+                    "final_action_id": int(inferred_action),
+                    "expert_vehicle_autonomous": True,
+                }
+                counts["lane_change"] += int(inferred_action in (LANE_LEFT_ACTION_ID, LANE_RIGHT_ACTION_ID))
+                if previous_action is not None and {previous_action, inferred_action} == {FASTER_ACTION_ID, SLOWER_ACTION_ID}:
+                    counts["flap_accel_decel"] += 1
+                previous_action = int(inferred_action)
+            else:
+                action_context = {**shield_meta, **event_meta, "action_id": int(action), "final_action_id": int(action)}
+                counts["lane_change_shield"] += int(bool(shield_meta.get("lane_change_shield_applied", False)))
+                counts["longitudinal_safety_shield"] += int(bool(shield_meta.get("longitudinal_safety_shield_applied", False)))
+                counts["flow_recovery_shield"] += int(bool(shield_meta.get("flow_recovery_shield_applied", False)))
+                counts["lane_change"] += int(action in (LANE_LEFT_ACTION_ID, LANE_RIGHT_ACTION_ID))
+                if previous_action is not None and {previous_action, action} == {FASTER_ACTION_ID, SLOWER_ACTION_ID}:
+                    counts["flap_accel_decel"] += 1
+                previous_action = int(action)
             step_metrics = traffic_metrics(env, thresholds)
             if step_metrics.get("ego_speed_mps") is not None:
                 speed = float(step_metrics["ego_speed_mps"])
@@ -503,11 +320,12 @@ def run_baseline_episode(
             action_trace.append(
                 {
                     "step_idx": step_idx,
-                    "proposed_action_id": int(proposed_action),
-                    "action_id": int(action),
+                    "proposed_action_id": None if proposed_action is None else int(proposed_action),
+                    "action_id": int(action_context["final_action_id"]),
                     "decision_reason": decision.reason,
                     "decision_elapsed_sec": round(decision_elapsed, 6),
                     "shield_applied": bool(shield_meta.get("reactive_safety_shield_applied", False)),
+                    "baseline_control_mode": policy.control_mode,
                 }
             )
             if terminated or truncated:
@@ -537,8 +355,14 @@ def run_baseline_episode(
         "category": case.get("category"),
         "baseline_policy": policy.name,
         "baseline_llm_contract_applicable": False,
-        "baseline_claim_scope": "behavior_reference_only",
-        "safety_shields_enabled": bool(safety_shields_enabled),
+        "baseline_claim_scope": (
+            "expert_behavior_reference_only"
+            if expert_mode
+            else "behavior_reference_only"
+        ),
+        **baseline_metadata,
+        "baseline_requested_safety_shields_enabled": bool(safety_shields_enabled),
+        "safety_shields_enabled": bool(effective_safety_shields),
         "steps": int(steps),
         "max_steps": int(max_steps),
         "crashed": bool(crashed),
@@ -565,7 +389,9 @@ def run_baseline_episode(
         "format_failure_count": 0,
         "format_failure_rate": 0.0,
         "fallback_reason_counts": {},
-        "runtime_parse_path_counts": {"non_llm_baseline": int(steps)},
+        "runtime_parse_path_counts": {
+            "non_llm_expert_vehicle" if expert_mode else "non_llm_baseline": int(steps)
+        },
         "semantic_recovery_count": 0,
         "semantic_recovery_rate": 0.0,
         "semantic_recovery_label_counts": {},
@@ -616,6 +442,7 @@ def run_baseline_episode(
         "final_info": copy.deepcopy(final_info),
         "action_sequence": [item["action_id"] for item in action_trace],
         "action_trace": action_trace,
+        **expert_meta,
         **benchmark_metrics,
     }
     episode = augment_behavior_aware_benchmark_episode(episode)
@@ -668,6 +495,9 @@ def category_summary(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "avg_ego_speed_mps": round(sum(float(episode.get("avg_ego_speed_mps", 0.0) or 0.0) for episode in subset) / max(total, 1), 4),
                 "task_completion_rate": round(sum(1 for episode in subset if bool(episode.get("task_completed"))) / max(total, 1), 4),
                 "no_collision_rate": round(sum(1 for episode in subset if bool(episode.get("success_no_collision"))) / max(total, 1), 4),
+                "driving_score_balanced_v1": round(sum(float(episode.get("driving_score_balanced_v1", 0.0) or 0.0) for episode in subset) / max(total, 1), 4),
+                "driving_task_score_v2": round(sum(float(episode.get("driving_task_score_v2", 0.0) or 0.0) for episode in subset) / max(total, 1), 4),
+                "driving_behavior_task_gap_v1": round(sum(float(episode.get("driving_behavior_task_gap_v1", 0.0) or 0.0) for episode in subset) / max(total, 1), 4),
                 "driving_score_behavior_v1": round(sum(float(episode.get("driving_score_behavior_v1", 0.0) or 0.0) for episode in subset) / max(total, 1), 4),
             }
         )
@@ -680,17 +510,61 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--benchmark-case-set", default="dilu_highway_reactive_stress_v1")
     parser.add_argument("--benchmark-categories", default=None)
     parser.add_argument("--baselines", default=",".join(DEFAULT_BASELINES))
+    parser.add_argument(
+        "--baseline-levels",
+        default=None,
+        help="Comma-separated baseline levels to run, e.g. 1,2,3. Overrides --baselines when set.",
+    )
+    parser.add_argument("--list-baselines", action="store_true", help="List available baselines and exit.")
     parser.add_argument("--limit", type=int, default=None, help="Limit cases after optional category filtering.")
     parser.add_argument("--experiment-id", default=None)
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--no-safety-shields", action="store_true")
+    parser.add_argument("--progress", action="store_true", help="Show CLI progress bars.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable CLI progress bars.")
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
+
+
+def _is_interactive_output() -> bool:
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _resolve_progress_enabled(args: argparse.Namespace) -> bool:
+    if bool(args.progress) and bool(args.no_progress):
+        raise ValueError("Use only one of --progress or --no-progress.")
+    if bool(args.progress):
+        return True
+    if bool(args.no_progress):
+        return False
+    return _is_interactive_output()
+
+
+def print_baseline_registry() -> None:
+    print("Available non-LLM baselines:")
+    for spec in iter_baseline_specs():
+        print(
+            f"- {spec.name} | level={spec.level} | family={spec.family} | "
+            f"control_mode={spec.control_mode} | "
+            f"category_aware={spec.uses_case_category} | "
+            f"criteria_aware={spec.uses_success_criteria} | "
+            f"oracle_hidden_spec={spec.uses_hidden_scenario_spec}"
+        )
 
 
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO), format="%(levelname)s: %(message)s")
+    if bool(args.list_baselines):
+        print_baseline_registry()
+        return
+
+    progress_enabled = _resolve_progress_enabled(args)
+    baseline_levels = parse_baseline_levels(args.baseline_levels)
+    baseline_names = resolve_baseline_names(args.baselines, levels=baseline_levels)
     config = load_runtime_config(args.config)
     case_set = filter_cases(load_benchmark_case_set(args.benchmark_case_set), args.benchmark_categories, args.limit)
     env_bundle = resolve_simulation_env_bundle(
@@ -706,11 +580,6 @@ def main() -> None:
     if not validation.get("passed"):
         raise ValueError(f"Benchmark validation failed: {validation['summary']}")
 
-    baseline_names = [name.strip() for name in str(args.baselines).split(",") if name.strip()]
-    unknown = sorted(set(baseline_names) - set(DEFAULT_BASELINES))
-    if unknown:
-        raise ValueError(f"Unknown baselines: {unknown}; available={list(DEFAULT_BASELINES)}")
-
     experiment_id = args.experiment_id or f"non_llm_baselines_{current_timestamp()}"
     output_root = Path(args.output_root or Path("results") / "baselines" / experiment_id)
     ensure_dir(str(output_root))
@@ -719,41 +588,73 @@ def main() -> None:
     all_episodes: list[dict[str, Any]] = []
     aggregates: list[dict[str, Any]] = []
 
-    for baseline_name in baseline_names:
-        policy = BaselinePolicy(baseline_name, config)
-        episodes = []
-        LOGGER.info("Evaluating baseline=%s cases=%s", baseline_name, len(case_set["cases"]))
-        for idx, case in enumerate(case_set["cases"], start=1):
-            LOGGER.info("  case %s/%s: %s", idx, len(case_set["cases"]), case["case_id"])
-            episode = run_baseline_episode(
-                config=config,
-                env_config_map=env_bundle["env_config_map"],
-                env_type=env_type,
-                case=case,
-                policy=policy,
-                safety_shields_enabled=not bool(args.no_safety_shields),
+    progress_context = (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        )
+        if progress_enabled
+        else nullcontext(None)
+    )
+    case_count = len(case_set["cases"])
+    with progress_context as progress:
+        baseline_task = progress.add_task("Baselines", total=len(baseline_names)) if progress else None
+        overall_task = progress.add_task("Episodes", total=len(baseline_names) * case_count) if progress else None
+        for baseline_name in baseline_names:
+            policy = BaselinePolicy(baseline_name, config)
+            effective_safety_shields = bool((not args.no_safety_shields) and policy.spec.safety_shield_compatible)
+            episodes = []
+            case_task = progress.add_task(f"Cases ({baseline_name})", total=case_count) if progress else None
+            if not progress:
+                LOGGER.info("Evaluating baseline=%s cases=%s", baseline_name, case_count)
+            for idx, case in enumerate(case_set["cases"], start=1):
+                if not progress:
+                    LOGGER.info("  case %s/%s: %s", idx, case_count, case["case_id"])
+                episode = run_baseline_episode(
+                    config=config,
+                    env_config_map=env_bundle["env_config_map"],
+                    env_type=env_type,
+                    case=case,
+                    policy=policy,
+                    safety_shields_enabled=not bool(args.no_safety_shields),
+                )
+                episodes.append(episode)
+                all_episodes.append(episode)
+                if progress:
+                    progress.advance(case_task)
+                    progress.advance(overall_task)
+            if progress:
+                progress.remove_task(case_task)
+                progress.advance(baseline_task)
+            aggregate = aggregate_results(
+                baseline_name,
+                episodes,
+                planned_episode_count=case_count,
+                primary_metric_spec=primary_spec,
             )
-            episodes.append(episode)
-            all_episodes.append(episode)
-        aggregate = aggregate_results(
-            baseline_name,
-            episodes,
-            planned_episode_count=len(case_set["cases"]),
-            primary_metric_spec=primary_spec,
-        )
-        aggregate.update(
-            {
-                "baseline_policy": baseline_name,
-                "baseline_llm_contract_applicable": False,
-                "baseline_claim_scope": "behavior_reference_only",
-                "benchmark_case_set": case_set["benchmark_name"],
-                "benchmark_fingerprint": fingerprint,
-                "safety_shields_enabled": not bool(args.no_safety_shields),
-            }
-        )
-        for field in LLM_SCORE_FIELDS:
-            aggregate[field] = None
-        aggregates.append(aggregate)
+            aggregate.update(
+                {
+                    "baseline_policy": baseline_name,
+                    "baseline_llm_contract_applicable": False,
+                    "baseline_claim_scope": (
+                        "expert_behavior_reference_only"
+                        if policy.control_mode == EXPERT_CONTROL_MODE
+                        else "behavior_reference_only"
+                    ),
+                    **policy.spec.to_metadata(safety_shields_enabled=effective_safety_shields),
+                    "baseline_requested_safety_shields_enabled": not bool(args.no_safety_shields),
+                    "benchmark_case_set": case_set["benchmark_name"],
+                    "benchmark_fingerprint": fingerprint,
+                    "safety_shields_enabled": effective_safety_shields,
+                }
+            )
+            for field in LLM_SCORE_FIELDS:
+                aggregate[field] = None
+            aggregates.append(aggregate)
 
     report = {
         "created_at": current_timestamp(),
@@ -767,6 +668,21 @@ def main() -> None:
         "safety_shields_enabled": not bool(args.no_safety_shields),
         "case_count": len(case_set["cases"]),
         "baselines": baseline_names,
+        "baseline_levels_requested": baseline_levels,
+        "baseline_registry": [
+            {
+                "baseline_name": spec.name,
+                "baseline_level": spec.level,
+                "baseline_family": spec.family,
+                "baseline_control_mode": spec.control_mode,
+                "uses_case_category": spec.uses_case_category,
+                "uses_success_criteria": spec.uses_success_criteria,
+                "uses_hidden_scenario_spec": spec.uses_hidden_scenario_spec,
+                "uses_future_events": spec.uses_future_events,
+                "safety_shield_compatible": spec.safety_shield_compatible,
+            }
+            for spec in iter_baseline_specs()
+        ],
         "validation": validation,
         "aggregates": aggregates,
         "episodes": all_episodes,

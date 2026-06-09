@@ -2,9 +2,13 @@ import math
 from typing import Any, Dict, Iterable, List, Optional
 
 
-SPLIT_SCORING_POLICY_VERSION = "dilu_split_score_v1.1"
+SPLIT_SCORING_POLICY_VERSION = "dilu_split_score_v1.2"
+BALANCED_DRIVING_SCORE_POLICY_VERSION = "dilu_balanced_driving_score_v1"
 
 SPLIT_SCORE_FIELDS = (
+    "driving_score_balanced_v1",
+    "driving_task_score_v2",
+    "driving_behavior_task_gap_v1",
     "driving_score_behavior_v1",
     "driving_safety_score_v1",
     "driving_comfort_score_v1",
@@ -53,6 +57,20 @@ def _clamp01(value: Any) -> float:
 
 def _round_score(value: Any) -> float:
     return round(_clamp01(value), 4)
+
+
+def _round_optional_score(value: Any) -> Optional[float]:
+    number = _float_or_none(value)
+    if number is None:
+        return None
+    return _round_score(number)
+
+
+def _round_optional_float(value: Any) -> Optional[float]:
+    number = _float_or_none(value)
+    if number is None:
+        return None
+    return round(float(number), 4)
 
 
 def _rate_score(value: Any, *, cap: float) -> float:
@@ -106,6 +124,14 @@ def _available_mean(values: List[Optional[float]]) -> Optional[float]:
     if not clean_values:
         return None
     return _clamp01(sum(clean_values) / len(clean_values))
+
+
+def _select_driving_task_score(episode: Dict[str, Any]) -> tuple[Optional[float], Optional[str]]:
+    for key in ("driving_score_v2", "driving_score"):
+        value = _float_or_none(episode.get(key))
+        if value is not None:
+            return _clamp01(value), key
+    return None, None
 
 
 def _episode_decisions(episode: Dict[str, Any]) -> int:
@@ -329,11 +355,22 @@ def compute_split_scores_for_episode(episode: Dict[str, Any]) -> Dict[str, Any]:
         )
     )
     joint_score = math.sqrt(_clamp01(driving_score) * _clamp01(llm_score))
+    task_score, task_score_source = _select_driving_task_score(episode)
+    balanced_driving_score = None
+    behavior_task_gap = None
+    if task_score is not None:
+        balanced_driving_score = math.sqrt(_clamp01(driving_score) * _clamp01(task_score))
+        behavior_task_gap = _clamp01(driving_score) - _clamp01(task_score)
 
     scored = dict(episode)
     scored.update(
         {
             "split_scoring_policy_version": SPLIT_SCORING_POLICY_VERSION,
+            "balanced_driving_score_policy_version": BALANCED_DRIVING_SCORE_POLICY_VERSION,
+            "driving_score_balanced_v1": _round_optional_score(balanced_driving_score),
+            "driving_task_score_v2": _round_optional_score(task_score),
+            "driving_task_score_source": task_score_source,
+            "driving_behavior_task_gap_v1": _round_optional_float(behavior_task_gap),
             "driving_score_behavior_v1": _round_score(driving_score),
             "driving_safety_score_v1": _round_score(safety_score),
             "driving_comfort_score_v1": _round_score(comfort_score),

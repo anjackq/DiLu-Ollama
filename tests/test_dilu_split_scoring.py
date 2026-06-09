@@ -55,12 +55,60 @@ def _episode(**updates):
 
 class DiluSplitScoringTests(unittest.TestCase):
     def test_clean_episode_has_high_driving_and_llm_scores(self):
-        scored = compute_split_scores_for_episode(_episode())
+        scored = compute_split_scores_for_episode(
+            _episode(driving_score_v2=0.81, driving_score=0.75)
+        )
 
-        self.assertEqual(scored["split_scoring_policy_version"], SPLIT_SCORING_POLICY_VERSION)
+        self.assertEqual(
+            scored["split_scoring_policy_version"],
+            SPLIT_SCORING_POLICY_VERSION,
+        )
         self.assertGreater(scored["driving_score_behavior_v1"], 0.8)
+        self.assertEqual(scored["driving_task_score_v2"], 0.81)
+        self.assertEqual(scored["driving_task_score_source"], "driving_score_v2")
+        self.assertGreater(scored["driving_score_balanced_v1"], 0.8)
         self.assertGreater(scored["llm_driver_score_v1"], 0.8)
         self.assertGreater(scored["dilu_joint_score_v1"], 0.8)
+
+    def test_balanced_driving_score_uses_geometric_mean(self):
+        scored = compute_split_scores_for_episode(_episode(driving_score_v2=0.25))
+        expected = round(
+            (scored["driving_score_behavior_v1"] * scored["driving_task_score_v2"]) ** 0.5,
+            4,
+        )
+
+        self.assertEqual(scored["driving_score_balanced_v1"], expected)
+        self.assertAlmostEqual(
+            scored["driving_behavior_task_gap_v1"],
+            round(scored["driving_score_behavior_v1"] - 0.25, 4),
+            places=4,
+        )
+
+    def test_zero_task_score_zeros_balanced_driving_score(self):
+        scored = compute_split_scores_for_episode(_episode(driving_score_v2=0.0))
+
+        self.assertGreater(scored["driving_score_behavior_v1"], 0.0)
+        self.assertEqual(scored["driving_task_score_v2"], 0.0)
+        self.assertEqual(scored["driving_score_balanced_v1"], 0.0)
+
+    def test_balanced_driving_score_prefers_v2_and_falls_back_to_legacy(self):
+        preferred = compute_split_scores_for_episode(
+            _episode(driving_score_v2=0.64, driving_score=0.16)
+        )
+        fallback = compute_split_scores_for_episode(_episode(driving_score=0.49))
+
+        self.assertEqual(preferred["driving_task_score_v2"], 0.64)
+        self.assertEqual(preferred["driving_task_score_source"], "driving_score_v2")
+        self.assertEqual(fallback["driving_task_score_v2"], 0.49)
+        self.assertEqual(fallback["driving_task_score_source"], "driving_score")
+
+    def test_missing_task_score_leaves_balanced_driving_score_null(self):
+        scored = compute_split_scores_for_episode(_episode())
+
+        self.assertIsNone(scored["driving_task_score_v2"])
+        self.assertIsNone(scored["driving_task_score_source"])
+        self.assertIsNone(scored["driving_score_balanced_v1"])
+        self.assertIsNone(scored["driving_behavior_task_gap_v1"])
 
     def test_crash_reduces_but_does_not_zero_soft_driving_score(self):
         clean = compute_split_scores_for_episode(_episode())
@@ -215,6 +263,7 @@ class DiluSplitScoringTests(unittest.TestCase):
             compute_split_scores_for_episode(
                 _episode(
                     seed=i,
+                    driving_score_v2=0.8,
                     error=None,
                     truncated=False,
                     terminated=True,
@@ -229,13 +278,57 @@ class DiluSplitScoringTests(unittest.TestCase):
         aggregate = aggregate_results("split-model", episodes)
 
         self.assertIn("driving_score_behavior_v1", aggregate)
+        self.assertIn("driving_score_balanced_v1", aggregate)
+        self.assertIn("driving_task_score_v2", aggregate)
+        self.assertIn("driving_behavior_task_gap_v1", aggregate)
         self.assertIn("llm_driver_score_v1", aggregate)
         self.assertIn("dilu_joint_score_v1", aggregate)
         self.assertIn("llm_flow_recovery_independence_score_v1", aggregate)
         self.assertIn("llm_intervention_independence_score_v1", aggregate)
+        self.assertIn("driving_score_balanced_v1_ci95", aggregate)
+        self.assertIn("driving_task_score_v2_ci95", aggregate)
         self.assertIn("driving_score_behavior_v1_ci95", aggregate)
         self.assertIn("llm_driver_score_v1_ci95", aggregate)
         self.assertIn("llm_flow_recovery_independence_score_v1_ci95", aggregate)
+
+    def test_aggregate_balanced_score_is_mean_of_episode_balanced_scores(self):
+        episodes = [
+            _episode(
+                seed=1,
+                error=None,
+                truncated=False,
+                terminated=True,
+                steps=10,
+                episode_runtime_sec=1.0,
+                episode_reward_sum=1.0,
+                episode_reward_avg=0.1,
+                driving_score_behavior_v1=1.0,
+                driving_task_score_v2=0.0,
+                driving_score_balanced_v1=0.0,
+                driving_behavior_task_gap_v1=1.0,
+            ),
+            _episode(
+                seed=2,
+                error=None,
+                truncated=False,
+                terminated=True,
+                steps=10,
+                episode_runtime_sec=1.0,
+                episode_reward_sum=1.0,
+                episode_reward_avg=0.1,
+                driving_score_behavior_v1=0.0,
+                driving_task_score_v2=1.0,
+                driving_score_balanced_v1=0.0,
+                driving_behavior_task_gap_v1=-1.0,
+            ),
+        ]
+        aggregate = aggregate_results("balanced-aggregate-model", episodes)
+
+        self.assertEqual(aggregate["driving_score_balanced_v1"], 0.0)
+        self.assertNotEqual(
+            aggregate["driving_score_balanced_v1"],
+            round((0.5 * 0.5) ** 0.5, 4),
+        )
 
 
 if __name__ == "__main__":
