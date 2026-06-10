@@ -158,7 +158,7 @@ def run_baseline_episode(
     effective_safety_shields = bool(safety_shields_enabled and policy.spec.safety_shield_compatible)
     baseline_metadata = policy.spec.to_metadata(safety_shields_enabled=effective_safety_shields)
     started = time.time()
-    env = gym.make(env_type, render_mode="rgb_array")
+    env = gym.make(env_type)
 
     crashed = terminated = truncated = False
     error = None

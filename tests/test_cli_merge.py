@@ -265,6 +265,18 @@ class CliMergeTests(unittest.TestCase):
         self.assertEqual(filtered_case_set["categories"], ["cut_in_brake_response"])
         self.assertTrue(all(case["category"] == "cut_in_brake_response" for case in filtered_cases))
 
+    def test_benchmark_category_filter_selects_expected_stress_v2_cases(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v2")
+
+        filtered_case_set, filtered_cases = _filter_benchmark_cases_by_category(
+            case_set,
+            ["traffic_jam_escape"],
+        )
+
+        self.assertEqual(len(filtered_cases), 12)
+        self.assertEqual(filtered_case_set["categories"], ["traffic_jam_escape"])
+        self.assertTrue(all(case["category"] == "traffic_jam_escape" for case in filtered_cases))
+
     def test_benchmark_category_filter_supports_multiple_categories_in_original_order(self):
         case_set = load_benchmark_case_set("dilu_highway_reactive_v1")
 

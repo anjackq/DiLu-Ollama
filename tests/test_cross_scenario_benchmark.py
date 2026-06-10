@@ -183,6 +183,7 @@ class CrossScenarioBenchmarkTests(unittest.TestCase):
         merge_case_set = load_benchmark_case_set("benchmarks/lampilot_merge_v1/cases.json")
         intersection_case_set = load_benchmark_case_set("benchmarks/lampilot_intersection_v1/cases.json")
         stress_case_set = load_benchmark_case_set("benchmarks/dilu_highway_reactive_stress_v1/cases.json")
+        stress_v2_case_set = load_benchmark_case_set("benchmarks/dilu_highway_reactive_stress_v2/cases.json")
 
         self.assertEqual(merge_case_set["target_env_id"], "merge-v0")
         self.assertEqual(merge_case_set["scenario_family"], "merge")
@@ -198,6 +199,11 @@ class CrossScenarioBenchmarkTests(unittest.TestCase):
         self.assertEqual(stress_case_set["scenario_family"], "highway")
         self.assertEqual(len(stress_case_set["cases"]), 80)
         self.assertEqual(len(stress_case_set["categories"]), 8)
+
+        self.assertEqual(stress_v2_case_set["target_env_id"], "highway-fast-v0")
+        self.assertEqual(stress_v2_case_set["scenario_family"], "highway")
+        self.assertEqual(len(stress_v2_case_set["cases"]), 120)
+        self.assertEqual(len(stress_v2_case_set["categories"]), 10)
 
     def test_revised_merge_and_intersection_case_sets_validate(self):
         merge_case_set = load_benchmark_case_set("lampilot_merge_v1")

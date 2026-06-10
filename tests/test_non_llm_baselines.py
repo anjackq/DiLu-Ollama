@@ -64,7 +64,7 @@ def _make_env(ego_speed=20.0, front_gap=None, front_speed=16.0, left_rear_gap=No
 
 
 class NonLlmBaselineRegistryTests(unittest.TestCase):
-    def _run_cli(self, *args):
+    def _run_cli(self, *args, benchmark_case_set="dilu_highway_reactive_v1", baselines="safe_stop"):
         with tempfile.TemporaryDirectory() as tmp_dir:
             command = [
                 sys.executable,
@@ -72,11 +72,11 @@ class NonLlmBaselineRegistryTests(unittest.TestCase):
                 "--config",
                 "config.yaml",
                 "--benchmark-case-set",
-                "dilu_highway_reactive_v1",
+                benchmark_case_set,
                 "--limit",
                 "1",
                 "--baselines",
-                "safe_stop",
+                baselines,
                 "--output-root",
                 tmp_dir,
                 *args,
@@ -147,6 +147,18 @@ class NonLlmBaselineRegistryTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Use only one of --progress or --no-progress", result.stderr)
+
+    def test_cli_stress_v2_speed_hold_smoke(self):
+        result, report_exists = self._run_cli(
+            "--no-progress",
+            "--benchmark-categories",
+            "traffic_jam_escape",
+            benchmark_case_set="dilu_highway_reactive_stress_v2",
+            baselines="speed_hold_20",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(report_exists)
 
 
 class NonLlmBaselinePolicyTests(unittest.TestCase):

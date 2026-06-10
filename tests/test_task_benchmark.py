@@ -593,6 +593,44 @@ class TaskBenchmarkTests(unittest.TestCase):
         self.assertTrue(result["summary"]["scheduled_event_validation_enabled"])
         self.assertEqual(result["summary"]["scheduled_event_validated_case_count"], 80)
 
+    def test_dilu_highway_reactive_stress_v2_case_set_validates(self):
+        case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v2")
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        config_path = os.path.join(repo_root, "config.example.yaml")
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        bundle = resolve_simulation_env_bundle(
+            config,
+            show_trajectories=False,
+            render_agent=False,
+            env_id_override=case_set["target_env_id"],
+            native_env_defaults_override=True,
+            env_config_overrides=case_set["defaults"]["env_overrides"],
+            require_discrete_meta_action=True,
+        )
+        result = validate_benchmark_case_set(
+            case_set,
+            bundle["env_config_map"],
+            bundle["env_id"],
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(case_set["benchmark_name"], "dilu_highway_reactive_stress_v2")
+        self.assertEqual(case_set["target_env_id"], "highway-fast-v0")
+        self.assertEqual(result["summary"]["total_cases"], 120)
+        self.assertEqual(len(case_set["categories"]), 10)
+        category_counts = {
+            category: sum(1 for case in case_set["cases"] if case["category"] == category)
+            for category in case_set["categories"]
+        }
+        self.assertTrue(all(count == 12 for count in category_counts.values()), category_counts)
+        self.assertEqual(
+            list(bundle["env_config_snapshot"]["action"]["target_speeds"]),
+            [0, 5, 10, 15, 20, 25, 30],
+        )
+        self.assertEqual(result["summary"]["scheduled_event_validated_case_count"], 120)
+        self.assertTrue(any((case.get("env_overrides") or {}).get("lanes_count") == 4 for case in case_set["cases"]))
+
     def test_benchmark_validation_checks_scheduled_events(self):
         case_set = load_benchmark_case_set("dilu_highway_reactive_stress_v1")
         bad_case = copy.deepcopy(case_set["cases"][0])
@@ -1013,6 +1051,60 @@ class TaskBenchmarkTests(unittest.TestCase):
         self.assertEqual(summary["cut_in_response_success_rate"], 0.5)
         self.assertEqual(summary["dynamic_dense_flow_success_rate"], 1.0)
 
+    def test_benchmark_summary_exposes_stress_v2_success_and_pressure_rates(self):
+        episodes = [
+            {
+                "category": "timed_gap_overtake",
+                "task_completed": True,
+                "ttc_score": 1.0,
+                "speed_variance_score": 0.9,
+                "time_efficiency_score": 0.8,
+                "overall_score": 0.9,
+                "driving_score": 0.9,
+                "benchmark_success_criteria": {"type": "timed_gap_overtake"},
+                "benchmark_valid_opportunity_step": 5,
+                "benchmark_maneuver_in_window": True,
+                "benchmark_passive_trap_failed": False,
+            },
+            {
+                "category": "timed_gap_overtake",
+                "task_completed": False,
+                "ttc_score": 0.8,
+                "speed_variance_score": 0.9,
+                "time_efficiency_score": 0.0,
+                "overall_score": 0.7,
+                "driving_score": 0.0,
+                "benchmark_success_criteria": {"type": "timed_gap_overtake"},
+                "benchmark_valid_opportunity_step": 5,
+                "benchmark_maneuver_in_window": False,
+                "benchmark_passive_trap_failed": True,
+            },
+            {
+                "category": "traffic_jam_escape",
+                "task_completed": True,
+                "ttc_score": 1.0,
+                "speed_variance_score": 0.8,
+                "time_efficiency_score": 0.8,
+                "overall_score": 0.85,
+                "driving_score": 0.85,
+                "benchmark_success_criteria": {"type": "traffic_jam_escape"},
+                "benchmark_valid_opportunity_step": 4,
+                "benchmark_maneuver_in_window": True,
+                "benchmark_passive_trap_failed": False,
+            },
+        ]
+
+        summary = summarize_benchmark_episodes(episodes)
+
+        self.assertEqual(summary["timed_gap_overtake_success_rate"], 0.5)
+        self.assertEqual(summary["traffic_jam_escape_success_rate"], 1.0)
+        self.assertEqual(summary["passive_trap_failure_rate"], 0.3333)
+        self.assertEqual(summary["timely_maneuver_opportunity_count"], 3)
+        self.assertEqual(summary["timely_maneuver_success_rate"], 0.6667)
+        category = summary["benchmark_by_category"]["timed_gap_overtake"]
+        self.assertEqual(category["passive_trap_failure_rate"], 0.5)
+        self.assertEqual(category["timely_maneuver_success_rate"], 0.5)
+
     def test_blocked_lane_patience_fails_if_lane_change_shield_fires(self):
         ego = _DummyVehicle(lane_rank=1, speed=22.0, x=0.0)
         front = _DummyVehicle(lane_rank=1, speed=18.0, x=28.0)
@@ -1267,6 +1359,261 @@ class TaskBenchmarkTests(unittest.TestCase):
         self.assertFalse(result["task_completed"])
         self.assertEqual(result["benchmark_unsafe_lane_change_attempts"], 1)
         self.assertFalse(result["benchmark_criteria_status"]["safety_satisfied"])
+
+    def test_stress_v2_timed_gap_overtake_requires_in_window_safe_pass(self):
+        ego = _DummyVehicle(lane_rank=1, speed=24.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=35.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        case = {
+            "case_id": "timed_gap_v2_test",
+            "category": "timed_gap_overtake",
+            "instruction": "timed gap test",
+            "time_limit_sec": 20,
+            "success_criteria": {
+                "type": "timed_gap_overtake",
+                "direction": "left",
+                "opportunity_start_step": 5,
+                "opportunity_end_step": 8,
+                "pass_margin_m": 8.0,
+                "min_final_speed_mps": 20.0,
+                "min_progress_m": 35.0,
+                "requires_event": False,
+                "hold_steps": 1,
+                "passive_trap": True,
+            },
+        }
+
+        no_maneuver_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(case), env)
+        no_maneuver_eval.update(
+            env,
+            5,
+            {"front_gap_m": 35.0, "ttc_sec": 5.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        no_maneuver_result = no_maneuver_eval.finalize(False, "completed")
+        self.assertFalse(no_maneuver_result["task_completed"])
+        self.assertTrue(no_maneuver_result["benchmark_passive_trap_failed"])
+
+        ego = _DummyVehicle(lane_rank=1, speed=24.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=35.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        early_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(case), env)
+        early_eval.update(
+            env,
+            3,
+            {"front_gap_m": 35.0, "ttc_sec": 5.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 0, "lane_change_shield_applied": True},
+        )
+        ego.lane_index = ("a", "b", 0)
+        ego.position[0] = 50.0
+        early_eval.update(
+            env,
+            6,
+            {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 0},
+        )
+        early_result = early_eval.finalize(False, "completed")
+        self.assertFalse(early_result["task_completed"])
+        self.assertEqual(early_result["benchmark_unsafe_lane_change_attempts"], 1)
+
+        ego = _DummyVehicle(lane_rank=1, speed=24.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=18.0, x=35.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        pass_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(case), env)
+        ego.lane_index = ("a", "b", 0)
+        ego.position[0] = 50.0
+        pass_eval.update(
+            env,
+            6,
+            {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 0},
+        )
+        pass_result = pass_eval.finalize(False, "completed")
+        self.assertTrue(pass_result["task_completed"])
+        self.assertTrue(pass_result["benchmark_maneuver_in_window"])
+        self.assertTrue(pass_result["benchmark_criteria_status"]["maneuver_in_window_satisfied"])
+
+    def test_stress_v2_traffic_jam_escape_fails_passive_and_passes_lane_escape(self):
+        case = {
+            "case_id": "jam_escape_v2_test",
+            "category": "traffic_jam_escape",
+            "instruction": "jam escape test",
+            "time_limit_sec": 20,
+            "success_criteria": {
+                "type": "traffic_jam_escape",
+                "direction": "left",
+                "opportunity_start_step": 3,
+                "opportunity_end_step": 10,
+                "min_final_speed_mps": 18.0,
+                "min_progress_m": 40.0,
+                "requires_event": False,
+                "hold_steps": 1,
+                "passive_trap": True,
+            },
+        }
+        ego = _DummyVehicle(lane_rank=1, speed=12.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=8.0, x=24.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        passive_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(case), env)
+        passive_eval.update(
+            env,
+            4,
+            {"front_gap_m": 24.0, "ttc_sec": 6.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        passive_result = passive_eval.finalize(False, "completed")
+        self.assertFalse(passive_result["task_completed"])
+        self.assertTrue(passive_result["benchmark_passive_trap_failed"])
+
+        ego = _DummyVehicle(lane_rank=1, speed=22.0, x=0.0)
+        front = _DummyVehicle(lane_rank=1, speed=8.0, x=24.0)
+        env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
+        escape_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(case), env)
+        ego.lane_index = ("a", "b", 0)
+        ego.position[0] = 45.0
+        escape_eval.update(
+            env,
+            4,
+            {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 0},
+        )
+        escape_result = escape_eval.finalize(False, "completed")
+        self.assertTrue(escape_result["task_completed"])
+        self.assertEqual(escape_result["benchmark_jam_exit_step"], 4)
+
+    def test_stress_v2_patience_rejects_early_lane_change_and_accepts_waiting(self):
+        case = {
+            "case_id": "jam_patience_v2_test",
+            "category": "traffic_jam_patience",
+            "instruction": "jam patience test",
+            "time_limit_sec": 20,
+            "success_criteria": {
+                "type": "traffic_jam_patience",
+                "safe_window_start_step": 8,
+                "min_progress_m": 20.0,
+                "max_lane_changes": 1,
+                "requires_event": False,
+                "hold_steps": 1,
+            },
+        }
+        ego = _DummyVehicle(lane_rank=1, speed=18.0, x=25.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 2, 3, 4])
+        early_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(case), env)
+        early_eval.update(
+            env,
+            4,
+            {"front_gap_m": 60.0, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 0, "lane_change_shield_applied": True},
+        )
+        early_result = early_eval.finalize(False, "completed")
+        self.assertFalse(early_result["task_completed"])
+        self.assertFalse(early_result["benchmark_criteria_status"]["no_early_maneuver_satisfied"])
+
+        ego = _DummyVehicle(lane_rank=1, speed=19.0, x=25.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 2, 3, 4])
+        wait_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(case), env)
+        ego.position[0] = 50.0
+        wait_eval.update(
+            env,
+            8,
+            {"front_gap_m": 60.0, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        wait_result = wait_eval.finalize(False, "completed")
+        self.assertTrue(wait_result["task_completed"])
+        self.assertTrue(wait_result["benchmark_criteria_status"]["no_early_maneuver_satisfied"])
+
+    def test_stress_v2_cut_in_and_stop_go_require_braking_and_recovery(self):
+        cut_case = {
+            "case_id": "cut_in_recover_v2_test",
+            "category": "cut_in_then_recover",
+            "instruction": "cut-in recover test",
+            "time_limit_sec": 20,
+            "success_criteria": {
+                "type": "cut_in_then_recover",
+                "clear_front_gap_m": 25.0,
+                "clear_front_ttc_sec": 4.0,
+                "min_recovery_speed_mps": 20.0,
+                "requires_event": False,
+                "requires_brake_action": True,
+                "hold_steps": 1,
+            },
+        }
+        ego = _DummyVehicle(lane_rank=1, speed=16.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 2, 3, 4])
+        missing_brake_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(cut_case), env)
+        ego.speed = 22.0
+        missing_brake_eval.update(
+            env,
+            10,
+            {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 1},
+        )
+        self.assertFalse(missing_brake_eval.finalize(False, "completed")["task_completed"])
+
+        ego = _DummyVehicle(lane_rank=1, speed=16.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 2, 3, 4])
+        recover_eval = BenchmarkEpisodeEvaluator(copy.deepcopy(cut_case), env)
+        recover_eval.update(
+            env,
+            3,
+            {"front_gap_m": 16.0, "ttc_sec": 2.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 4},
+        )
+        ego.speed = 22.0
+        recover_eval.update(
+            env,
+            10,
+            {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 3},
+        )
+        recover_result = recover_eval.finalize(False, "completed")
+        self.assertTrue(recover_result["task_completed"])
+        self.assertTrue(recover_result["benchmark_recovery_after_wave"])
+
+        wave_case = copy.deepcopy(cut_case)
+        wave_case["case_id"] = "stop_go_wave_v2_test"
+        wave_case["category"] = "stop_go_wave_response"
+        wave_case["success_criteria"].update(
+            {
+                "type": "stop_go_wave_response",
+                "min_recovery_speed_mps": 18.0,
+                "min_progress_m": 25.0,
+            }
+        )
+        ego = _DummyVehicle(lane_rank=1, speed=14.0, x=0.0)
+        env = _DummyEnv(ego, front_vehicle=None, available_actions=[0, 1, 2, 3, 4])
+        wave_eval = BenchmarkEpisodeEvaluator(wave_case, env)
+        wave_eval.update(
+            env,
+            3,
+            {"front_gap_m": 18.0, "ttc_sec": 3.0, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 4},
+        )
+        ego.speed = 20.0
+        ego.position[0] = 30.0
+        wave_eval.update(
+            env,
+            12,
+            {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
+            crashed=False,
+            action_context={"final_action_id": 3},
+        )
+        wave_result = wave_eval.finalize(False, "completed")
+        self.assertTrue(wave_result["task_completed"])
+        self.assertTrue(wave_result["benchmark_criteria_status"]["recovery_speed_satisfied"])
 
     def test_merge_complete_requires_progress_speed_and_hold_steps(self):
         ego = _DummyVehicle(lane_rank=1, speed=10.0, x=0.0)
