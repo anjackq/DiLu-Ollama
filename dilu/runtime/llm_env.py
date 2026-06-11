@@ -121,6 +121,27 @@ def _set_env_if_present(name: str, value: Optional[str]) -> None:
         os.environ[name] = str(value).strip()
 
 
+def _apply_ollama_resource_controls(config: Dict[str, Any]) -> None:
+    """
+    Export optional Ollama runtime controls for the current evaluation process.
+
+    These keys are intentionally opt-in so the standard config does not silently
+    change local Ollama behavior. `DILU_OLLAMA_NUM_CTX` is consumed by the
+    DriverAgent native /api/chat payload, while OLLAMA_* variables are useful
+    when Ollama is started from the same process environment.
+    """
+    mappings = {
+        "ollama_runtime_num_ctx": "DILU_OLLAMA_NUM_CTX",
+        "ollama_runtime_keep_alive": "DILU_OLLAMA_KEEP_ALIVE",
+        "ollama_runtime_max_loaded_models": "OLLAMA_MAX_LOADED_MODELS",
+        "ollama_runtime_num_parallel": "OLLAMA_NUM_PARALLEL",
+        "ollama_runtime_max_queue": "OLLAMA_MAX_QUEUE",
+    }
+    for config_key, env_key in mappings.items():
+        if config.get(config_key) is not None:
+            _set_env_if_present(env_key, str(config.get(config_key)))
+
+
 def openai_compatible_default_headers_from_env() -> Dict[str, str]:
     headers: Dict[str, str] = {}
     referer = os.environ.get("OPENROUTER_HTTP_REFERER")
@@ -264,6 +285,7 @@ def configure_runtime_env(
     if api_type == "ollama":
         if not selected_model:
             raise ValueError("OLLAMA_CHAT_MODEL must be set when OPENAI_API_TYPE is 'ollama'.")
+        _apply_ollama_resource_controls(config)
         ollama_api_base = str(config.get("OLLAMA_API_BASE", "http://localhost:11434/v1"))
         ollama_api_key = str(config.get("OLLAMA_API_KEY", "ollama"))
         ollama_think_mode = normalize_ollama_think_mode(config.get("OLLAMA_THINK_MODE", "auto"))

@@ -54,6 +54,20 @@ OLLAMA_THINK_MODE: 'auto'
 OLLAMA_USE_NATIVE_CHAT: auto
 OLLAMA_NATIVE_CHAT_TIMEOUT_SEC: 60
 
+# Optional local Ollama resource controls for long SLM/LLM benchmark campaigns.
+# Leave unset for normal interactive runs. For full highway stress campaigns,
+# a 4096-token context is usually enough for DiLu action prompts and avoids the
+# high VRAM/KV-cache cost of Ollama's larger server defaults. To reuse the
+# model within one case but release resources between cases, set a nonzero
+# keep_alive and enable ollama_unload_after_case.
+# ollama_runtime_num_ctx: 4096
+# ollama_runtime_keep_alive: "10m"
+# ollama_unload_after_case: true
+# ollama_unload_after_case_timeout_sec: 15
+# ollama_runtime_max_loaded_models: 1
+# ollama_runtime_num_parallel: 1
+# ollama_runtime_max_queue: 1
+
 ############ DiLu settings ############
 reflection_module: false
 reflection_interactive: true

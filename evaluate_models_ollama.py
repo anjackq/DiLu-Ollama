@@ -669,6 +669,27 @@ def _merge_count_dicts(episodes: List[Dict], field_name: str) -> Dict[str, int]:
     return _counter_dict(merged)
 
 
+def _summarize_ollama_case_unloads(episodes: List[Dict]) -> Dict[str, Any]:
+    attempts = 0
+    successes = 0
+    failures = 0
+    for episode in episodes:
+        unload_result = episode.get("ollama_case_unload")
+        if not isinstance(unload_result, dict) or not unload_result.get("attempted"):
+            continue
+        attempts += 1
+        if bool(unload_result.get("ok")):
+            successes += 1
+        else:
+            failures += 1
+    return {
+        "ollama_case_unload_attempts": int(attempts),
+        "ollama_case_unload_successes": int(successes),
+        "ollama_case_unload_failures": int(failures),
+        "ollama_case_unload_success_rate": round(successes / attempts, 4) if attempts else None,
+    }
+
+
 def _scenario_ego_speed_mps(sce: EnvScenario) -> Optional[float]:
     try:
         return round(float(getattr(sce.env.unwrapped.vehicle, "speed")), 4)
@@ -921,6 +942,77 @@ def _config_as_bool(value, default: bool) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _sanitize_process_output(text: Any, *, limit: int = 500) -> str:
+    if text is None:
+        return ""
+    cleaned = ANSI_ESCAPE_PATTERN.sub("", str(text))
+    cleaned = "".join(
+        char
+        for char in cleaned
+        if char in {"\n", "\r", "\t"} or (ord(char) >= 32 and ord(char) != 127)
+    )
+    return cleaned.strip()[: max(0, int(limit))]
+
+
+def _ollama_case_unload_policy(config: Dict[str, Any]) -> Dict[str, Any]:
+    enabled = _config_as_bool(config.get("ollama_unload_after_case", False), default=False)
+    try:
+        timeout_sec = float(config.get("ollama_unload_after_case_timeout_sec", 10) or 10)
+    except Exception:
+        timeout_sec = 10.0
+    return {
+        "enabled": bool(enabled),
+        "method": "ollama_stop_model" if enabled else None,
+        "timeout_sec": max(1.0, timeout_sec),
+    }
+
+
+def _stop_ollama_model_after_case(config: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+    policy = _ollama_case_unload_policy(config)
+    if not policy["enabled"]:
+        return {"attempted": False, "enabled": False}
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            ["ollama", "stop", str(model_name)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=float(policy["timeout_sec"]),
+        )
+        return {
+            "attempted": True,
+            "enabled": True,
+            "ok": proc.returncode == 0,
+            "method": policy["method"],
+            "model": str(model_name),
+            "returncode": proc.returncode,
+            "elapsed_sec": round(time.time() - started, 3),
+            "stdout": _sanitize_process_output(proc.stdout),
+            "stderr": _sanitize_process_output(proc.stderr),
+        }
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "enabled": True,
+            "ok": False,
+            "method": policy["method"],
+            "model": str(model_name),
+            "elapsed_sec": round(time.time() - started, 3),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _maybe_stop_ollama_after_preflight(config: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+    result = _stop_ollama_model_after_case(config, model_name)
+    if result.get("attempted"):
+        result["phase"] = "preflight"
+    return result
+
+
 def _resolve_simulation_duration(
     config: Dict,
     env_config_snapshot: Optional[Dict[str, Any]] = None,
@@ -1034,6 +1126,51 @@ def _ollama_v1_chat_completions_url(api_base: str) -> str:
     return f"{base}/chat/completions"
 
 
+OLLAMA_RUNTIME_CONTROL_CONFIG_KEYS = {
+    "ollama_runtime_num_ctx": "DILU_OLLAMA_NUM_CTX",
+    "ollama_runtime_keep_alive": "DILU_OLLAMA_KEEP_ALIVE",
+    "ollama_runtime_max_loaded_models": "OLLAMA_MAX_LOADED_MODELS",
+    "ollama_runtime_num_parallel": "OLLAMA_NUM_PARALLEL",
+    "ollama_runtime_max_queue": "OLLAMA_MAX_QUEUE",
+}
+
+
+def _ollama_runtime_controls_report(config: Dict[str, Any]) -> Dict[str, Any]:
+    exported_env = {
+        env_key: os.environ.get(env_key)
+        for env_key in OLLAMA_RUNTIME_CONTROL_CONFIG_KEYS.values()
+        if os.environ.get(env_key) is not None
+    }
+    return {
+        "configured": {
+            key: config.get(key)
+            for key in OLLAMA_RUNTIME_CONTROL_CONFIG_KEYS
+            if config.get(key) is not None
+        },
+        "exported_env": exported_env,
+        # Deprecated alias for one transition cycle.
+        "effective_env": dict(exported_env),
+        "server_env_notice": (
+            "OLLAMA_* server environment variables affect the Ollama server only if "
+            "the server was started from this environment. Native per-request "
+            "num_ctx, num_predict, and keep_alive controls are sent in request payloads."
+        ),
+    }
+
+
+def _ollama_native_probe_options(config: Dict[str, Any]) -> Dict[str, Any]:
+    options: Dict[str, Any] = {"num_predict": 8, "temperature": 0}
+    num_ctx = config.get("ollama_runtime_num_ctx")
+    if num_ctx is not None:
+        try:
+            parsed = int(num_ctx)
+        except Exception:
+            parsed = 0
+        if parsed > 0:
+            options["num_ctx"] = parsed
+    return options
+
+
 def _ollama_preflight_probe(config: Dict, model_name: str, timeout_sec: float) -> Dict:
     api_base = str(config.get("OLLAMA_API_BASE", "http://localhost:11434/v1"))
     api_key = str(config.get("OLLAMA_API_KEY", "ollama"))
@@ -1053,7 +1190,10 @@ def _ollama_preflight_probe(config: Dict, model_name: str, timeout_sec: float) -
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
+            "options": _ollama_native_probe_options(config),
         }
+        if config.get("ollama_runtime_keep_alive") is not None:
+            payload["keep_alive"] = str(config.get("ollama_runtime_keep_alive"))
         if think_mode == "think":
             payload["think"] = True
         elif think_mode == "no_think":
@@ -1109,10 +1249,13 @@ def _run_ollama_preflight(
         print(
             f"[cyan]Ollama preflight:[/cyan] probing {len(model_names)} model(s) "
             f"with timeout={timeout_sec:.1f}s"
-        )
+    )
     for model_name in model_names:
         try:
             probe = _ollama_preflight_probe(config, model_name, timeout_sec)
+            preflight_unload = _maybe_stop_ollama_after_preflight(config, model_name)
+            if preflight_unload.get("attempted"):
+                probe["ollama_preflight_unload"] = preflight_unload
             results.append(probe)
             if not quiet_mode:
                 preview = probe.get("response_preview") or "<empty>"
@@ -1143,6 +1286,9 @@ def _run_ollama_preflight(
                 "error": f"{type(exc).__name__}: {exc}",
                 "status_code": status_code,
             }
+            preflight_unload = _maybe_stop_ollama_after_preflight(config, model_name)
+            if preflight_unload.get("attempted"):
+                failure["ollama_preflight_unload"] = preflight_unload
             results.append(failure)
             failures.append(failure)
     return results
@@ -2313,6 +2459,7 @@ def aggregate_results(
             if ollama_native_timeout_rate_mean >= 0.95
             else "decision_timeout_collapse"
         )
+    ollama_case_unload_summary = _summarize_ollama_case_unloads(episodes)
     aggregate = {
         "model": model_name,
         "episodes": total,
@@ -2375,6 +2522,7 @@ def aggregate_results(
         "ollama_native_timeout_episode_rate": round(ollama_native_timeout_episode_count / total, 4) if total else None,
         "ollama_downgrade_episode_count": ollama_downgrade_episode_count,
         "ollama_downgrade_episode_rate": round(ollama_downgrade_episode_count / total, 4) if total else None,
+        **ollama_case_unload_summary,
         "episodes_stopped_by_timeout_cap": timeout_cap_stops,
         "response_delimiter_rate": round(total_delimiters / total_decisions, 4) if total_decisions else None,
         "response_strict_format_rate": round(total_strict / total_decisions, 4) if total_decisions else None,
@@ -3183,6 +3331,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     ollama_preflight_warning = None
     preflight_skip_models: Dict[str, Dict[str, Any]] = {}
     if provider == "ollama" and ollama_preflight_enabled:
+        configure_runtime_env(
+            config,
+            chat_model_override=args.models[0],
+            mode="eval",
+            quiet_override=step_log_quiet_mode,
+            progress_override=progress_enabled,
+        )
         ollama_preflight_results = _run_ollama_preflight(
             config,
             args.models,
@@ -3302,6 +3457,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         "performance_mode_requested": requested_performance_mode,
         "performance_mode_effective": performance_mode_effective,
         "performance_optimizations_applied": sorted(set(performance_optimizations_applied)),
+        "ollama_runtime_controls": _ollama_runtime_controls_report(config) if provider == "ollama" else {},
+        "ollama_case_unload_policy": _ollama_case_unload_policy(config) if provider == "ollama" else {},
         "ollama_preflight_enabled": bool(provider == "ollama" and ollama_preflight_enabled),
         "ollama_preflight_timeout_sec": ollama_preflight_timeout_sec if provider == "ollama" else None,
         "measurement_hard_preflight_policy": (
@@ -3423,6 +3580,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             "performance_mode_requested": requested_performance_mode,
             "performance_mode_effective": performance_mode_effective,
             "performance_optimizations_applied": sorted(set(performance_optimizations_applied)),
+            "ollama_runtime_controls": _ollama_runtime_controls_report(config) if provider == "ollama" else {},
+            "ollama_case_unload_policy": _ollama_case_unload_policy(config) if provider == "ollama" else {},
             "ollama_preflight_enabled": bool(provider == "ollama" and ollama_preflight_enabled),
             "ollama_preflight_timeout_sec": ollama_preflight_timeout_sec if provider == "ollama" else None,
             "measurement_hard_preflight_policy": measurement_hard_preflight_policy if provider == "ollama" else None,
@@ -3598,6 +3757,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                 progress_override=progress_enabled,
             )
             apply_model_policy_to_env(resolved_policy, provider=provider)
+            model_ollama_runtime_controls = (
+                _ollama_runtime_controls_report(config) if provider == "ollama" else {}
+            )
+            model_ollama_case_unload_policy = (
+                _ollama_case_unload_policy(config) if provider == "ollama" else {}
+            )
 
             report["model_runtime_policies"][model_name] = {
                 "decision_timeout_sec": round(resolved_decision_timeout_sec, 3),
@@ -3613,12 +3778,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "eval_timeout_recovery_successes": eval_timeout_policy_preview.get("recovery_successes_required"),
                 "eval_timeout_legacy_fields_ignored": list(eval_timeout_legacy_fields_ignored),
                 "timeout_early_stop_policy": dict(timeout_early_stop_policy),
+                "ollama_runtime_controls": model_ollama_runtime_controls,
+                "ollama_case_unload_policy": model_ollama_case_unload_policy,
                 # Deprecated alias key for one transition cycle.
                 "native_timeout_penalty": decision_timeout_penalty_snapshot(baseline_timeout_penalty_state),
             }
             model_metrics_configs[model_name] = {
                 **dict(report["metrics_config"]),
                 "resolved_model_policy": dict(report["model_runtime_policies"][model_name]),
+                "ollama_runtime_controls": model_ollama_runtime_controls,
+                "ollama_case_unload_policy": model_ollama_case_unload_policy,
             }
             emit(f"\n[bold cyan]Evaluating model[/bold cyan]: {model_name}")
             source_parts = []
@@ -3848,41 +4017,53 @@ def main(argv: Optional[List[str]] = None) -> None:
                             "case_id": benchmark_case.get("case_id") if benchmark_case is not None else None,
                         }
                     )
-                episode_result = run_episode(
-                    config=config,
-                    env_config=case_env_config,
-                    env_type=env_type,
-                    agent_memory=shared_agent_memory,
-                    seed=seed,
-                    few_shot_num=few_shot_num,
-                    temp_dir=temp_dir,
-                    ttc_threshold_sec=ttc_threshold_sec,
-                    headway_threshold_m=headway_threshold_m,
-                    rear_ttc_threshold_sec=rear_ttc_threshold_sec,
-                    rear_headway_threshold_m=rear_headway_threshold_m,
-                    low_speed_blocking_threshold_mps=low_speed_blocking_threshold_mps,
-                    blocking_front_gap_safe_m=blocking_front_gap_safe_m,
-                    blocking_front_ttc_safe_sec=blocking_front_ttc_safe_sec,
-                    stop_threshold_mps=stop_threshold_mps,
-                    near_stop_threshold_mps=near_stop_threshold_mps,
-                    alignment_sample_rate=alignment_sample_rate,
-                    alignment_max_samples=alignment_max_samples,
-                    slow_decision_threshold_sec=slow_decision_threshold_sec,
-                    timeout_penalty_state=timeout_penalty_state,
-                    save_artifacts=save_run_artifacts,
-                    record_video=record_video,
-                    run_dir=model_run_dir,
-                    run_id=eval_run_id if save_run_artifacts else None,
-                    model_name=model_name,
-                    quiet_mode=step_log_quiet_mode,
-                    enable_db_logging=bool(save_run_artifacts),
-                    on_step=_on_step if progress is not None else None,
-                    on_decision=_on_decision if progress is not None else None,
-                    benchmark_case=benchmark_case,
-                    driving_instruction=case_instruction,
-                    max_steps_override=case_max_steps,
-                    timeout_early_stop_policy=timeout_early_stop_policy,
-                )
+                ollama_case_unload_result: Dict[str, Any] = {}
+                try:
+                    episode_result = run_episode(
+                        config=config,
+                        env_config=case_env_config,
+                        env_type=env_type,
+                        agent_memory=shared_agent_memory,
+                        seed=seed,
+                        few_shot_num=few_shot_num,
+                        temp_dir=temp_dir,
+                        ttc_threshold_sec=ttc_threshold_sec,
+                        headway_threshold_m=headway_threshold_m,
+                        rear_ttc_threshold_sec=rear_ttc_threshold_sec,
+                        rear_headway_threshold_m=rear_headway_threshold_m,
+                        low_speed_blocking_threshold_mps=low_speed_blocking_threshold_mps,
+                        blocking_front_gap_safe_m=blocking_front_gap_safe_m,
+                        blocking_front_ttc_safe_sec=blocking_front_ttc_safe_sec,
+                        stop_threshold_mps=stop_threshold_mps,
+                        near_stop_threshold_mps=near_stop_threshold_mps,
+                        alignment_sample_rate=alignment_sample_rate,
+                        alignment_max_samples=alignment_max_samples,
+                        slow_decision_threshold_sec=slow_decision_threshold_sec,
+                        timeout_penalty_state=timeout_penalty_state,
+                        save_artifacts=save_run_artifacts,
+                        record_video=record_video,
+                        run_dir=model_run_dir,
+                        run_id=eval_run_id if save_run_artifacts else None,
+                        model_name=model_name,
+                        quiet_mode=step_log_quiet_mode,
+                        enable_db_logging=bool(save_run_artifacts),
+                        on_step=_on_step if progress is not None else None,
+                        on_decision=_on_decision if progress is not None else None,
+                        benchmark_case=benchmark_case,
+                        driving_instruction=case_instruction,
+                        max_steps_override=case_max_steps,
+                        timeout_early_stop_policy=timeout_early_stop_policy,
+                    )
+                finally:
+                    if provider == "ollama":
+                        ollama_case_unload_result = _stop_ollama_model_after_case(config, model_name)
+                if ollama_case_unload_result.get("attempted"):
+                    episode_result["ollama_case_unload"] = ollama_case_unload_result
+                    if not ollama_case_unload_result.get("ok", False):
+                        emit(
+                            "[yellow]  Ollama case-unload warning:[/yellow] "
+                            f"{ollama_case_unload_result.get('error') or ollama_case_unload_result.get('stderr')}"
+                        )
                 measurement = monitor.stop_episode() if (measurement_mode and monitor is not None) else {}
                 if measurement_mode:
                     episode_wall_time_end = datetime.now().isoformat(timespec="seconds")

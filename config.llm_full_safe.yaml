@@ -1,0 +1,30 @@
+############ Full SLM/LLM benchmark safety profile ############
+# Inherit the active local simulation profile, but turn off expensive optional
+# runtime features that can compound Ollama CPU/GPU pressure during long runs.
+
+base_config: config.yaml
+
+############ Output / artifact pressure ############
+eval_record_video: false
+eval_save_run_artifacts: false
+
+############ Parser resource pressure ############
+# Keep strict/numeric and deterministic semantic recovery, but avoid loading a
+# second local resolver model during full benchmark campaigns.
+eval_enable_intent_resolver: false
+
+############ Ollama runtime pressure ############
+# Force native /api/chat in this safety profile so per-call num_ctx,
+# num_predict, and keep_alive controls are honored for every local model.
+OLLAMA_USE_NATIVE_CHAT: true
+
+# Keep the model warm within a case for speed, then unload it after each case.
+# `ollama_runtime_num_ctx` is sent directly in native /api/chat payloads as
+# options.num_ctx.
+ollama_runtime_num_ctx: 4096
+ollama_runtime_keep_alive: "10m"
+ollama_unload_after_case: true
+ollama_unload_after_case_timeout_sec: 15
+ollama_runtime_max_loaded_models: 1
+ollama_runtime_num_parallel: 1
+ollama_runtime_max_queue: 1

@@ -359,6 +359,135 @@ class DriverAgentRuntimeContractTests(unittest.TestCase):
         self.assertEqual(diagnostics["output_tokens"], 7)
         self.assertEqual(agent.last_ollama_transport, "openai_compat_direct")
 
+    def test_ollama_native_chat_payload_uses_num_predict_and_safe_controls(self):
+        agent = DriverAgent.__new__(DriverAgent)
+        agent.oai_api_type = "ollama"
+        agent.ollama_use_native_chat = True
+        agent.ollama_model_name = "qwen3:4b"
+        agent.ollama_api_key = "ollama"
+        agent.ollama_chat_url = "http://localhost:11434/api/chat"
+        agent.ollama_think_mode = "no_think"
+        agent.ollama_model_think_heuristic = True
+        agent.ollama_native_think_supported = None
+        agent.ollama_think_downgrade_noted = False
+        agent.ollama_native_timed_out = False
+        agent.ollama_native_chat_timeout_sec = 10.0
+        agent.decision_timeout_sec = 10.0
+        agent.temperature = 0.0
+        agent.max_tokens = 512
+        agent.runtime_max_output_tokens = 128
+        agent.ollama_native_num_ctx = 4096
+        agent.ollama_native_keep_alive = "0"
+        agent.last_ollama_transport = None
+        agent.last_ollama_effective_think_mode = None
+        agent.last_ollama_native_retry_used = False
+        agent.last_ollama_native_timeout = False
+        agent.last_ollama_native_timeout_short_circuit = False
+        agent.last_ollama_native_num_predict = None
+        agent.last_ollama_native_num_ctx = None
+        agent.last_ollama_native_keep_alive = None
+        captured_payloads = []
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "message": {"content": "Response to user:#### 3", "thinking": ""},
+                    "prompt_eval_count": 9,
+                    "eval_count": 4,
+                }
+
+        def _post(url, headers=None, json=None, timeout=None):
+            captured_payloads.append(
+                {
+                    "url": url,
+                    "headers": headers,
+                    "json": json,
+                    "timeout": timeout,
+                }
+            )
+            return _Response()
+
+        messages = [
+            SystemMessage(content="System contract."),
+            HumanMessage(content="Current scenario."),
+        ]
+        with patch("dilu.driver_agent.driverAgent.requests.post", side_effect=_post):
+            content, usage, diagnostics = agent._invoke_response_with_diagnostics(
+                messages,
+                max_output_tokens_override=128,
+            )
+
+        payload = captured_payloads[0]["json"]
+        self.assertEqual(content, "Response to user:#### 3")
+        self.assertEqual(captured_payloads[0]["url"], "http://localhost:11434/api/chat")
+        self.assertEqual(payload["model"], "qwen3:4b")
+        self.assertFalse(payload["stream"])
+        self.assertFalse(payload["think"])
+        self.assertEqual(payload["options"]["num_predict"], 128)
+        self.assertEqual(payload["options"]["num_ctx"], 4096)
+        self.assertEqual(payload["options"]["temperature"], 0.0)
+        self.assertEqual(payload["keep_alive"], "0")
+        self.assertEqual(diagnostics["ollama_native_num_predict"], 128)
+        self.assertEqual(diagnostics["ollama_native_num_ctx"], 4096)
+        self.assertEqual(diagnostics["ollama_native_keep_alive"], "0")
+        self.assertEqual(usage["completion_tokens"], 4)
+        self.assertEqual(agent.last_ollama_transport, "native")
+
+    def test_ollama_native_chat_payload_omits_optional_controls_when_unset(self):
+        agent = DriverAgent.__new__(DriverAgent)
+        agent.oai_api_type = "ollama"
+        agent.ollama_use_native_chat = True
+        agent.ollama_model_name = "qwen3:4b"
+        agent.ollama_api_key = "ollama"
+        agent.ollama_chat_url = "http://localhost:11434/api/chat"
+        agent.ollama_think_mode = "no_think"
+        agent.ollama_model_think_heuristic = True
+        agent.ollama_native_think_supported = None
+        agent.ollama_think_downgrade_noted = False
+        agent.ollama_native_timed_out = False
+        agent.ollama_native_chat_timeout_sec = 10.0
+        agent.decision_timeout_sec = 10.0
+        agent.temperature = 0.0
+        agent.max_tokens = 512
+        agent.runtime_max_output_tokens = 128
+        agent.ollama_native_num_ctx = None
+        agent.ollama_native_keep_alive = None
+        agent.last_ollama_transport = None
+        agent.last_ollama_effective_think_mode = None
+        agent.last_ollama_native_retry_used = False
+        agent.last_ollama_native_timeout = False
+        agent.last_ollama_native_timeout_short_circuit = False
+        agent.last_ollama_native_num_predict = None
+        agent.last_ollama_native_num_ctx = None
+        agent.last_ollama_native_keep_alive = None
+        captured_payloads = []
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "message": {"content": "Response to user:#### 3", "thinking": ""},
+                    "prompt_eval_count": 9,
+                    "eval_count": 4,
+                }
+
+        def _post(url, headers=None, json=None, timeout=None):
+            captured_payloads.append({"json": json})
+            return _Response()
+
+        with patch("dilu.driver_agent.driverAgent.requests.post", side_effect=_post):
+            agent._invoke_response_with_diagnostics([HumanMessage(content="Current scenario.")])
+
+        payload = captured_payloads[0]["json"]
+        self.assertEqual(payload["options"]["num_predict"], 128)
+        self.assertNotIn("num_ctx", payload["options"])
+        self.assertNotIn("keep_alive", payload)
+
 
 class OpenRouterRuntimeEnvTests(unittest.TestCase):
     def test_openrouter_config_uses_openai_compatible_env_and_headers(self):
@@ -431,6 +560,45 @@ class OpenRouterRuntimeEnvTests(unittest.TestCase):
         self.assertEqual(env_snapshot["DILU_INTENT_RESOLVER_TIMEOUT_SEC"], "7")
         self.assertEqual(env_snapshot["DILU_INTENT_RESOLVER_MAX_OUTPUT_TOKENS"], "24")
         self.assertEqual(env_snapshot["DILU_INTENT_RESOLVER_ABSTAIN_ON_AMBIGUOUS"], "1")
+
+    def test_ollama_resource_controls_export_runtime_env(self):
+        config = {
+            "OPENAI_API_TYPE": "ollama",
+            "OLLAMA_CHAT_MODEL": "qwen3:4b",
+            "OLLAMA_EMBED_MODEL": "qwen3-embedding:8b",
+            "ollama_runtime_num_ctx": 4096,
+            "ollama_runtime_keep_alive": "0",
+            "ollama_runtime_max_loaded_models": 1,
+            "ollama_runtime_num_parallel": 1,
+            "ollama_runtime_max_queue": 1,
+        }
+
+        with patch.dict(os.environ, {}, clear=True):
+            configure_runtime_env(config, mode="eval", quiet_override=True, progress_override=False)
+            env_snapshot = dict(os.environ)
+
+        self.assertEqual(env_snapshot["DILU_OLLAMA_NUM_CTX"], "4096")
+        self.assertEqual(env_snapshot["DILU_OLLAMA_KEEP_ALIVE"], "0")
+        self.assertEqual(env_snapshot["OLLAMA_MAX_LOADED_MODELS"], "1")
+        self.assertEqual(env_snapshot["OLLAMA_NUM_PARALLEL"], "1")
+        self.assertEqual(env_snapshot["OLLAMA_MAX_QUEUE"], "1")
+
+    def test_ollama_resource_controls_are_not_exported_when_unconfigured(self):
+        config = {
+            "OPENAI_API_TYPE": "ollama",
+            "OLLAMA_CHAT_MODEL": "llama3.2:3b",
+            "OLLAMA_EMBED_MODEL": "qwen3-embedding:8b",
+        }
+
+        with patch.dict(os.environ, {}, clear=True):
+            configure_runtime_env(config, mode="eval", quiet_override=True, progress_override=False)
+            env_snapshot = dict(os.environ)
+
+        self.assertNotIn("DILU_OLLAMA_NUM_CTX", env_snapshot)
+        self.assertNotIn("DILU_OLLAMA_KEEP_ALIVE", env_snapshot)
+        self.assertNotIn("OLLAMA_MAX_LOADED_MODELS", env_snapshot)
+        self.assertNotIn("OLLAMA_NUM_PARALLEL", env_snapshot)
+        self.assertNotIn("OLLAMA_MAX_QUEUE", env_snapshot)
 
 
 class OllamaTransportResolverTests(unittest.TestCase):

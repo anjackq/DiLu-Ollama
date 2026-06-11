@@ -122,6 +122,17 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_positive_int_or_none(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -222,6 +233,8 @@ class DriverAgent:
         )
         self.ollama_think_mode = _normalize_ollama_think_mode(os.getenv("OLLAMA_THINK_MODE", "auto"))
         self.ollama_native_chat_timeout_sec = _env_float("OLLAMA_NATIVE_CHAT_TIMEOUT_SEC", self.decision_timeout_sec)
+        self.ollama_native_num_ctx = _env_positive_int_or_none("DILU_OLLAMA_NUM_CTX")
+        self.ollama_native_keep_alive = str(os.getenv("DILU_OLLAMA_KEEP_ALIVE", "") or "").strip() or None
         self.ollama_chat_url = _ollama_native_chat_url(os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1"))
         self.ollama_model_name = os.getenv("OLLAMA_CHAT_MODEL")
         self.ollama_api_key = os.getenv("OLLAMA_API_KEY", "ollama")
@@ -242,6 +255,9 @@ class DriverAgent:
         self.last_ollama_native_retry_used = False
         self.last_ollama_native_timeout = False
         self.last_ollama_native_timeout_short_circuit = False
+        self.last_ollama_native_num_predict = None
+        self.last_ollama_native_num_ctx = None
+        self.last_ollama_native_keep_alive = None
         self.last_decision_meta = {
             "timed_out": False,
             "used_fallback": False,
@@ -265,6 +281,9 @@ class DriverAgent:
             "ollama_native_retry_used": False,
             "ollama_native_timeout": False,
             "ollama_native_timeout_short_circuit": False,
+            "ollama_native_num_predict": None,
+            "ollama_native_num_ctx": None,
+            "ollama_native_keep_alive": None,
             "prompt_tokens": None,
             "completion_tokens": None,
             "total_tokens": None,
@@ -968,6 +987,13 @@ class DriverAgent:
             "output_tokens": _safe_int(token_usage.get("completion_tokens"), default=0),
         }
 
+    def _ollama_native_runtime_diagnostics(self) -> Dict[str, Any]:
+        return {
+            "ollama_native_num_predict": self.last_ollama_native_num_predict,
+            "ollama_native_num_ctx": self.last_ollama_native_num_ctx,
+            "ollama_native_keep_alive": self.last_ollama_native_keep_alive,
+        }
+
     def _invoke_response_with_diagnostics(
         self,
         messages,
@@ -976,6 +1002,7 @@ class DriverAgent:
         if self.oai_api_type == "ollama" and self.ollama_use_native_chat:
             content, _thinking, usage = self._ollama_native_invoke(messages)
             diagnostics = self._runtime_response_diagnostics_for_text(content, usage)
+            diagnostics.update(self._ollama_native_runtime_diagnostics())
             return content, usage, diagnostics
 
         if self.oai_api_type == "ollama":
@@ -1058,6 +1085,33 @@ class DriverAgent:
         elif mode == "no_think":
             payload["think"] = False
         return payload
+
+    def _ollama_native_options(self) -> Dict[str, Any]:
+        output_cap = max(
+            1,
+            int(
+                getattr(self, "runtime_max_output_tokens", None)
+                or getattr(self, "max_tokens", 512)
+                or 512
+            ),
+        )
+        options: Dict[str, Any] = {
+            "num_predict": output_cap,
+            "temperature": float(getattr(self, "temperature", 0.0) or 0.0),
+        }
+        self.last_ollama_native_num_predict = output_cap
+        num_ctx = getattr(self, "ollama_native_num_ctx", None)
+        if num_ctx is not None:
+            options["num_ctx"] = int(num_ctx)
+            self.last_ollama_native_num_ctx = int(num_ctx)
+        else:
+            self.last_ollama_native_num_ctx = None
+        return options
+
+    def _ollama_native_keep_alive(self) -> str | None:
+        keep_alive = getattr(self, "ollama_native_keep_alive", None)
+        self.last_ollama_native_keep_alive = keep_alive
+        return keep_alive
 
     def _ollama_request_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.ollama_api_key}"}
@@ -1150,7 +1204,11 @@ class DriverAgent:
             "model": self.ollama_model_name,
             "messages": self._to_ollama_messages(messages),
             "stream": False,
+            "options": self._ollama_native_options(),
         }
+        keep_alive = self._ollama_native_keep_alive()
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         payload = self._apply_ollama_think_mode(payload, mode=think_mode)
         response = requests.post(
             self.ollama_chat_url,
@@ -1172,7 +1230,11 @@ class DriverAgent:
             "model": self.ollama_model_name,
             "messages": self._to_ollama_messages(messages),
             "stream": True,
+            "options": self._ollama_native_options(),
         }
+        keep_alive = self._ollama_native_keep_alive()
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         payload = self._apply_ollama_think_mode(payload, mode=think_mode)
         content_chunks = []
         thinking_chunks = []
@@ -1460,6 +1522,9 @@ class DriverAgent:
             "ollama_native_retry_used": False,
             "ollama_native_timeout": False,
             "ollama_native_timeout_short_circuit": False,
+            "ollama_native_num_predict": None,
+            "ollama_native_num_ctx": None,
+            "ollama_native_keep_alive": None,
             "prompt_tokens": None,
             "completion_tokens": None,
             "total_tokens": None,
@@ -1537,6 +1602,7 @@ class DriverAgent:
                 decision_meta["ollama_native_retry_used"] = bool(self.last_ollama_native_retry_used)
                 decision_meta["ollama_native_timeout"] = bool(self.last_ollama_native_timeout)
                 decision_meta["ollama_native_timeout_short_circuit"] = bool(self.last_ollama_native_timeout_short_circuit)
+                decision_meta.update(self._ollama_native_runtime_diagnostics())
             token_usage = build_whitespace_estimate_token_usage(0)
             decision_meta.update(token_usage)
             self.last_decision_meta = decision_meta
@@ -1685,6 +1751,7 @@ class DriverAgent:
             decision_meta["ollama_native_retry_used"] = bool(self.last_ollama_native_retry_used)
             decision_meta["ollama_native_timeout"] = bool(self.last_ollama_native_timeout)
             decision_meta["ollama_native_timeout_short_circuit"] = bool(self.last_ollama_native_timeout_short_circuit)
+            decision_meta.update(self._ollama_native_runtime_diagnostics())
         if token_usage is None:
             token_usage = build_whitespace_estimate_token_usage(
                 estimate_generated_tokens(response_content)

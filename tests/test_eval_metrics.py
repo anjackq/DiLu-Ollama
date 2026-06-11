@@ -1,15 +1,23 @@
 import unittest
 from unittest.mock import patch
 
+from dilu.runtime import load_runtime_config
+
 from evaluate_models_ollama import (
     _annotate_aggregate_with_ollama_preflight_status,
     _build_skipped_model_aggregate,
     _build_measurement_integrity_summary,
     _classify_ollama_preflight_failure,
+    _ollama_case_unload_policy,
     _ollama_preflight_probe,
+    _ollama_runtime_controls_report,
     _resolve_eval_artifact_modes,
     _resolve_simulation_duration,
+    _run_ollama_preflight,
+    _sanitize_process_output,
+    _stop_ollama_model_after_case,
     _summarize_decision_latency_samples,
+    aggregate_results,
 )
 
 
@@ -138,7 +146,170 @@ class EvalMetricsTests(unittest.TestCase):
         self.assertTrue(result["ollama_native_chat_effective"])
         self.assertEqual(result["ollama_native_chat_resolution_reason"], "thinking_family_no_think")
         self.assertEqual(post_mock.call_args.kwargs["json"]["think"], False)
+        self.assertEqual(post_mock.call_args.kwargs["json"]["options"]["num_predict"], 8)
         self.assertIn("/api/chat", post_mock.call_args.args[0])
+
+    def test_ollama_preflight_native_uses_safe_context_and_keep_alive_when_configured(self):
+        config = {
+            "OLLAMA_USE_NATIVE_CHAT": "auto",
+            "OLLAMA_THINK_MODE": "no_think",
+            "OLLAMA_API_BASE": "http://localhost:11434/v1",
+            "ollama_runtime_num_ctx": 4096,
+            "ollama_runtime_keep_alive": "0",
+        }
+
+        with patch("evaluate_models_ollama.requests.post") as post_mock:
+            post_mock.return_value = _FakeResponse({"message": {"content": "4"}})
+            _ollama_preflight_probe(config, "qwen3:4b", 15.0)
+
+        payload = post_mock.call_args.kwargs["json"]
+        self.assertEqual(payload["options"]["num_predict"], 8)
+        self.assertEqual(payload["options"]["num_ctx"], 4096)
+        self.assertEqual(payload["keep_alive"], "0")
+
+    def test_ollama_preflight_safe_config_uses_native_for_llama(self):
+        config = load_runtime_config("config.llm_full_safe.yaml")
+
+        with patch("evaluate_models_ollama.requests.post") as post_mock:
+            post_mock.return_value = _FakeResponse({"message": {"content": "4"}})
+            result = _ollama_preflight_probe(config, "llama3.2:3b", 15.0)
+
+        payload = post_mock.call_args.kwargs["json"]
+        self.assertEqual(result["transport"], "native_api_chat")
+        self.assertTrue(result["ollama_native_chat_effective"])
+        self.assertEqual(payload["model"], "llama3.2:3b")
+        self.assertEqual(payload["options"]["num_predict"], 8)
+        self.assertEqual(payload["options"]["num_ctx"], 4096)
+        self.assertEqual(payload["keep_alive"], "10m")
+
+    def test_ollama_runtime_controls_report_includes_config_and_env(self):
+        config = {
+            "ollama_runtime_num_ctx": 4096,
+            "ollama_runtime_keep_alive": "0",
+        }
+
+        with patch.dict("os.environ", {"DILU_OLLAMA_NUM_CTX": "4096"}, clear=True):
+            report = _ollama_runtime_controls_report(config)
+
+        self.assertEqual(report["configured"]["ollama_runtime_num_ctx"], 4096)
+        self.assertEqual(report["configured"]["ollama_runtime_keep_alive"], "0")
+        self.assertEqual(report["exported_env"]["DILU_OLLAMA_NUM_CTX"], "4096")
+        self.assertEqual(report["effective_env"]["DILU_OLLAMA_NUM_CTX"], "4096")
+        self.assertIn("server environment variables", report["server_env_notice"])
+
+    def test_ollama_case_unload_policy_defaults_disabled(self):
+        policy = _ollama_case_unload_policy({})
+
+        self.assertFalse(policy["enabled"])
+        self.assertIsNone(policy["method"])
+
+    def test_ollama_case_unload_stops_model_when_enabled(self):
+        config = {
+            "ollama_unload_after_case": True,
+            "ollama_unload_after_case_timeout_sec": 15,
+        }
+
+        with patch("evaluate_models_ollama.subprocess.run") as run_mock:
+            run_mock.return_value.returncode = 0
+            run_mock.return_value.stdout = "\x1b[?25ldone\x1b[0m"
+            run_mock.return_value.stderr = "\x1b[31mwarning\x1b[0m"
+            result = _stop_ollama_model_after_case(config, "llama3.2:3b")
+
+        self.assertTrue(result["attempted"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "llama3.2:3b")
+        self.assertEqual(result["stdout"], "done")
+        self.assertEqual(result["stderr"], "warning")
+        self.assertEqual(run_mock.call_args.args[0], ["ollama", "stop", "llama3.2:3b"])
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 15.0)
+
+    def test_sanitize_process_output_removes_ansi_and_control_codes(self):
+        text = "\x1b[?25l\x1b[31merror\x1b[0m\x00\nok"
+
+        cleaned = _sanitize_process_output(text)
+
+        self.assertEqual(cleaned, "error\nok")
+
+    def test_ollama_preflight_unloads_model_after_success_when_enabled(self):
+        config = {
+            "ollama_unload_after_case": True,
+            "ollama_unload_after_case_timeout_sec": 15,
+        }
+
+        with patch("evaluate_models_ollama._ollama_preflight_probe") as probe_mock, patch(
+            "evaluate_models_ollama.subprocess.run"
+        ) as run_mock:
+            probe_mock.return_value = {
+                "model": "llama3.2:3b",
+                "ok": True,
+                "transport": "native_api_chat",
+                "elapsed_sec": 0.1,
+                "response_preview": "4",
+            }
+            run_mock.return_value.returncode = 0
+            run_mock.return_value.stdout = ""
+            run_mock.return_value.stderr = ""
+            results = _run_ollama_preflight(config, ["llama3.2:3b"], 15.0, quiet_mode=True)
+
+        self.assertTrue(results[0]["ok"])
+        self.assertTrue(results[0]["ollama_preflight_unload"]["attempted"])
+        self.assertTrue(results[0]["ollama_preflight_unload"]["ok"])
+        self.assertEqual(results[0]["ollama_preflight_unload"]["phase"], "preflight")
+        self.assertEqual(run_mock.call_args.args[0], ["ollama", "stop", "llama3.2:3b"])
+
+    def test_ollama_preflight_unloads_model_after_failure_when_enabled(self):
+        config = {
+            "OLLAMA_USE_NATIVE_CHAT": True,
+            "OLLAMA_THINK_MODE": "auto",
+            "ollama_unload_after_case": True,
+            "ollama_unload_after_case_timeout_sec": 15,
+        }
+
+        with patch("evaluate_models_ollama._ollama_preflight_probe") as probe_mock, patch(
+            "evaluate_models_ollama.subprocess.run"
+        ) as run_mock:
+            probe_mock.side_effect = TimeoutError("preflight timeout")
+            run_mock.return_value.returncode = 0
+            run_mock.return_value.stdout = ""
+            run_mock.return_value.stderr = ""
+            results = _run_ollama_preflight(config, ["llama3.2:3b"], 15.0, quiet_mode=True)
+
+        self.assertFalse(results[0]["ok"])
+        self.assertIn("preflight timeout", results[0]["error"])
+        self.assertTrue(results[0]["ollama_preflight_unload"]["attempted"])
+        self.assertTrue(results[0]["ollama_preflight_unload"]["ok"])
+        self.assertEqual(results[0]["ollama_preflight_unload"]["phase"], "preflight")
+
+    def test_aggregate_results_includes_ollama_case_unload_counts(self):
+        episodes = [
+            {
+                "crashed": False,
+                "error": None,
+                "success_no_collision": True,
+                "truncated": False,
+                "terminated": False,
+                "steps": 2,
+                "episode_runtime_sec": 1.0,
+                "ollama_case_unload": {"attempted": True, "ok": True},
+            },
+            {
+                "crashed": False,
+                "error": None,
+                "success_no_collision": True,
+                "truncated": False,
+                "terminated": False,
+                "steps": 2,
+                "episode_runtime_sec": 1.0,
+                "ollama_case_unload": {"attempted": True, "ok": False},
+            },
+        ]
+
+        aggregate = aggregate_results("llama3.2:3b", episodes)
+
+        self.assertEqual(aggregate["ollama_case_unload_attempts"], 2)
+        self.assertEqual(aggregate["ollama_case_unload_successes"], 1)
+        self.assertEqual(aggregate["ollama_case_unload_failures"], 1)
+        self.assertEqual(aggregate["ollama_case_unload_success_rate"], 0.5)
 
     def test_ollama_preflight_auto_uses_openai_compat_for_llama(self):
         config = {

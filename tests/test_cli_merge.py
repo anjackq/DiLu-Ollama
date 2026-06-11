@@ -194,6 +194,25 @@ class CliMergeTests(unittest.TestCase):
         self.assertEqual(loaded["nested"]["keep"], 1)
         self.assertEqual(loaded["nested"]["override"], 3)
 
+    def test_llm_full_safe_config_inherits_active_config_with_resource_overrides(self):
+        active = load_runtime_config("config.yaml")
+        safe = load_runtime_config("config.llm_full_safe.yaml")
+
+        self.assertEqual(safe["OPENAI_API_TYPE"], active["OPENAI_API_TYPE"])
+        self.assertEqual(safe["OLLAMA_CHAT_MODEL"], active["OLLAMA_CHAT_MODEL"])
+        self.assertEqual(safe["sim_action_target_speeds"], active["sim_action_target_speeds"])
+        self.assertTrue(safe["OLLAMA_USE_NATIVE_CHAT"])
+        self.assertFalse(safe["eval_record_video"])
+        self.assertFalse(safe["eval_save_run_artifacts"])
+        self.assertFalse(safe["eval_enable_intent_resolver"])
+        self.assertEqual(safe["ollama_runtime_num_ctx"], 4096)
+        self.assertEqual(safe["ollama_runtime_keep_alive"], "10m")
+        self.assertTrue(safe["ollama_unload_after_case"])
+        self.assertEqual(safe["ollama_unload_after_case_timeout_sec"], 15)
+        self.assertEqual(safe["ollama_runtime_max_loaded_models"], 1)
+        self.assertEqual(safe["ollama_runtime_num_parallel"], 1)
+        self.assertEqual(safe["ollama_runtime_max_queue"], 1)
+
     def test_measurement_mode_applies_benchmark_ollama_overrides(self):
         config = {
             "OPENAI_API_TYPE": "ollama",
