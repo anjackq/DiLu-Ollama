@@ -41,6 +41,7 @@ def _make_agent_response(text, diagnostics=None):
     agent.oai_api_type = "openai"
     agent.decision_timeout_sec = 10.0
     agent.use_streaming = False
+    agent.prompt_profile = "harness_v2"
     agent.enable_checker_llm = False
     agent.enable_intent_resolver = False
     agent.intent_resolver_api_type = "ollama"
@@ -72,7 +73,12 @@ def _make_agent_response(text, diagnostics=None):
         agent.captured_messages = list(messages)
         return (
             text,
-            {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "token_count_method": "test"},
+            {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "token_count_method": "test",
+            },
             response_diagnostics,
         )
 
@@ -84,6 +90,7 @@ class DriverAgentRuntimeContractTests(unittest.TestCase):
     def test_reactive_prompt_removes_copy_trap_and_adds_recovery_rules(self):
         agent = DriverAgent.__new__(DriverAgent)
         agent.sce = _DummyScenario()
+        agent.prompt_profile = "harness_v2"
 
         system_message = agent._build_system_message(fallback_action_id=4)
 
@@ -94,6 +101,23 @@ class DriverAgentRuntimeContractTests(unittest.TestCase):
         self.assertIn("prefer Acceleration over repeated IDLE", system_message)
         self.assertIn("HARD LANE-CHANGE SAFETY RULES", system_message)
         self.assertIn("within 15 m ahead or behind", system_message)
+
+    def test_legacy_dilu_like_prompt_is_distinct_from_harness_profile(self):
+        agent = DriverAgent.__new__(DriverAgent)
+        agent.sce = _DummyScenario()
+
+        agent.prompt_profile = "harness_v2"
+        harness_message = agent._build_system_message(fallback_action_id=4)
+        agent.prompt_profile = "legacy_dilu_like"
+        legacy_message = agent._build_system_message(fallback_action_id=4)
+
+        self.assertIn("RESPONSE CONTRACT", harness_message)
+        self.assertIn("HARD LANE-CHANGE SAFETY RULES", harness_message)
+        self.assertIn("RESPONSE FORMAT", legacy_message)
+        self.assertIn("Prefer safe behavior", legacy_message)
+        self.assertNotIn("HARD LANE-CHANGE SAFETY RULES", legacy_message)
+        self.assertNotIn("60 km/h is a slow-flow floor", legacy_message)
+        self.assertNotEqual(harness_message, legacy_message)
 
     def test_empty_fewshot_prompt_does_not_claim_examples_exist(self):
         agent = _make_agent_response("Response to user:#### 3\nReason: clear road.")
@@ -542,6 +566,7 @@ class OpenRouterRuntimeEnvTests(unittest.TestCase):
             "OPENAI_API_TYPE": "ollama",
             "OLLAMA_CHAT_MODEL": "qwen3:4b",
             "OLLAMA_EMBED_MODEL": "qwen3-embedding:8b",
+            "eval_prompt_profile": "legacy_dilu_like",
             "eval_enable_intent_resolver": True,
             "intent_resolver_api_type": "ollama",
             "intent_resolver_model": "llama3.2:3b",
@@ -551,10 +576,13 @@ class OpenRouterRuntimeEnvTests(unittest.TestCase):
         }
 
         with patch.dict(os.environ, {}, clear=True):
-            configure_runtime_env(config, mode="eval", quiet_override=True, progress_override=False)
+            configure_runtime_env(
+                config, mode="eval", quiet_override=True, progress_override=False
+            )
             env_snapshot = dict(os.environ)
 
         self.assertEqual(env_snapshot["DILU_ENABLE_INTENT_RESOLVER"], "1")
+        self.assertEqual(env_snapshot["DILU_PROMPT_PROFILE"], "legacy_dilu_like")
         self.assertEqual(env_snapshot["DILU_INTENT_RESOLVER_API_TYPE"], "ollama")
         self.assertEqual(env_snapshot["DILU_INTENT_RESOLVER_MODEL"], "llama3.2:3b")
         self.assertEqual(env_snapshot["DILU_INTENT_RESOLVER_TIMEOUT_SEC"], "7")

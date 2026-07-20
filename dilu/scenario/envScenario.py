@@ -50,7 +50,7 @@ class EnvScenario:
         self.envType = envType
         self.enable_db = bool(enable_db)
 
-        #self.ego: MDPVehicle = env.vehicle
+        # self.ego: MDPVehicle = env.vehicle
         self.ego: MDPVehicle = env.unwrapped.vehicle
         # 下面的四个变量用来判断车辆是否在 ego 的危险视距内
         self.theta1 = math.atan(3/17.5)
@@ -58,7 +58,7 @@ class EnvScenario:
         self.radius1 = np.linalg.norm([3, 17.5])
         self.radius2 = np.linalg.norm([2, 2.5])
 
-        #self.road: Road = env.road
+        # self.road: Road = env.road
         self.road: Road = env.unwrapped.road
         self.network: RoadNetwork = self.road.network
 
@@ -122,6 +122,21 @@ class EnvScenario:
             ) from exc
         return [int(action_id) for action_id in list(available_actions)]
 
+    def action_id_for_token(self, token: str) -> int:
+        normalized_token = str(token or "").strip().upper()
+        if not normalized_token:
+            raise ValueError("Action token must be non-empty.")
+        matches = [
+            int(action_id)
+            for action_id, catalog_token in self._action_catalog().items()
+            if str(catalog_token).strip().upper() == normalized_token
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected one action ID for token {normalized_token!r}, got {matches}."
+            )
+        return matches[0]
+
     def describe_action_id(self, action_id: int) -> str:
         token = self._action_catalog().get(int(action_id))
         if token is None:
@@ -152,12 +167,12 @@ class EnvScenario:
             return int(available_ids[0])
         raise ValueError(f"No available actions exposed by environment {self.envType}")
 
-#    def getSurrendVehicles(self, vehicles_count: int) -> List[IDMVehicle]:
-#        return self.road.close_vehicles_to(
-#            self.ego, self.env.PERCEPTION_DISTANCE,
-#            count=vehicles_count-1, see_behind=True,
-#            sort='sorted'
-#        )
+    #    def getSurrendVehicles(self, vehicles_count: int) -> List[IDMVehicle]:
+    #        return self.road.close_vehicles_to(
+    #            self.ego, self.env.PERCEPTION_DISTANCE,
+    #            count=vehicles_count-1, see_behind=True,
+    #            sort='sorted'
+    #        )
     def getSurrendVehicles(self, vehicles_count: int) -> List[IDMVehicle]:
         # FIX: Use .unwrapped to access PERCEPTION_DISTANCE
         return self.road.close_vehicles_to(

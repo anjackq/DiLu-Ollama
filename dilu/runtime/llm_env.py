@@ -166,25 +166,47 @@ def openai_compatible_default_headers_from_config(config: Dict[str, Any]) -> Dic
 
 def _apply_output_runtime_controls(config: Dict[str, Any]) -> None:
     """
-    Runtime output controls are configured here (outside policy resolution).
+    Configure mutable legacy-evaluator output controls outside policy resolution.
+
+    Claim-bearing scientific runs bind these factors through HarnessConfig and
+    never call this compatibility bridge.
     """
-    disable_streaming = _as_bool(config.get("eval_disable_streaming", True), default=True)
-    disable_checker = _as_bool(config.get("eval_disable_checker_llm", True), default=True)
+    prompt_profile = (
+        str(config.get("eval_prompt_profile", "harness_v2") or "harness_v2")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    if prompt_profile not in {"harness_v2", "legacy_dilu_like"}:
+        prompt_profile = "harness_v2"
+    disable_streaming = _as_bool(
+        config.get("eval_disable_streaming", True), default=True
+    )
+    disable_checker = _as_bool(
+        config.get("eval_disable_checker_llm", True), default=True
+    )
     base_tokens = (
         _positive_int_or_none(config.get("max_output_tokens"))
         or _positive_int_or_none(config.get("eval_decision_max_output_tokens"))
         or 512
     )
-    runtime_tokens = _positive_int_or_none(config.get("runtime_max_output_tokens")) or base_tokens
+    runtime_tokens = (
+        _positive_int_or_none(config.get("runtime_max_output_tokens")) or base_tokens
+    )
 
     os.environ["DILU_USE_STREAMING"] = "0" if disable_streaming else "1"
     os.environ["DILU_ENABLE_CHECKER_LLM"] = "0" if disable_checker else "1"
+    os.environ["DILU_PROMPT_PROFILE"] = prompt_profile
     os.environ["DILU_MAX_OUTPUT_TOKENS"] = str(max(1, int(base_tokens)))
     os.environ["DILU_RUNTIME_MAX_OUTPUT_TOKENS"] = str(max(1, int(runtime_tokens)))
-    os.environ["DILU_ENABLE_INTENT_RESOLVER"] = "1" if _as_bool(
-        config.get("eval_enable_intent_resolver", False),
-        default=False,
-    ) else "0"
+    os.environ["DILU_ENABLE_INTENT_RESOLVER"] = (
+        "1"
+        if _as_bool(
+            config.get("eval_enable_intent_resolver", False),
+            default=False,
+        )
+        else "0"
+    )
     os.environ["DILU_INTENT_RESOLVER_API_TYPE"] = str(
         config.get("intent_resolver_api_type", "ollama") or "ollama"
     ).strip()
@@ -197,13 +219,19 @@ def _apply_output_runtime_controls(config: Dict[str, Any]) -> None:
     os.environ["DILU_INTENT_RESOLVER_MAX_OUTPUT_TOKENS"] = str(
         _positive_int_or_none(config.get("intent_resolver_max_output_tokens")) or 32
     )
-    os.environ["DILU_INTENT_RESOLVER_ABSTAIN_ON_AMBIGUOUS"] = "1" if _as_bool(
-        config.get("intent_resolver_abstain_on_ambiguous", True),
-        default=True,
-    ) else "0"
+    os.environ["DILU_INTENT_RESOLVER_ABSTAIN_ON_AMBIGUOUS"] = (
+        "1"
+        if _as_bool(
+            config.get("intent_resolver_abstain_on_ambiguous", True),
+            default=True,
+        )
+        else "0"
+    )
 
 
-def _resolve_quiet_mode(config: Dict[str, Any], mode: str, quiet_override: Optional[bool]) -> bool:
+def _resolve_quiet_mode(
+    config: Dict[str, Any], mode: str, quiet_override: Optional[bool]
+) -> bool:
     if quiet_override is not None:
         return bool(quiet_override)
     mode_normalized = str(mode or "runtime").strip().lower()
@@ -215,12 +243,16 @@ def _resolve_quiet_mode(config: Dict[str, Any], mode: str, quiet_override: Optio
     return _as_bool(mode_value, default=global_default)
 
 
-def _resolve_progress_bar(config: Dict[str, Any], mode: str, progress_override: Optional[bool]) -> bool:
+def _resolve_progress_bar(
+    config: Dict[str, Any], mode: str, progress_override: Optional[bool]
+) -> bool:
     if progress_override is not None:
         return bool(progress_override)
     mode_normalized = str(mode or "runtime").strip().lower()
     global_default = _as_bool(config.get("progress_bar", True), default=True)
-    mode_key = "eval_progress_bar" if mode_normalized == "eval" else "runtime_progress_bar"
+    mode_key = (
+        "eval_progress_bar" if mode_normalized == "eval" else "runtime_progress_bar"
+    )
     mode_value = config.get(mode_key)
     if mode_value is None:
         return global_default
@@ -235,16 +267,25 @@ def configure_runtime_env(
     progress_override: Optional[bool] = None,
 ) -> Optional[str]:
     """
-    Configure provider-specific env vars used by DiLu runtime scripts.
+    Configure provider-specific env vars used by legacy DiLu runtime scripts.
 
+    Scientific runs must inject ScientificEpisodeRuntime and are rejected here.
     Returns the selected chat model for providers that require one.
     """
+    if str(mode or "runtime").strip().lower() == "scientific":
+        raise ValueError(
+            "Scientific execution must inject an immutable ScientificEpisodeRuntime."
+        )
     load_project_dotenv_if_present()
     api_type = str(config["OPENAI_API_TYPE"]).strip().lower()
     selected_model = _pick_model(config, api_type, chat_model_override)
     _apply_output_runtime_controls(config)
-    os.environ["DILU_QUIET_MODE"] = "1" if _resolve_quiet_mode(config, mode, quiet_override) else "0"
-    os.environ["DILU_PROGRESS_BAR"] = "1" if _resolve_progress_bar(config, mode, progress_override) else "0"
+    os.environ["DILU_QUIET_MODE"] = (
+        "1" if _resolve_quiet_mode(config, mode, quiet_override) else "0"
+    )
+    os.environ["DILU_PROGRESS_BAR"] = (
+        "1" if _resolve_progress_bar(config, mode, progress_override) else "0"
+    )
 
     if api_type == "azure":
         os.environ["OPENAI_API_TYPE"] = "azure"

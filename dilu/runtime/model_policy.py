@@ -243,6 +243,10 @@ def build_decision_timeout_penalty_state(
 ) -> Dict[str, Any]:
     norm_provider = _normalize_provider(provider)
     norm_mode = str(mode or "eval").strip().lower()
+    if norm_mode == "scientific":
+        raise ValueError(
+            "Scientific execution uses its fixed HarnessConfig timeout and no adaptive state."
+        )
     policy_mode = (
         _normalize_eval_timeout_policy_mode(config.get("eval_timeout_policy_mode"))
         if norm_mode == "eval"
@@ -258,8 +262,12 @@ def build_decision_timeout_penalty_state(
             "provider": norm_provider,
             "mode": norm_mode,
             "policy_mode": "disabled",
-            "baseline_decision_timeout_sec": baseline_timeout_sec if baseline_timeout_sec > 0.0 else None,
-            "effective_decision_timeout_sec": baseline_timeout_sec if baseline_timeout_sec > 0.0 else None,
+            "baseline_decision_timeout_sec": (
+                baseline_timeout_sec if baseline_timeout_sec > 0.0 else None
+            ),
+            "effective_decision_timeout_sec": (
+                baseline_timeout_sec if baseline_timeout_sec > 0.0 else None
+            ),
             "min_timeout_sec": None,
             "halving_factor": None,
             "trigger_consecutive_slow": None,

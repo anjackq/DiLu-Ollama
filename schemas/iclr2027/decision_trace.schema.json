@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dilu-ollama.invalid/schemas/iclr2027/decision_trace.schema.json",
+  "title": "ICLR 2027 DiLu-Ollama scientific decision trace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "schema_sha256", "trace_key", "context", "factors",
+    "harness_config", "config_sha256", "prompt", "generation",
+    "action_resolution", "shield_stack", "failure", "disposition",
+    "decision_latency_ms"
+  ],
+  "properties": {
+    "schema_version": {"const": "iclr2027.decision_trace.v1"},
+    "schema_sha256": {"$ref": "#/$defs/sha256"},
+    "trace_key": {"$ref": "#/$defs/trace_key"},
+    "context": {"$ref": "#/$defs/context"},
+    "factors": {"$ref": "#/$defs/factors"},
+    "harness_config": {"$ref": "#/$defs/harness_config"},
+    "config_sha256": {"$ref": "#/$defs/sha256"},
+    "prompt": {"$ref": "#/$defs/prompt"},
+    "generation": {"$ref": "#/$defs/generation"},
+    "action_resolution": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/resolution"}]},
+    "shield_stack": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/shield_stack"}]},
+    "failure": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/failure"}]},
+    "disposition": {"enum": ["ready_for_env_step", "blocked_before_execution"]},
+    "decision_latency_ms": {"type": "number", "minimum": 0}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"disposition": {"const": "ready_for_env_step"}}, "required": ["disposition"]},
+      "then": {"properties": {"action_resolution": {"type": "object"}, "shield_stack": {"type": "object"}}},
+      "else": {"properties": {"action_resolution": {"type": "null"}, "shield_stack": {"type": "null"}, "failure": {"type": "object"}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullable_string": {"type": ["string", "null"]},
+    "nullable_integer": {"anyOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]},
+    "nullable_number": {"type": ["number", "null"]},
+    "action": {"type": "integer", "minimum": 0, "maximum": 4},
+    "nullable_action": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/action"}]},
+    "runtime_failure": {"enum": ["transport_unavailable_before_accept", "transport_drift", "generation_timeout", "model_empty_output", "schema_rejection", "syntax_invalid", "action_unavailable", "trace_write_failure", "simulator_failure"]},
+    "nullable_runtime_failure": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/runtime_failure"}]},
+    "generation_failure": {"enum": ["transport_unavailable_before_accept", "transport_drift", "generation_timeout", "model_empty_output", "schema_rejection"]},
+    "nullable_generation_failure": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/generation_failure"}]},
+    "trace_key": {
+      "type": "object", "additionalProperties": false,
+      "required": ["campaign_id", "episode_attempt_id", "condition_id", "case_id", "pair_id", "template_id", "replicate_id", "decision_index", "env_step_index"],
+      "properties": {
+        "campaign_id": {"type": "string", "minLength": 1},
+        "episode_attempt_id": {"type": "string", "minLength": 1},
+        "condition_id": {"type": "string", "pattern": "^c[01]{3}$"},
+        "case_id": {"type": "string", "minLength": 1},
+        "pair_id": {"type": "string", "minLength": 1},
+        "template_id": {"type": "string", "minLength": 1},
+        "replicate_id": {"type": "integer", "minimum": 0},
+        "decision_index": {"type": "integer", "minimum": 0},
+        "env_step_index": {"type": "integer", "minimum": 0}
+      }
+    },
+    "context": {
+      "type": "object", "additionalProperties": false,
+      "required": ["benchmark_fingerprint", "code_revision", "simulator_seed", "generation_seed_master", "generation_seed_scope", "decision_snapshot_id", "available_action_ids", "event_phase", "applied_event_ids"],
+      "properties": {
+        "benchmark_fingerprint": {"$ref": "#/$defs/sha256"},
+        "code_revision": {"type": "string", "minLength": 1},
+        "simulator_seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "generation_seed_master": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "generation_seed_scope": {"enum": ["primary_snapshot", "post_divergence"]},
+        "decision_snapshot_id": {"$ref": "#/$defs/nullable_string"},
+        "available_action_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/action"}, "contains": {"const": 1}, "minContains": 1},
+        "event_phase": {"type": "string", "minLength": 1},
+        "applied_event_ids": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "factors": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy_content", "output_enforcement", "execution_mode"],
+      "properties": {
+        "policy_content": {"enum": ["historical_dilu_2024", "modular_harness"]},
+        "output_enforcement": {"enum": ["prompt_only", "backend_schema"]},
+        "execution_mode": {"enum": ["unshielded_operational", "shielded"]}
+      }
+    },
+    "harness_config": {
+      "type": "object", "additionalProperties": false,
+      "required": ["condition", "parser_mode", "resolver_mode", "fallback_policy", "shield", "transport", "retry_policy", "trace_level"],
+      "properties": {
+        "condition": {"$ref": "#/$defs/factors"},
+        "parser_mode": {"const": "strict_only"},
+        "resolver_mode": {"const": "disabled"},
+        "fallback_policy": {"const": "fixed_idle"},
+        "shield": {"$ref": "#/$defs/shield_config"},
+        "transport": {"$ref": "#/$defs/transport_config"},
+        "retry_policy": {"$ref": "#/$defs/retry_policy"},
+        "trace_level": {"const": "mandatory_scientific"}
+      }
+    },
+    "shield_config": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stage_order", "target_front_gap_required_m", "target_rear_gap_required_m", "target_rear_ttc_required_sec", "front_critical_gap_m", "front_caution_gap_m", "acceleration_caution_gap_m", "front_critical_ttc_sec", "front_caution_ttc_sec", "acceleration_caution_ttc_sec", "acceleration_projected_speed_gain_mps", "projected_time_horizon_sec", "low_speed_recovery_floor_mps", "low_speed_recovery_front_gap_m", "low_speed_recovery_ttc_sec"],
+      "properties": {
+        "stage_order": {"const": ["lane_change", "longitudinal_safety", "low_speed_recovery"]},
+        "target_front_gap_required_m": {"type": "number", "exclusiveMinimum": 0}, "target_rear_gap_required_m": {"type": "number", "exclusiveMinimum": 0}, "target_rear_ttc_required_sec": {"type": "number", "exclusiveMinimum": 0},
+        "front_critical_gap_m": {"type": "number", "exclusiveMinimum": 0}, "front_caution_gap_m": {"type": "number", "exclusiveMinimum": 0}, "acceleration_caution_gap_m": {"type": "number", "exclusiveMinimum": 0},
+        "front_critical_ttc_sec": {"type": "number", "exclusiveMinimum": 0}, "front_caution_ttc_sec": {"type": "number", "exclusiveMinimum": 0}, "acceleration_caution_ttc_sec": {"type": "number", "exclusiveMinimum": 0},
+        "acceleration_projected_speed_gain_mps": {"type": "number", "exclusiveMinimum": 0}, "projected_time_horizon_sec": {"type": "number", "exclusiveMinimum": 0},
+        "low_speed_recovery_floor_mps": {"type": "number", "exclusiveMinimum": 0}, "low_speed_recovery_front_gap_m": {"type": "number", "exclusiveMinimum": 0}, "low_speed_recovery_ttc_sec": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "transport_config": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profile", "think_mode", "temperature", "context_tokens", "max_output_tokens", "timeout_sec", "generation_seed_master", "allow_transport_fallback", "adaptive_timeout"],
+      "properties": {"profile": {"const": "ollama_native_chat"}, "think_mode": {"enum": ["think", "no_think"]}, "temperature": {"type": "number", "minimum": 0}, "context_tokens": {"type": "integer", "minimum": 1}, "max_output_tokens": {"type": "integer", "minimum": 1}, "timeout_sec": {"type": "number", "exclusiveMinimum": 0}, "generation_seed_master": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "allow_transport_fallback": {"const": false}, "adaptive_timeout": {"const": false}}
+    },
+    "retry_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_transport_unavailable_retries", "retry_cooldown_sec", "retry_on_timeout", "retry_on_empty_output", "retry_on_schema_rejection"],
+      "properties": {"max_transport_unavailable_retries": {"const": 1}, "retry_cooldown_sec": {"const": 10.0}, "retry_on_timeout": {"const": false}, "retry_on_empty_output": {"const": false}, "retry_on_schema_rejection": {"const": false}}
+    },
+    "prompt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy_content", "output_enforcement", "provenance_scope", "few_shot_num", "prompt_sha256", "component_sha256"],
+      "properties": {
+        "policy_content": {"type": "string"},
+        "output_enforcement": {"type": "string"},
+        "provenance_scope": {"type": "string", "minLength": 1},
+        "few_shot_num": {"const": 0},
+        "prompt_sha256": {"$ref": "#/$defs/sha256"},
+        "component_sha256": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/component_hash"}}
+      }
+    },
+    "component_hash": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "sha256"],
+      "properties": {"name": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "generation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transport_evidence", "request", "identity_checks", "attempts", "response_body", "raw_output", "contract_text", "transport_error_body", "thinking_output", "stop_reason", "prompt_tokens", "completion_tokens", "total_tokens", "backend_timing", "latency_ms", "identity_latency_ms", "generation_latency_ms", "retry_cooldown_ms", "retry_cooldown_policy_ms", "error_class", "error_message"],
+      "properties": {
+        "transport_evidence": {"$ref": "#/$defs/transport_evidence"},
+        "request": {"$ref": "#/$defs/request"},
+        "identity_checks": {"type": "array", "items": {"$ref": "#/$defs/identity_check"}},
+        "attempts": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/attempt"}},
+        "response_body": {"$ref": "#/$defs/nullable_string"},
+        "raw_output": {"$ref": "#/$defs/nullable_string"},
+        "contract_text": {"$ref": "#/$defs/nullable_string"},
+        "transport_error_body": {"$ref": "#/$defs/nullable_string"},
+        "thinking_output": {"type": "string"},
+        "stop_reason": {"$ref": "#/$defs/nullable_string"},
+        "prompt_tokens": {"$ref": "#/$defs/nullable_integer"},
+        "completion_tokens": {"$ref": "#/$defs/nullable_integer"},
+        "total_tokens": {"$ref": "#/$defs/nullable_integer"},
+        "backend_timing": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/backend_timing"}]},
+        "latency_ms": {"type": "number", "minimum": 0},
+        "identity_latency_ms": {"type": "number", "minimum": 0},
+        "generation_latency_ms": {"type": "number", "minimum": 0},
+        "retry_cooldown_ms": {"type": "number", "minimum": 0},
+        "retry_cooldown_policy_ms": {"type": "number", "minimum": 0},
+        "error_class": {"$ref": "#/$defs/nullable_generation_failure"},
+        "error_message": {"$ref": "#/$defs/nullable_string"}
+      }
+    },
+    "transport_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requested_profile", "effective_profile", "requested_think_mode", "effective_think_mode", "capability_model_tag", "capability_model_digest", "capability_native_endpoint", "capability_supported_think_modes", "seed_verified", "schema_verified", "capability_probe_id", "capability_artifact_sha256", "capability_snapshot_sha256", "schema_mechanism"],
+      "properties": {
+        "requested_profile": {"const": "ollama_native_chat"},
+        "effective_profile": {"anyOf": [{"type": "null"}, {"const": "ollama_native_chat"}]},
+        "requested_think_mode": {"enum": ["think", "no_think"]},
+        "effective_think_mode": {"anyOf": [{"type": "null"}, {"enum": ["think", "no_think"]}]},
+        "capability_model_tag": {"type": "string", "minLength": 1},
+        "capability_model_digest": {"$ref": "#/$defs/sha256"},
+        "capability_native_endpoint": {"type": "string", "minLength": 1},
+        "capability_supported_think_modes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["think", "no_think"]}},
+        "seed_verified": {"type": "boolean"},
+        "schema_verified": {"type": "boolean"},
+        "capability_probe_id": {"type": "string", "minLength": 1},
+        "capability_artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "capability_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "schema_mechanism": {"const": "ollama_api_chat_json_string_enum_v1"}
+      }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["request_id", "model_tag", "model_digest", "native_endpoint", "messages", "options", "output_enforcement", "think_mode", "timeout_sec"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1}, "model_tag": {"type": "string", "minLength": 1}, "model_digest": {"$ref": "#/$defs/sha256"}, "native_endpoint": {"type": "string", "minLength": 1},
+        "messages": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/message"}},
+        "options": {"$ref": "#/$defs/options"}, "output_enforcement": {"type": "string"}, "think_mode": {"type": "string"}, "timeout_sec": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "message": {"type": "object", "additionalProperties": false, "required": ["role", "content"], "properties": {"role": {"enum": ["system", "user", "assistant"]}, "content": {"type": "string"}}},
+    "options": {"type": "object", "additionalProperties": false, "required": ["seed", "temperature", "num_ctx", "num_predict"], "properties": {"seed": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "temperature": {"type": "number", "minimum": 0}, "num_ctx": {"type": "integer", "minimum": 1}, "num_predict": {"type": "integer", "minimum": 1}}},
+    "identity_check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attempt_index", "phase", "requested_model_tag", "requested_model_digest", "observed_model_tag", "observed_model_digest", "latency_ms", "error_message", "succeeded"],
+      "properties": {"attempt_index": {"type": "integer", "minimum": 1}, "phase": {"enum": ["pre", "post"]}, "requested_model_tag": {"type": "string"}, "requested_model_digest": {"$ref": "#/$defs/sha256"}, "observed_model_tag": {"$ref": "#/$defs/nullable_string"}, "observed_model_digest": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}, "latency_ms": {"type": "number", "minimum": 0}, "error_message": {"$ref": "#/$defs/nullable_string"}, "succeeded": {"type": "boolean"}}
+    },
+    "attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["request_id", "attempt_id", "attempt_index", "accepted_by_server", "http_status", "response_body", "raw_output", "contract_text", "transport_error_body", "thinking_output", "stop_reason", "prompt_tokens", "completion_tokens", "backend_timing", "latency_ms", "error_class", "error_message"],
+      "properties": {"request_id": {"type": "string"}, "attempt_id": {"type": "string"}, "attempt_index": {"type": "integer", "minimum": 1}, "accepted_by_server": {"type": ["boolean", "null"]}, "http_status": {"$ref": "#/$defs/nullable_integer"}, "response_body": {"$ref": "#/$defs/nullable_string"}, "raw_output": {"$ref": "#/$defs/nullable_string"}, "contract_text": {"$ref": "#/$defs/nullable_string"}, "transport_error_body": {"$ref": "#/$defs/nullable_string"}, "thinking_output": {"type": "string"}, "stop_reason": {"$ref": "#/$defs/nullable_string"}, "prompt_tokens": {"$ref": "#/$defs/nullable_integer"}, "completion_tokens": {"$ref": "#/$defs/nullable_integer"}, "backend_timing": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/backend_timing"}]}, "latency_ms": {"type": "number", "minimum": 0}, "error_class": {"$ref": "#/$defs/nullable_generation_failure"}, "error_message": {"$ref": "#/$defs/nullable_string"}}
+    },
+    "backend_timing": {"type": "object", "additionalProperties": false, "required": ["total_duration_ns", "load_duration_ns", "prompt_eval_duration_ns", "eval_duration_ns"], "properties": {"total_duration_ns": {"type": "integer", "minimum": 0}, "load_duration_ns": {"type": "integer", "minimum": 0}, "prompt_eval_duration_ns": {"type": "integer", "minimum": 0}, "eval_duration_ns": {"type": "integer", "minimum": 0}}},
+    "resolution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["parser_input", "syntax_status", "strict_action", "recovered_action", "recovery_stage", "violation", "action_available", "fallback_action", "used_fallback", "final_resolved_action"],
+      "properties": {"parser_input": {"type": "string"}, "syntax_status": {"enum": ["strict_valid", "invalid", "empty", "timeout"]}, "strict_action": {"$ref": "#/$defs/nullable_action"}, "recovered_action": {"$ref": "#/$defs/nullable_action"}, "recovery_stage": {"enum": ["none", "deterministic", "resolver"]}, "violation": {"$ref": "#/$defs/nullable_runtime_failure"}, "action_available": {"enum": ["available", "unavailable", "not_applicable"]}, "fallback_action": {"$ref": "#/$defs/nullable_action"}, "used_fallback": {"type": "boolean"}, "final_resolved_action": {"$ref": "#/$defs/action"}}
+    },
+    "shield_stack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["proposed_action_id", "fallback_modified_action_id", "unshielded_action_id", "shielded_action_id", "executed_action_id", "execution_mode", "stages"],
+      "properties": {"proposed_action_id": {"$ref": "#/$defs/nullable_action"}, "fallback_modified_action_id": {"$ref": "#/$defs/action"}, "unshielded_action_id": {"$ref": "#/$defs/action"}, "shielded_action_id": {"$ref": "#/$defs/nullable_action"}, "executed_action_id": {"$ref": "#/$defs/action"}, "execution_mode": {"enum": ["unshielded_operational", "shielded"]}, "stages": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [{"allOf": [{"$ref": "#/$defs/shield_stage"}, {"properties": {"stage_name": {"const": "lane_change"}}}]}, {"allOf": [{"$ref": "#/$defs/shield_stage"}, {"properties": {"stage_name": {"const": "longitudinal_safety"}}}]}, {"allOf": [{"$ref": "#/$defs/shield_stage"}, {"properties": {"stage_name": {"const": "low_speed_recovery"}}}]}], "items": false}}
+    },
+    "shield_stage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stage_name", "input_action_id", "output_action_id", "applied", "bypassed", "reason", "primitive"],
+      "properties": {"stage_name": {"enum": ["lane_change", "longitudinal_safety", "low_speed_recovery"]}, "input_action_id": {"$ref": "#/$defs/action"}, "output_action_id": {"$ref": "#/$defs/action"}, "applied": {"type": "boolean"}, "bypassed": {"type": "boolean"}, "reason": {"type": "string", "minLength": 1}, "primitive": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/shield_primitive"}]}}
+    },
+    "shield_primitive": {
+      "type": "object", "additionalProperties": false,
+      "required": ["original_action_id", "action_id", "applied", "reason", "shield_type", "front_gap_m", "rear_gap_m", "front_ttc_sec", "rear_ttc_sec", "target_lane_rank", "required_front_gap_m", "required_rear_gap_m", "required_front_ttc_sec", "required_rear_ttc_sec", "projected_front_gap_m", "projected_front_ttc_sec", "projected_ego_speed_mps", "projection_horizon_sec", "nonfinite_values"],
+      "properties": {"original_action_id": {"$ref": "#/$defs/action"}, "action_id": {"$ref": "#/$defs/action"}, "applied": {"type": "boolean"}, "reason": {"type": "string"}, "shield_type": {"type": "string"}, "front_gap_m": {"$ref": "#/$defs/nullable_number"}, "rear_gap_m": {"$ref": "#/$defs/nullable_number"}, "front_ttc_sec": {"$ref": "#/$defs/nullable_number"}, "rear_ttc_sec": {"$ref": "#/$defs/nullable_number"}, "target_lane_rank": {"$ref": "#/$defs/nullable_integer"}, "required_front_gap_m": {"$ref": "#/$defs/nullable_number"}, "required_rear_gap_m": {"$ref": "#/$defs/nullable_number"}, "required_front_ttc_sec": {"$ref": "#/$defs/nullable_number"}, "required_rear_ttc_sec": {"$ref": "#/$defs/nullable_number"}, "projected_front_gap_m": {"$ref": "#/$defs/nullable_number"}, "projected_front_ttc_sec": {"$ref": "#/$defs/nullable_number"}, "projected_ego_speed_mps": {"$ref": "#/$defs/nullable_number"}, "projection_horizon_sec": {"$ref": "#/$defs/nullable_number"}, "nonfinite_values": {"type": "object", "additionalProperties": {"enum": ["positive_infinity", "negative_infinity"]}}}
+    },
+    "failure": {"type": "object", "additionalProperties": false, "required": ["failure_class", "message"], "properties": {"failure_class": {"$ref": "#/$defs/runtime_failure"}, "message": {"type": "string", "minLength": 1}}}
+  }
+}

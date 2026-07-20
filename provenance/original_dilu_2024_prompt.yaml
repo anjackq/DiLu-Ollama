@@ -1,0 +1,14 @@
+artifact_id: original_dilu_2024_system_prompt
+artifact_scope: system_message_only
+scope: DriverAgent.few_shot_decision.system_message
+runtime_equivalence: false
+claims_exact_historical_runtime: false
+revision: 1eed4ed0bd2e483c2a604adc63f4a21c445dba06
+source: dilu/driver_agent/driverAgent.py
+git_blob: 91888022745e4edbb9dff5e0528f5d6bf3498713
+extraction: direct AST assignment; textwrap.dedent JoinedStr
+normalization: 'substitute three bare delimiter fields with ####; textwrap.dedent;
+  CRLF/CR to LF; UTF-8; no trim'
+raw_chars: 908
+normalized_bytes: 836
+sha256: 170ff62b29d558fea590f234f3994a4b72100efbacdff5ccd518c24629bf764a

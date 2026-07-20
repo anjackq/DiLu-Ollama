@@ -1,3 +1,5 @@
+import importlib
+
 from .llm_env import (
     configure_runtime_env,
     openai_compatible_default_headers_from_env,
@@ -108,6 +110,60 @@ from .non_llm_baselines import (
     parse_baseline_levels,
     resolve_baseline_names,
 )
+from .harness_config import (
+    ConditionSpec,
+    ExecutionMode,
+    FallbackPolicy,
+    HarnessConfig,
+    OutputEnforcement,
+    PolicyContent,
+    ThinkMode,
+    TransportProfile,
+    resolve_main_conditions,
+)
+
+_LAZY_SCIENTIFIC_EXPORTS = {
+    "AttemptStatus": (".campaign_attempts", "AttemptStatus"),
+    "ScientificAttemptLedger": (".campaign_attempts", "ScientificAttemptLedger"),
+    "ScientificAttemptRecord": (".campaign_attempts", "ScientificAttemptRecord"),
+    "ScientificAttemptWriteError": (
+        ".campaign_attempts",
+        "ScientificAttemptWriteError",
+    ),
+    "RuntimeLockBinding": (".scientific_runtime", "RuntimeLockBinding"),
+    "ScientificEpisodeIdentity": (
+        ".scientific_runtime",
+        "ScientificEpisodeIdentity",
+    ),
+    "ScientificEpisodeRuntime": (
+        ".scientific_runtime",
+        "ScientificEpisodeRuntime",
+    ),
+    "VerifiedRuntimeLockBinding": (
+        ".scientific_runtime",
+        "VerifiedRuntimeLockBinding",
+    ),
+    "load_verified_runtime_lock_binding": (
+        "._scientific_runtime_binding",
+        "load_verified_runtime_lock_binding",
+    ),
+    "build_scientific_episode_runtime": (
+        ".scientific_runtime",
+        "build_scientific_episode_runtime",
+    ),
+    "ScientificTraceWriter": (".scientific_trace", "ScientificTraceWriter"),
+}
+
+
+def __getattr__(name: str) -> object:
+    target = _LAZY_SCIENTIFIC_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = target
+    value = getattr(importlib.import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "configure_runtime_env",
@@ -194,4 +250,24 @@ __all__ = [
     "iter_baseline_specs",
     "parse_baseline_levels",
     "resolve_baseline_names",
+    "AttemptStatus",
+    "ConditionSpec",
+    "ExecutionMode",
+    "FallbackPolicy",
+    "HarnessConfig",
+    "OutputEnforcement",
+    "PolicyContent",
+    "RuntimeLockBinding",
+    "ScientificAttemptLedger",
+    "ScientificAttemptRecord",
+    "ScientificAttemptWriteError",
+    "ScientificEpisodeIdentity",
+    "ScientificEpisodeRuntime",
+    "ScientificTraceWriter",
+    "VerifiedRuntimeLockBinding",
+    "build_scientific_episode_runtime",
+    "load_verified_runtime_lock_binding",
+    "resolve_main_conditions",
+    "ThinkMode",
+    "TransportProfile",
 ]

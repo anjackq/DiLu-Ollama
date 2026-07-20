@@ -1,6 +1,8 @@
 import argparse
 import copy
+import functools
 import gc
+import inspect
 from collections import Counter
 from contextlib import nullcontext
 import json
@@ -30,6 +32,7 @@ from rich.markup import escape
 from rich import print
 
 from dilu.driver_agent.driverAgent import DriverAgent
+from dilu.driver_agent.prompt_modules import PromptArtifact
 from dilu.driver_agent.vectorStore import DrivingMemory
 from dilu.runtime import (
     configure_runtime_env,
@@ -73,9 +76,6 @@ from dilu.runtime import (
     system_hardware_snapshot,
     build_energy_tradeoff_summary,
     aggregate_episode_token_usage,
-    apply_lane_change_safety_shield,
-    apply_low_speed_recovery_shield,
-    apply_longitudinal_safety_shield,
     annotate_aggregate_with_scientific_reporting,
     build_primary_metric_spec,
     write_scientific_analysis_artifacts,
@@ -90,6 +90,26 @@ from dilu.runtime.highway_scenario_spec import (
     apply_highway_scenario_spec,
 )
 from dilu.runtime.scientific_reporting import bootstrap_ci95
+from dilu.runtime.harness_config import ExecutionMode, ShieldConfig
+from dilu.runtime.action_resolution import ActionResolutionResult
+from dilu.runtime.ollama_scientific_client import ScientificGenerationAbort
+from dilu.runtime.scientific_runtime import ScientificEpisodeRuntime
+from dilu.runtime.ollama_transport import inspect_ollama_model_identity
+from dilu.runtime.runtime_failures import (
+    ProtocolInvariantCode,
+    ProtocolInvariantViolation,
+    RuntimeProtocolError,
+)
+from dilu.runtime.scientific_trace import (
+    DecisionTraceRecord,
+    ScientificSimulatorAbort,
+    ScientificTraceWriteError,
+    ScientificTraceWriter,
+    TraceDisposition,
+    append_trace_before_step,
+)
+from dilu.runtime.scientific_transport_records import GenerationResult
+from dilu.runtime.shield_stack import ShieldStackResult, execute_shield_stack
 from dilu.scenario.envScenario import EnvScenario
 
 
@@ -102,6 +122,7 @@ STOP_THRESHOLD_MPS_DEFAULT = 0.5
 NEAR_STOP_THRESHOLD_MPS_DEFAULT = 2.0
 LEGACY_BENCHMARK_VARIANT = "legacy_direct_action"
 LEGACY_EXECUTION_MODE = "direct_action_loop"
+_PROPOSED_ACTION_UNSET = object()
 
 
 def build_env_bundle(
@@ -567,7 +588,23 @@ def _apply_measurement_runtime_overrides(
     return runtime_config
 
 
-def _inspect_ollama_model(model_name: str) -> Dict[str, Optional[str]]:
+def _inspect_ollama_model(model_name: str) -> Dict[str, Any]:
+    identity_fields: Dict[str, Any] = {
+        "model_digest": None,
+        "model_identity_verified": False,
+        "model_identity_source": "ollama_native_api_tags",
+        "model_identity_error": None,
+    }
+    try:
+        identity = inspect_ollama_model_identity(
+            os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1"),
+            model_name,
+        )
+        identity_fields["model_digest"] = identity.model_digest
+        identity_fields["model_identity_verified"] = True
+    except Exception as exc:
+        identity_fields["model_identity_error"] = type(exc).__name__
+
     try:
         proc = subprocess.run(
             ["ollama", "show", model_name],
@@ -583,6 +620,7 @@ def _inspect_ollama_model(model_name: str) -> Dict[str, Optional[str]]:
             "family": None,
             "quantization": None,
             "parameters": None,
+            **identity_fields,
         }
 
     text = (proc.stdout or proc.stderr or "").strip()
@@ -592,6 +630,7 @@ def _inspect_ollama_model(model_name: str) -> Dict[str, Optional[str]]:
         "family": None,
         "quantization": None,
         "parameters": None,
+        **identity_fields,
     }
     for line in text.splitlines():
         lower = line.lower()
@@ -715,6 +754,29 @@ _TRACE_METADATA_KEYS = (
     "response_truncated_before_contract",
     "response_action_line",
     "response_first_line",
+    "shield_execution_mode",
+    "shield_proposed_action_id",
+    "shield_fallback_modified_action_id",
+    "shield_unshielded_action_id",
+    "shield_shielded_action_id",
+    "shield_executed_action_id",
+    "shield_final_action_id",
+    "shield_stage_order",
+    "lane_change_stage_input_action_id",
+    "lane_change_stage_output_action_id",
+    "lane_change_stage_applied",
+    "lane_change_stage_bypassed",
+    "lane_change_stage_reason",
+    "longitudinal_safety_stage_input_action_id",
+    "longitudinal_safety_stage_output_action_id",
+    "longitudinal_safety_stage_applied",
+    "longitudinal_safety_stage_bypassed",
+    "longitudinal_safety_stage_reason",
+    "low_speed_recovery_stage_input_action_id",
+    "low_speed_recovery_stage_output_action_id",
+    "low_speed_recovery_stage_applied",
+    "low_speed_recovery_stage_bypassed",
+    "low_speed_recovery_stage_reason",
     "lane_change_shield_reason",
     "lane_change_original_action_id",
     "lane_change_final_action_id",
@@ -780,7 +842,10 @@ def _decision_trace_item(
     decision_meta: Dict[str, Any],
     include_response_text: bool = False,
 ) -> Dict[str, Any]:
-    model_action = int(decision_meta.get("original_selected_action", action_id))
+    model_action_value = decision_meta.get("original_selected_action", action_id)
+    model_action = (
+        int(model_action_value) if model_action_value is not None else None
+    )
     final_action = int(decision_meta.get("selected_action", action_id))
     trace_item: Dict[str, Any] = {
         "step_idx": int(step_idx),
@@ -835,49 +900,115 @@ def _apply_reactive_safety_shields(
     action: int,
     sce: EnvScenario,
     decision_meta: Dict,
+    *,
+    execution_mode: ExecutionMode = ExecutionMode.SHIELDED,
+    proposed_action_id: Any = _PROPOSED_ACTION_UNSET,
+    shield_config: Optional[ShieldConfig] = None,
 ) -> Tuple[int, Dict[str, Any]]:
-    original_action = _safe_int_action(action)
-    final_action = original_action
-    shield_meta: Dict[str, Any] = {
-        "reactive_safety_shield_applied": False,
-        "reactive_safety_original_action_id": int(original_action),
-        "reactive_safety_final_action_id": int(final_action),
-    }
-
-    lane_result = apply_lane_change_safety_shield(sce, final_action)
-    shield_meta.update(lane_result.to_metadata("lane_change"))
-    if lane_result.applied:
-        final_action = int(lane_result.action_id)
-        shield_meta["reactive_safety_shield_applied"] = True
-        decision_meta["runtime_override_reason_class"] = "safety_shield"
-        decision_meta["runtime_override_reason"] = lane_result.reason
-
-    longitudinal_result = apply_longitudinal_safety_shield(sce, final_action)
-    shield_meta.update(longitudinal_result.to_metadata("longitudinal_safety"))
-    if longitudinal_result.applied:
-        final_action = int(longitudinal_result.action_id)
-        shield_meta["reactive_safety_shield_applied"] = True
-        decision_meta["runtime_override_reason_class"] = "longitudinal_safety_shield"
-        decision_meta["runtime_override_reason"] = longitudinal_result.reason
-
-    safety_shield_applied = bool(lane_result.applied or longitudinal_result.applied)
-    flow_result = apply_low_speed_recovery_shield(
+    result = _execute_reactive_safety_shield_stack(
+        action,
         sce,
-        final_action,
-        safety_shield_applied=safety_shield_applied,
+        execution_mode=execution_mode,
+        proposed_action_id=proposed_action_id,
+        shield_config=shield_config,
     )
-    shield_meta.update(flow_result.to_metadata("flow_recovery"))
-    shield_meta["flow_recovery_reason"] = flow_result.reason
-    if flow_result.applied:
-        final_action = int(flow_result.action_id)
-        decision_meta["runtime_override_reason_class"] = "flow_recovery_shield"
-        decision_meta["runtime_override_reason"] = flow_result.reason
+    shield_meta = result.to_metadata()
+    _update_shield_decision_metadata(decision_meta, result, shield_meta)
+    return result.executed_action_id, shield_meta
 
-    shield_meta["reactive_safety_final_action_id"] = int(final_action)
+
+def _execute_reactive_safety_shield_stack(
+    action: int,
+    sce: EnvScenario,
+    *,
+    execution_mode: ExecutionMode = ExecutionMode.SHIELDED,
+    proposed_action_id: Any = _PROPOSED_ACTION_UNSET,
+    shield_config: Optional[ShieldConfig] = None,
+) -> ShieldStackResult:
+    fallback_modified_action = _safe_int_action(action)
+    proposed_action = (
+        fallback_modified_action
+        if proposed_action_id is _PROPOSED_ACTION_UNSET
+        else (
+            None
+            if proposed_action_id is None
+            else _safe_int_action(proposed_action_id)
+        )
+    )
+    return execute_shield_stack(
+        scenario=sce,
+        proposed_action_id=proposed_action,
+        fallback_modified_action_id=fallback_modified_action,
+        execution_mode=execution_mode,
+        shield_config=shield_config or ShieldConfig.implementation_defaults(),
+    )
+
+
+def _update_shield_decision_metadata(
+    decision_meta: Dict[str, Any],
+    result: ShieldStackResult,
+    shield_meta: Dict[str, Any],
+) -> None:
+    override_classes = {
+        "lane_change": "safety_shield",
+        "longitudinal_safety": "longitudinal_safety_shield",
+        "low_speed_recovery": "flow_recovery_shield",
+    }
+    for stage in result.stages:
+        if stage.applied:
+            decision_meta["runtime_override_reason_class"] = override_classes[
+                stage.stage_name
+            ]
+            decision_meta["runtime_override_reason"] = stage.reason
     decision_meta.update(shield_meta)
-    decision_meta["original_selected_action"] = int(original_action)
-    decision_meta["selected_action"] = int(final_action)
-    return int(final_action), shield_meta
+    decision_meta["original_selected_action"] = result.proposed_action_id
+    decision_meta["selected_action"] = result.executed_action_id
+
+
+def _compose_scientific_trace_record(
+    factory: Callable[..., DecisionTraceRecord],
+    *,
+    decision_index: int,
+    env_step_index: int,
+    prompt_artifact: PromptArtifact,
+    generation: GenerationResult,
+    resolution: Optional[ActionResolutionResult],
+    shield_stack: Optional[ShieldStackResult],
+    disposition: TraceDisposition,
+    decision_latency_ms: float,
+    benchmark_event_meta: Dict[str, Any],
+) -> DecisionTraceRecord:
+    try:
+        record = factory(
+            decision_index=decision_index,
+            env_step_index=env_step_index,
+            prompt_artifact=prompt_artifact,
+            generation=generation,
+            resolution=resolution,
+            shield_stack=shield_stack,
+            disposition=disposition,
+            decision_latency_ms=decision_latency_ms,
+            benchmark_event_meta=dict(benchmark_event_meta),
+        )
+        if not isinstance(record, DecisionTraceRecord):
+            raise ValueError("Scientific trace factory returned an invalid record.")
+        if (
+            record.prompt_artifact is not prompt_artifact
+            or record.generation is not generation
+            or record.resolution is not resolution
+            or record.shield_stack is not shield_stack
+            or record.disposition is not disposition
+            or record.context.key.decision_index != decision_index
+            or record.context.key.env_step_index != env_step_index
+        ):
+            raise ValueError("Scientific trace factory did not preserve typed evidence.")
+        return record
+    except ScientificTraceWriteError:
+        raise
+    except Exception as exc:
+        raise ScientificTraceWriteError(
+            "Scientific decision trace composition failed."
+        ) from exc
 
 
 def _resolve_measurement_output_root(
@@ -1509,6 +1640,53 @@ def extract_step_traffic_metrics(
     }
 
 
+def _scientific_attempt_guard(
+    function: Callable[..., Dict],
+) -> Callable[..., Dict]:
+    signature = inspect.signature(function)
+
+    @functools.wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Dict:
+        bound = signature.bind_partial(*args, **kwargs)
+        runtime = bound.arguments.get("scientific_runtime")
+        if not isinstance(runtime, ScientificEpisodeRuntime):
+            return function(*args, **kwargs)
+        runtime.begin_attempt()
+        try:
+            result = function(*args, **kwargs)
+        except Exception as exc:
+            _abort_scientific_attempt(runtime, exc)
+            raise
+        try:
+            references = runtime.current_trace_references()
+            runtime.complete_attempt(references)
+        except Exception as exc:
+            _abort_scientific_attempt(runtime, exc)
+            raise
+        return result
+
+    return wrapped
+
+
+def _abort_scientific_attempt(
+    runtime: ScientificEpisodeRuntime,
+    error: Exception,
+) -> None:
+    references = runtime.cached_trace_references()
+    try:
+        runtime.abort_attempt(error, references)
+    except Exception as terminal_error:
+        raise terminal_error from error
+
+
+def _scientific_protocol_error(
+    code: ProtocolInvariantCode,
+    message: str,
+) -> RuntimeProtocolError:
+    return RuntimeProtocolError(ProtocolInvariantViolation.from_mapping(code, message))
+
+
+@_scientific_attempt_guard
 def run_episode(
     config: Dict,
     env_config: Dict,
@@ -1543,20 +1721,63 @@ def run_episode(
     driving_instruction: Optional[str] = None,
     max_steps_override: Optional[int] = None,
     timeout_early_stop_policy: Optional[Dict[str, Any]] = None,
+    execution_mode: ExecutionMode = ExecutionMode.SHIELDED,
+    shield_config: Optional[ShieldConfig] = None,
+    scientific_trace_writer: Optional[ScientificTraceWriter] = None,
+    scientific_trace_record_factory: Optional[
+        Callable[..., DecisionTraceRecord]
+    ] = None,
+    scientific_runtime: Optional[ScientificEpisodeRuntime] = None,
 ) -> Dict:
     env = None
+    if scientific_runtime is not None:
+        if not isinstance(scientific_runtime, ScientificEpisodeRuntime):
+            raise ValueError("scientific_runtime must be ScientificEpisodeRuntime.")
+        if (
+            scientific_trace_writer is not None
+            or scientific_trace_record_factory is not None
+        ):
+            raise ValueError(
+                "Scientific runtime owns its trace writer and record factory."
+            )
+        scientific_runtime.validate_binding()
+        if seed != scientific_runtime.identity.simulator_seed:
+            raise ValueError("Simulator seed drifted from the scientific runtime.")
+        if few_shot_num != 0:
+            raise ValueError("Scientific runtime requires zero few-shot examples.")
+        scientific_trace_writer = scientific_runtime.trace_writer
+        timeout_penalty_state = None
+        execution_mode = scientific_runtime.harness_config.condition.execution_mode
+        shield_config = scientific_runtime.harness_config.shield
+        model_name = scientific_runtime.model_tag
+    if scientific_runtime is None and (scientific_trace_writer is None) != (
+        scientific_trace_record_factory is None
+    ):
+        raise ValueError(
+            "Scientific trace writer and record factory must be provided together."
+        )
     if benchmark_case is not None:
-        case_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(benchmark_case.get("case_id") or seed)).strip("_")
+        case_slug = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", str(benchmark_case.get("case_id") or seed)
+        ).strip("_")
         result_prefix = f"{case_slug}_seed_{seed}"
     else:
         result_prefix = f"highway_seed_{seed}"
     env_snapshot = None
     if isinstance(env_config, dict):
-        env_snapshot = env_config.get(env_type) if isinstance(env_config.get(env_type), dict) else None
-    episode_max_steps = int(max_steps_override or _resolve_simulation_duration(config, env_snapshot))
+        env_snapshot = (
+            env_config.get(env_type)
+            if isinstance(env_config.get(env_type), dict)
+            else None
+        )
+    episode_max_steps = int(
+        max_steps_override or _resolve_simulation_duration(config, env_snapshot)
+    )
     if save_artifacts or record_video:
         if not run_dir:
-            raise ValueError("run_dir is required when save_artifacts or record_video is enabled.")
+            raise ValueError(
+                "run_dir is required when save_artifacts or record_video is enabled."
+            )
         ensure_dir(run_dir)
     if save_artifacts:
         database_path = os.path.join(run_dir, f"{result_prefix}.db")
@@ -1616,6 +1837,7 @@ def run_episode(
     prev_action_id = None
     alignment_samples = []
     run_action_trace = []
+    scientific_trace_references = []
     fallback_reason_counts: Counter = Counter()
     runtime_parse_path_counts: Counter = Counter()
     lane_change_shield_reason_counts: Counter = Counter()
@@ -1683,8 +1905,37 @@ def run_episode(
             scenario_spec_metadata = apply_highway_scenario_spec(env, benchmark_case)
         final_info = info
 
-        sce = EnvScenario(env, env_type, seed, database_path or None, enable_db=bool(enable_db_logging or save_artifacts))
-        agent = DriverAgent(sce, verbose=True)
+        sce = EnvScenario(
+            env,
+            env_type,
+            seed,
+            database_path or None,
+            enable_db=bool(enable_db_logging or save_artifacts),
+        )
+        agent = DriverAgent(
+            sce,
+            verbose=True,
+            scientific_runtime=scientific_runtime,
+        )
+        if scientific_runtime is not None:
+
+            def _runtime_trace_record_factory(**kwargs):
+                available = getattr(
+                    agent,
+                    "last_scientific_available_action_ids",
+                    None,
+                )
+                if not isinstance(available, tuple):
+                    raise _scientific_protocol_error(
+                        ProtocolInvariantCode.TRACE_EVIDENCE_MISSING,
+                        "Scientific action availability was not retained.",
+                    )
+                return scientific_runtime.build_trace_record(
+                    available_action_ids=available,
+                    **kwargs,
+                )
+
+            scientific_trace_record_factory = _runtime_trace_record_factory
         if benchmark_case is not None:
             benchmark_evaluator = BenchmarkEpisodeEvaluator(
                 benchmark_case,
@@ -1692,16 +1943,24 @@ def run_episode(
                 scenario_spec_metadata=scenario_spec_metadata,
             )
             episode_max_steps = int(max_steps_override or benchmark_evaluator.max_steps)
-        initial_penalty_snapshot = decision_timeout_penalty_snapshot(timeout_penalty_state)
+        initial_penalty_snapshot = decision_timeout_penalty_snapshot(
+            timeout_penalty_state
+        )
         timeout_policy_mode = initial_penalty_snapshot.get("policy_mode")
-        timeout_level_initial_sec = initial_penalty_snapshot.get("effective_decision_timeout_sec")
+        timeout_level_initial_sec = initial_penalty_snapshot.get(
+            "effective_decision_timeout_sec"
+        )
         timeout_level_final_sec = timeout_level_initial_sec
         timeout_level_max_sec = timeout_level_initial_sec
         timeout_level_cap_sec = None
         ladder_levels = initial_penalty_snapshot.get("timeout_ladder_sec") or []
         if ladder_levels:
             timeout_level_cap_sec = max(float(value) for value in ladder_levels)
-        if initial_penalty_snapshot.get("enabled") and initial_penalty_snapshot.get("effective_decision_timeout_sec") is not None:
+        if (
+            initial_penalty_snapshot.get("enabled")
+            and initial_penalty_snapshot.get("effective_decision_timeout_sec")
+            is not None
+        ):
             try:
                 agent.set_decision_timeout_sec(
                     float(initial_penalty_snapshot["effective_decision_timeout_sec"])
@@ -1710,7 +1969,9 @@ def run_episode(
                 pass
 
         prev_action = "Not available"
-        effective_driving_instruction = driving_instruction or "Drive safely and avoid collisons"
+        effective_driving_instruction = (
+            driving_instruction or "Drive safely and avoid collisons"
+        )
         for frame_id in range(episode_max_steps):
             benchmark_event_meta: Dict[str, Any] = {
                 "benchmark_events_applied": False,
@@ -1730,21 +1991,56 @@ def run_episode(
 
             fewshot_results = (
                 agent_memory.retriveMemory(sce, frame_id, few_shot_num)
-                if (few_shot_num > 0 and agent_memory is not None) else []
+                if (few_shot_num > 0 and agent_memory is not None)
+                else []
             )
             fewshot_messages = [x["human_question"] for x in fewshot_results]
             fewshot_answers = [x["LLM_response"] for x in fewshot_results]
 
             sce_descrip = sce.describe(frame_id)
             avail_action = sce.availableActionsDescription()
-            action, response, human_question, fewshot_answer = agent.few_shot_decision(
-                scenario_description=sce_descrip,
-                available_actions=avail_action,
-                previous_decisions=prev_action,
-                fewshot_messages=fewshot_messages,
-                driving_intensions=effective_driving_instruction,
-                fewshot_answers=fewshot_answers,
-            )
+            if scientific_runtime is not None:
+                agent.scientific_generation_context = (
+                    scientific_runtime.generation_context(frame_id)
+                )
+            try:
+                action, response, human_question, fewshot_answer = (
+                    agent.few_shot_decision(
+                        scenario_description=sce_descrip,
+                        available_actions=avail_action,
+                        previous_decisions=prev_action,
+                        fewshot_messages=fewshot_messages,
+                        driving_intensions=effective_driving_instruction,
+                        fewshot_answers=fewshot_answers,
+                    )
+                )
+            except ScientificGenerationAbort as exc:
+                if scientific_trace_writer is not None:
+                    prompt_artifact = getattr(agent, "last_prompt_artifact", None)
+                    if not isinstance(prompt_artifact, PromptArtifact):
+                        raise _scientific_protocol_error(
+                            ProtocolInvariantCode.TRACE_EVIDENCE_MISSING,
+                            "Blocked generation is missing its prompt artifact.",
+                        )
+                    blocked_record = _compose_scientific_trace_record(
+                        scientific_trace_record_factory,
+                        decision_index=int(frame_id),
+                        env_step_index=int(frame_id),
+                        prompt_artifact=prompt_artifact,
+                        generation=exc.result,
+                        resolution=None,
+                        shield_stack=None,
+                        disposition=TraceDisposition.BLOCKED_BEFORE_EXECUTION,
+                        decision_latency_ms=exc.result.latency_ms,
+                        benchmark_event_meta=benchmark_event_meta,
+                    )
+                    trace_reference = scientific_trace_writer.append(blocked_record)
+                    scientific_trace_references.append(trace_reference.to_dict())
+                    raise ScientificGenerationAbort(
+                        exc.result,
+                        trace_reference=trace_reference,
+                    ) from exc
+                raise
             prev_action = action
             level_snapshot = decision_timeout_penalty_snapshot(timeout_penalty_state)
             active_timeout_level = level_snapshot.get("effective_decision_timeout_sec")
@@ -1880,7 +2176,21 @@ def run_episode(
             format_failure_count += int(not fmt["strict_format_match"])
 
             action = _safe_int_action(action)
-            action, shield_meta = _apply_reactive_safety_shields(action, sce, decision_meta)
+            proposed_action = (
+                decision_meta["original_selected_action"]
+                if "original_selected_action" in decision_meta
+                else action
+            )
+            shield_stack = _execute_reactive_safety_shield_stack(
+                action,
+                sce,
+                execution_mode=execution_mode,
+                proposed_action_id=proposed_action,
+                shield_config=shield_config,
+            )
+            action = shield_stack.executed_action_id
+            shield_meta = shield_stack.to_metadata()
+            _update_shield_decision_metadata(decision_meta, shield_stack, shield_meta)
             benchmark_action_context = dict(shield_meta)
             benchmark_action_context.update(benchmark_event_meta)
             benchmark_action_context.update(
@@ -1908,7 +2218,9 @@ def run_episode(
                     shield_meta.get("longitudinal_safety_shield_reason"),
                 )
             if shield_meta.get("flow_recovery_shield_applied"):
-                _bump_counter(flow_recovery_reason_counts, shield_meta.get("flow_recovery_reason"))
+                _bump_counter(
+                    flow_recovery_reason_counts, shield_meta.get("flow_recovery_reason")
+                )
             if save_artifacts:
                 try:
                     pre_step_metrics = extract_step_traffic_metrics(
@@ -1926,7 +2238,9 @@ def run_episode(
                 except Exception:
                     pre_step_metrics = {}
                 if pre_step_metrics.get("ego_speed_mps") is not None:
-                    decision_meta["ego_speed_mps"] = pre_step_metrics.get("ego_speed_mps")
+                    decision_meta["ego_speed_mps"] = pre_step_metrics.get(
+                        "ego_speed_mps"
+                    )
                 run_action_trace.append(
                     _decision_trace_item(
                         step_idx=int(frame_id + 1),
@@ -1937,24 +2251,71 @@ def run_episode(
                 )
             if on_decision is not None:
                 try:
-                    on_decision(int(frame_id + 1), int(action), response, dict(decision_meta))
+                    on_decision(
+                        int(frame_id + 1), int(action), response, dict(decision_meta)
+                    )
                 except Exception:
                     pass
             lane_change_count += int(action in (0, 2))
-            if prev_action_id is not None and ((prev_action_id == 3 and action == 4) or (prev_action_id == 4 and action == 3)):
+            if prev_action_id is not None and (
+                (prev_action_id == 3 and action == 4)
+                or (prev_action_id == 4 and action == 3)
+            ):
                 flap_accel_decel_count += 1
             prev_action_id = action
 
-            if alignment_sample_rate > 0 and len(alignment_samples) < alignment_max_samples and random.random() < alignment_sample_rate:
-                alignment_samples.append({
-                    "scenario_summary": (sce_descrip or "")[:800],
-                    "model_response": response,
-                    "action_id": int(action),
-                    "step_idx": int(frame_id),
-                    "seed": int(seed),
-                })
+            if (
+                alignment_sample_rate > 0
+                and len(alignment_samples) < alignment_max_samples
+                and random.random() < alignment_sample_rate
+            ):
+                alignment_samples.append(
+                    {
+                        "scenario_summary": (sce_descrip or "")[:800],
+                        "model_response": response,
+                        "action_id": int(action),
+                        "step_idx": int(frame_id),
+                        "seed": int(seed),
+                    }
+                )
 
-            obs, reward, terminated, truncated, info = env.step(action)
+            if scientific_trace_writer is not None:
+                prompt_artifact = getattr(agent, "last_prompt_artifact", None)
+                generation = getattr(agent, "last_generation_result", None)
+                resolution = getattr(agent, "last_action_resolution", None)
+                if (
+                    not isinstance(prompt_artifact, PromptArtifact)
+                    or not isinstance(generation, GenerationResult)
+                    or not isinstance(resolution, ActionResolutionResult)
+                ):
+                    raise _scientific_protocol_error(
+                        ProtocolInvariantCode.TRACE_EVIDENCE_MISSING,
+                        "Scientific decision is missing typed runtime evidence.",
+                    )
+                trace_record = _compose_scientific_trace_record(
+                    scientific_trace_record_factory,
+                    decision_index=int(frame_id),
+                    env_step_index=int(frame_id),
+                    prompt_artifact=prompt_artifact,
+                    generation=generation,
+                    resolution=resolution,
+                    shield_stack=shield_stack,
+                    disposition=TraceDisposition.READY_FOR_ENV_STEP,
+                    decision_latency_ms=max(
+                        generation.latency_ms,
+                        decision_elapsed_sec * 1000.0,
+                    ),
+                    benchmark_event_meta=benchmark_event_meta,
+                )
+                trace_reference, step_result = append_trace_before_step(
+                    scientific_trace_writer,
+                    trace_record,
+                    env.step,
+                )
+                scientific_trace_references.append(trace_reference.to_dict())
+                obs, reward, terminated, truncated, info = step_result
+            else:
+                obs, reward, terminated, truncated, info = env.step(action)
             final_info = info
             crashed = bool(info.get("crashed", False))
             done = terminated or truncated
@@ -2036,7 +2397,16 @@ def run_episode(
                     )
                 break
 
+    except (
+        RuntimeProtocolError,
+        ScientificGenerationAbort,
+        ScientificSimulatorAbort,
+        ScientificTraceWriteError,
+    ) as exc:
+        raise
     except Exception as exc:
+        if scientific_runtime is not None:
+            raise
         error = f"{type(exc).__name__}: {exc}"
         episode_stop_reason = "error"
     finally:
@@ -2132,10 +2502,18 @@ def run_episode(
                 "instruction": str(benchmark_case.get("instruction", "")),
                 "category": str(benchmark_case.get("category", "")),
                 "tags": list(benchmark_case.get("tags") or []),
-                "time_limit_sec": round(float(benchmark_case.get("time_limit_sec") or 0.0), 3),
-                "benchmark_case_env_overrides": copy.deepcopy(benchmark_case.get("env_overrides") or {}),
-                "benchmark_success_criteria": copy.deepcopy(benchmark_case.get("success_criteria") or {}),
-                "benchmark_scenario_spec": copy.deepcopy(scenario_spec_metadata.get("benchmark_scenario_spec") or {}),
+                "time_limit_sec": round(
+                    float(benchmark_case.get("time_limit_sec") or 0.0), 3
+                ),
+                "benchmark_case_env_overrides": copy.deepcopy(
+                    benchmark_case.get("env_overrides") or {}
+                ),
+                "benchmark_success_criteria": copy.deepcopy(
+                    benchmark_case.get("success_criteria") or {}
+                ),
+                "benchmark_scenario_spec": copy.deepcopy(
+                    scenario_spec_metadata.get("benchmark_scenario_spec") or {}
+                ),
                 "benchmark_scenario_spec_applied": bool(
                     scenario_spec_metadata.get("benchmark_scenario_spec_applied", False)
                 ),
@@ -2157,7 +2535,9 @@ def run_episode(
                 "time_efficiency_score": 0.0,
                 "overall_score": 0.0,
                 "driving_score": 0.0,
-                "benchmark_failure_reason": episode_stop_reason if error is None else "episode_error",
+                "benchmark_failure_reason": (
+                    episode_stop_reason if error is None else "episode_error"
+                ),
                 "benchmark_speed_std_mps": None,
                 "benchmark_min_positive_ttc_sec": None,
                 "benchmark_max_progress_m": 0.0,
@@ -2165,8 +2545,35 @@ def run_episode(
     else:
         benchmark_metrics = {}
 
+    if scientific_runtime is not None:
+        condition = scientific_runtime.harness_config.condition
+        identity = scientific_runtime.identity
+        prompt_profile = condition.policy_content.value
+        scientific_identity = {
+            "campaign_id": identity.campaign_id,
+            "episode_attempt_id": identity.episode_attempt_id,
+            "condition_id": scientific_runtime.harness_config.condition_id(),
+            "config_sha256": scientific_runtime.runtime_lock.config_sha256,
+            "model_digest": scientific_runtime.model_digest,
+            "policy_content": condition.policy_content.value,
+            "output_enforcement": condition.output_enforcement.value,
+            "execution_mode": condition.execution_mode.value,
+            "runtime_lock_source_artifact_sha256": (
+                scientific_runtime.runtime_lock.source_artifact_sha256
+            ),
+        }
+    else:
+        prompt_profile = (
+            str(config.get("eval_prompt_profile", "harness_v2") or "harness_v2")
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        scientific_identity = {}
+
     episode_result = {
         "seed": seed,
+        "prompt_profile": prompt_profile,
         "steps": steps,
         "max_steps": int(episode_max_steps),
         "crashed": crashed,
@@ -2200,12 +2607,20 @@ def run_episode(
         "ollama_native_decision_count": ollama_native_decision_count,
         "ollama_native_timeout_count": ollama_native_timeout_count,
         "ollama_native_timeout_short_circuit_count": ollama_native_timeout_short_circuit_count,
-        "ollama_downgrade_triggered": bool(ollama_native_retry_count > 0 or ("auto" in ollama_effective_think_modes_seen and ollama_requested_think_mode == "think")),
+        "ollama_downgrade_triggered": bool(
+            ollama_native_retry_count > 0
+            or (
+                "auto" in ollama_effective_think_modes_seen
+                and ollama_requested_think_mode == "think"
+            )
+        ),
         "slow_decision_count": int(slow_decision_count),
         "p95_decision_latency_sec": p95_decision_latency_sec,
         "timeout_penalty_stage_max": int(timeout_penalty_stage_max),
         "timeout_penalty_events": int(max(0, timeout_penalty_events)),
-        "timeout_penalty_timeout_triggers": int(max(0, timeout_penalty_timeout_triggers)),
+        "timeout_penalty_timeout_triggers": int(
+            max(0, timeout_penalty_timeout_triggers)
+        ),
         "timeout_penalty_slow_triggers": int(max(0, timeout_penalty_slow_triggers)),
         "timeout_penalty_final_decision_timeout_sec": (
             round(float(penalty_snapshot.get("effective_decision_timeout_sec")), 4)
@@ -2213,9 +2628,21 @@ def run_episode(
             else None
         ),
         "timeout_policy_mode": timeout_policy_mode,
-        "timeout_level_initial_sec": round(float(timeout_level_initial_sec), 4) if timeout_level_initial_sec is not None else None,
-        "timeout_level_final_sec": round(float(timeout_level_final_sec), 4) if timeout_level_final_sec is not None else None,
-        "timeout_level_max_sec": round(float(timeout_level_max_sec), 4) if timeout_level_max_sec is not None else None,
+        "timeout_level_initial_sec": (
+            round(float(timeout_level_initial_sec), 4)
+            if timeout_level_initial_sec is not None
+            else None
+        ),
+        "timeout_level_final_sec": (
+            round(float(timeout_level_final_sec), 4)
+            if timeout_level_final_sec is not None
+            else None
+        ),
+        "timeout_level_max_sec": (
+            round(float(timeout_level_max_sec), 4)
+            if timeout_level_max_sec is not None
+            else None
+        ),
         "timeout_escalation_count": int(timeout_escalation_count),
         "timeout_recovery_count": int(timeout_recovery_count),
         "timeout_level_15_rate": round(timeout_level_15_rate, 4),
@@ -2224,8 +2651,12 @@ def run_episode(
         "timeout_phase": penalty_snapshot.get("timeout_phase"),
         "timeout_phase_counts": _counter_dict(timeout_phase_counts),
         "warmup_active": bool(penalty_snapshot.get("warmup_active", False)),
-        "warmup_success_observed": bool(penalty_snapshot.get("warmup_success_observed", False)),
-        "warmup_timeout_failures": int(penalty_snapshot.get("warmup_timeout_failures", 0) or 0),
+        "warmup_success_observed": bool(
+            penalty_snapshot.get("warmup_success_observed", False)
+        ),
+        "warmup_timeout_failures": int(
+            penalty_snapshot.get("warmup_timeout_failures", 0) or 0
+        ),
         "warmup_timeout_sec": (
             round(float(penalty_snapshot.get("warmup_timeout_sec")), 4)
             if penalty_snapshot.get("warmup_timeout_sec") is not None
@@ -2267,7 +2698,11 @@ def run_episode(
         "rear_headway_violation_rate": round(rear_headway_violation_rate, 4),
         "low_speed_blocking_steps": low_speed_blocking_steps,
         "low_speed_blocking_rate": round(low_speed_blocking_rate, 4),
-        "min_ego_speed_mps": round(float(min_ego_speed_mps), 4) if min_ego_speed_mps is not None else None,
+        "min_ego_speed_mps": (
+            round(float(min_ego_speed_mps), 4)
+            if min_ego_speed_mps is not None
+            else None
+        ),
         "stopped_ever": bool(stop_steps > 0),
         "stop_steps": int(stop_steps),
         "stop_rate": round(stop_rate, 4),
@@ -2277,18 +2712,25 @@ def run_episode(
         "lane_change_rate": round(lane_change_rate, 4),
         "lane_change_shield_count": int(lane_change_shield_count),
         "lane_change_shield_rate": round(lane_change_shield_rate, 4),
-        "lane_change_shield_reason_counts": _counter_dict(lane_change_shield_reason_counts),
+        "lane_change_shield_reason_counts": _counter_dict(
+            lane_change_shield_reason_counts
+        ),
         "unsafe_lane_change_attempt_count": int(unsafe_lane_change_attempt_count),
         "longitudinal_safety_shield_count": int(longitudinal_safety_shield_count),
         "longitudinal_safety_shield_rate": round(longitudinal_safety_shield_rate, 4),
         "longitudinal_safety_shield_reason_counts": _counter_dict(
             longitudinal_safety_shield_reason_counts
         ),
-        "unsafe_longitudinal_action_attempt_count": int(unsafe_longitudinal_action_attempt_count),
+        "unsafe_longitudinal_action_attempt_count": int(
+            unsafe_longitudinal_action_attempt_count
+        ),
         "flow_recovery_shield_count": int(flow_recovery_shield_count),
         "flow_recovery_shield_rate": round(flow_recovery_shield_rate, 4),
         "flow_recovery_reason_counts": _counter_dict(flow_recovery_reason_counts),
         "action_trace": run_action_trace if save_artifacts else None,
+        "scientific_trace_references": (
+            scientific_trace_references if scientific_trace_writer is not None else None
+        ),
         "flap_accel_decel_count": flap_accel_decel_count,
         "flap_accel_decel_rate": round(flap_accel_decel_rate, 4),
         "decision_latency_ms_avg": decision_latency_ms_avg,
@@ -2300,11 +2742,16 @@ def run_episode(
         "run_dir": run_dir if (save_artifacts or record_video) else None,
         "error": error,
         "final_info": copy.deepcopy(final_info),
+        **scientific_identity,
         **benchmark_metrics,
     }
     if benchmark_case is not None:
         episode_result = augment_behavior_aware_benchmark_episode(episode_result)
-    return compute_split_scores_for_episode(episode_result)
+    try:
+        scored_episode = compute_split_scores_for_episode(episode_result)
+    except Exception:
+        raise
+    return scored_episode
 
 
 def aggregate_results(
@@ -2460,8 +2907,16 @@ def aggregate_results(
             else "decision_timeout_collapse"
         )
     ollama_case_unload_summary = _summarize_ollama_case_unloads(episodes)
+    prompt_profiles = sorted(
+        {
+            str(e.get("prompt_profile"))
+            for e in episodes
+            if e.get("prompt_profile") is not None
+        }
+    )
     aggregate = {
         "model": model_name,
+        "prompt_profile": prompt_profiles[0] if len(prompt_profiles) == 1 else ",".join(prompt_profiles),
         "episodes": total,
         "planned_episode_count": planned_total,
         "executed_episode_count": total,
@@ -2816,6 +3271,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
     parser.add_argument("--few-shot-num", type=int, default=None, help="Override config few_shot_num.")
     parser.add_argument("--memory-path", default=None, help="Override config memory_path.")
+    parser.add_argument(
+        "--prompt-profile",
+        choices=["harness_v2", "legacy_dilu_like"],
+        default=None,
+        help="Runtime prompt profile for ablations. Default comes from config eval_prompt_profile or harness_v2.",
+    )
     parser.add_argument("--output", default=None, help="Write JSON report to this file (default: results/eval_compare_<timestamp>.json)")
     parser.add_argument("--experiment-id", default=None, help="Experiment id. Defaults to config or timestamp.")
     parser.add_argument("--results-root", default=None, help="Structured results root. Defaults to config or results/experiments.")
@@ -2973,6 +3434,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         raise ValueError("--benchmark-categories requires --benchmark-case-set.")
 
     config = load_runtime_config(args.config)
+    if args.prompt_profile is not None:
+        config["eval_prompt_profile"] = args.prompt_profile
+    prompt_profile = str(config.get("eval_prompt_profile", "harness_v2") or "harness_v2").strip().lower().replace("-", "_")
+    if prompt_profile not in {"harness_v2", "legacy_dilu_like"}:
+        raise ValueError("eval_prompt_profile must be one of: harness_v2, legacy_dilu_like.")
+    config["eval_prompt_profile"] = prompt_profile
     energy_mode = _normalize_energy_mode(args.energy_mode)
     measurement_mode = energy_mode != "none"
     config = _apply_measurement_runtime_overrides(config, args, energy_mode=energy_mode)
@@ -3475,6 +3942,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             measurement_integrity.get("quarantined_models_due_to_timeout_collapse", [])
         ),
         "openai_api_type": config["OPENAI_API_TYPE"],
+        "prompt_profile": prompt_profile,
         "benchmark_mode": bool(benchmark_mode),
         "headline_task_metric": (
             "driving_score_balanced_v1"
@@ -3567,6 +4035,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             "progress_bar_requested": bool(resolved_eval_progress_mode),
             "progress_reply_mode_requested": str(resolved_eval_progress_reply_mode),
             "progress_reply_mode_effective": str(effective_eval_progress_reply_mode),
+            "prompt_profile": prompt_profile,
             "policy_mode": "timeout_only",
             "deprecated_policy_cli_fields_ignored": deprecated_cli_policy_flags,
             "deprecated_policy_override_fields_ignored": deprecated_override_fields_declared,

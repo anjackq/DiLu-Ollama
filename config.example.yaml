@@ -46,12 +46,14 @@ OLLAMA_CHAT_MODEL: 'qwen3.5:0.8b'
 OLLAMA_REFLECTION_MODEL: null
 OLLAMA_EMBED_MODEL: 'qwen3-embedding:8b'
 OLLAMA_API_KEY: 'ollama'
-# Allowed: auto | think | no_think
+# Legacy evaluator compatibility only. Confirmatory scientific runs bind an
+# explicit think mode and native transport in a verified immutable HarnessConfig.
+# Allowed for legacy runs: auto | think | no_think
 OLLAMA_THINK_MODE: 'auto'
 # Allowed: auto | true | false. `auto` keeps normal models on OpenAI-compatible
 # /v1, but uses native /api/chat for thinking-capable families when
 # OLLAMA_THINK_MODE is explicitly think/no_think.
-OLLAMA_USE_NATIVE_CHAT: auto
+OLLAMA_USE_NATIVE_CHAT: auto # legacy compatibility; scientific runs require native
 OLLAMA_NATIVE_CHAT_TIMEOUT_SEC: 60
 
 # Optional local Ollama resource controls for long SLM/LLM benchmark campaigns.
@@ -172,6 +174,9 @@ runtime_max_output_tokens: 256
 eval_decision_max_output_tokens: 512
 eval_disable_streaming: true
 eval_disable_checker_llm: true
+# Legacy Stress V2/evaluator compatibility only. The scientific factorial uses
+# HarnessConfig.condition.policy_content and never reads DILU_PROMPT_PROFILE.
+eval_prompt_profile: harness_v2 # harness_v2 | legacy_dilu_like
 
 # Optional three-layer parser layer 3. Keep disabled for strict scientific
 # compliance runs unless you explicitly want model-assisted intent decoding
@@ -194,6 +199,8 @@ eval_record_video: false
 eval_run_id: null
 
 ############ Eval timeout ladder defaults ############
+# Legacy evaluator timeout controls. Scientific runs use the fixed timeout in
+# HarnessConfig and reject adaptive/laddered timeout construction.
 # Use `disabled` to keep eval_decision_timeout_sec fixed with no ladder/adaptive
 # updates. Remote OpenAI-compatible/Gemini/Azure runs can use first-response
 # warmup to avoid classifying a cold first call as steady-state latency.

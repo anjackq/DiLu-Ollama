@@ -1,0 +1,71 @@
+schema_version: iclr2027_protocol_constants_v1
+status: pre_runtime_lock_template
+claim_bearing_config: false
+
+main_factors:
+  policy_content:
+    - historical_dilu_2024
+    - modular_harness
+  output_enforcement:
+    - prompt_only
+    - backend_schema
+  execution_mode:
+    - unshielded_operational
+    - shielded
+
+fixed_harness:
+  parser_mode: strict_only
+  resolver_mode: disabled
+  fallback_policy: fixed_idle
+  trace_level: mandatory_scientific
+  retry_policy:
+    max_transport_unavailable_retries: 1
+    retry_cooldown_sec: 10.0
+    retry_on_timeout: false
+    retry_on_empty_output: false
+    retry_on_schema_rejection: false
+  shield:
+    stage_order:
+      - lane_change
+      - longitudinal_safety
+      - low_speed_recovery
+    target_front_gap_required_m: 14.0
+    target_rear_gap_required_m: 10.0
+    target_rear_ttc_required_sec: 2.5
+    front_critical_gap_m: 8.0
+    front_caution_gap_m: 12.0
+    acceleration_caution_gap_m: 18.0
+    front_critical_ttc_sec: 2.0
+    front_caution_ttc_sec: 3.0
+    acceleration_caution_ttc_sec: 5.0
+    acceleration_projected_speed_gain_mps: 2.0
+    projected_time_horizon_sec: 1.0
+    low_speed_recovery_floor_mps: 16.7
+    low_speed_recovery_front_gap_m: 25.0
+    low_speed_recovery_ttc_sec: 4.0
+
+transport_template:
+  profile: ollama_native_chat
+  think_mode: __runtime_bound_after_s1__
+  temperature: __runtime_bound_after_s1__
+  context_tokens: __runtime_bound_after_s1__
+  max_output_tokens: __runtime_bound_after_s1__
+  timeout_sec: __runtime_bound_after_s1__
+  generation_seed_master: __runtime_bound_after_s1__
+  allow_transport_fallback: false
+  adaptive_timeout: false
+
+runtime_bound_fields:
+  - think_mode
+  - temperature
+  - context_tokens
+  - max_output_tokens
+  - timeout_sec
+  - generation_seed_master
+
+runtime_lock_required_fields:
+  - model_slot_bindings
+  - model_digests
+  - schema_mechanism
+  - simulator_versions
+  - runtime_versions

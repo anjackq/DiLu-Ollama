@@ -15,3 +15,4 @@ rich
 moviepy
 tiktoken
 stable-baselines3
+jsonschema>=4.18
