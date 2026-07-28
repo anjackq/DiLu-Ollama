@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from dilu.runtime._runtime_lock_tree_validation import validate_exact_lock_tree
 from tests.test_runtime_lock_authoring import (
     ROOT,
     FakeResponse,
@@ -72,6 +75,98 @@ class ConfigurableFakes(NativeFakes):
 
 
 class RuntimeLockAuthoringFailureTests(unittest.TestCase):
+    def test_redirected_output_ancestor_blocks_without_external_writes(self) -> None:
+        for redirect_at in (
+            "destination",
+            "s1",
+            "smoke",
+            "llm_campaign",
+            "locks",
+        ):
+            with (
+                self.subTest(redirect_at=redirect_at),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                sandbox = Path(tmp)
+                requested = sandbox / "requested"
+                output = requested / "results"
+                external = sandbox / "external"
+                external.mkdir()
+                if redirect_at == "destination":
+                    requested.mkdir()
+                    redirect = output
+                elif redirect_at == "s1":
+                    output.mkdir(parents=True)
+                    redirect = output / "s1"
+                elif redirect_at == "locks":
+                    output.joinpath("s1").mkdir(parents=True)
+                    redirect = output / "s1" / "locks"
+                else:
+                    output.mkdir(parents=True)
+                    redirect = output / redirect_at
+                self._create_directory_redirect(redirect, external)
+
+                with self.assertRaisesRegex(ValueError, "redirect"):
+                    run_authoring(output, NativeFakes())
+                self.assertEqual(list(external.iterdir()), [])
+
+    def test_directory_symlink_blocks_when_platform_permission_allows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Path(tmp)
+            output = sandbox / "requested" / "results"
+            output.mkdir(parents=True)
+            external = sandbox / "external"
+            external.mkdir()
+            try:
+                (output / "s1").symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlink unavailable: {exc}")
+
+            with self.assertRaisesRegex(ValueError, "redirect"):
+                run_authoring(output, NativeFakes())
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_wrong_case_lock_tree_entry_blocks_authoring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "results"
+            run_authoring(output, NativeFakes())
+            locks = output / "s1" / "locks"
+            original = locks / "qwen_06b"
+            intermediate = locks / "case-rename-intermediate"
+            wrong_case = locks / "QWEN_06B"
+            original.rename(intermediate)
+            intermediate.rename(wrong_case)
+
+            with self.assertRaisesRegex(ValueError, "exact|case-colliding"):
+                run_authoring(output, NativeFakes())
+
+    def test_case_colliding_expected_paths_are_rejected(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            self.assertRaisesRegex(ValueError, "case-colliding"),
+        ):
+            validate_exact_lock_tree(
+                Path(tmp),
+                (
+                    Path("qwen_06b/c000/RUNTIME_PROTOCOL_LOCK.json"),
+                    Path("QWEN_06B/c000/RUNTIME_PROTOCOL_LOCK.json"),
+                ),
+            )
+
+    @staticmethod
+    def _create_directory_redirect(link: Path, target: Path) -> None:
+        if os.name != "nt":
+            link.symlink_to(target, target_is_directory=True)
+            return
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Could not create test junction: {result.stderr}")
+
     def test_nonexact_lock_tree_entries_block_authoring(self) -> None:
         lock_name = "RUNTIME_PROTOCOL_LOCK.json"
         auth_name = "PROTOCOL_FROZEN.json"
@@ -102,7 +197,10 @@ class RuntimeLockAuthoringFailureTests(unittest.TestCase):
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(b"{}")
 
-                with self.assertRaisesRegex(ValueError, "tree is not exact"):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "tree is not exact|invalid entry type",
+                ):
                     run_authoring(output, NativeFakes())
 
     def test_existing_planned_orphan_lock_or_authorization_blocks_rerun(self) -> None:

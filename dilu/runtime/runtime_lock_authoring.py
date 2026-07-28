@@ -20,7 +20,10 @@ from ._runtime_lock_authoring_support import (
     canonical_bytes,
     probe_model,
     publish_once,
+)
+from ._runtime_lock_tree_validation import (
     validate_exact_lock_tree,
+    validate_unredirected_artifact_paths,
 )
 from ._scientific_runtime_binding import (
     RuntimeLockBinding,
@@ -138,6 +141,19 @@ def author_verified_runtime_locks(
         manifest,
         smoke,
         capabilities,
+    )
+    validate_unredirected_artifact_paths(
+        (
+            destination / "s1" / "model_preflight.json",
+            destination / "smoke" / "campaign_manifest.json",
+            destination / "llm_campaign" / "campaign_manifest.json",
+            destination / "llm_campaign" / "union_schedule.json",
+            *(
+                path
+                for plan in plans
+                for path in (plan.runtime_path, plan.authorization_path)
+            ),
+        )
     )
     locks_root = destination / "s1" / "locks"
     expected_lock_paths = tuple(
