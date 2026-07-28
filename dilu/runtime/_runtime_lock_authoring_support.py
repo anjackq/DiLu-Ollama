@@ -267,7 +267,12 @@ def _direct_call(
             else "malformed native response"
         )
         raise ValueError(f"Native capability probe {label}: {attempt.error_message}.")
-    if attempt.contract_text is None or attempt.backend_timing is None:
+    if (
+        attempt.contract_text is None
+        or attempt.backend_timing is None
+        or attempt.prompt_tokens is None
+        or attempt.completion_tokens is None
+    ):
         raise ValueError("Native capability probe omitted required evidence.")
     action = parse_canonical_action(attempt.contract_text)
     request_evidence = {

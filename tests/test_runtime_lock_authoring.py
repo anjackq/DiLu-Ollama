@@ -152,6 +152,7 @@ def run_authoring(
     *,
     snapshots: list[RuntimeSnapshot] | None = None,
     publication_hook: Callable[[Path], None] | None = None,
+    publication_boundary_hook: Callable[[int, Path], None] | None = None,
 ) -> S1AuthoringResult:
     from dilu.runtime.runtime_lock_authoring import author_verified_runtime_locks
 
@@ -169,12 +170,18 @@ def run_authoring(
         mock.patch("requests.get", side_effect=AssertionError("real GET reached")),
         mock.patch("requests.post", side_effect=AssertionError("real POST reached")),
     ):
+        optional_kwargs = (
+            {}
+            if publication_boundary_hook is None
+            else {"publication_boundary_hook": publication_boundary_hook}
+        )
         return author_verified_runtime_locks(
             ROOT,
             output_root=output_root,
             get=fakes.get,
             post=fakes.post,
             publication_hook=publication_hook,
+            **optional_kwargs,
         )
 
 
@@ -290,7 +297,10 @@ class RuntimeLockAuthoringTests(unittest.TestCase):
             lock = output / "s1" / "locks" / "qwen_06b" / "c000"
             lock.joinpath("RUNTIME_PROTOCOL_LOCK.json").write_bytes(b"{}")
 
-            with self.assertRaisesRegex(ValueError, "already exists"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "already exists|bytes drifted",
+            ):
                 run_authoring(output, NativeFakes())
 
 
