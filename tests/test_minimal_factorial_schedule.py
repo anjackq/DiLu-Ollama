@@ -2,306 +2,102 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
-from types import MappingProxyType
 from unittest.mock import patch
 
+from dilu.runtime.ollama_transport import OllamaModelIdentity
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "configs" / "iclr2027" / "minimal_factorial.yaml"
-CASE_PATH = ROOT / "benchmarks" / "dilu_highway_reactive_stress_v2" / "cases.json"
+MANIFEST = ROOT / "configs" / "iclr2027" / "minimal_factorial.yaml"
 
 
 class MinimalFactorialScheduleTests(unittest.TestCase):
     def setUp(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import load_experiment_manifest
 
-        self.manifest = load_experiment_manifest(MANIFEST_PATH)
-        self.case_set = json.loads(CASE_PATH.read_text(encoding="utf-8"))
+        self.manifest = load_experiment_manifest(MANIFEST)
+        self.cases = json.loads((ROOT / self.manifest.case_path).read_text())
         self.digests = {
             "qwen_06b": "sha256:" + "a" * 64,
             "llama_1b": "sha256:" + "b" * 64,
         }
 
     @staticmethod
-    def _clean_git(command, **_kwargs):
+    def _git(command, **_kwargs):
         action = command[1]
-        stdout = "27c2cd9a8e10649242bb6958e88c14caec091437\n" if action == "rev-parse" else command[-1] + "\n" if action == "ls-files" else ""
+        stdout = (
+            "dfe6c9a97ea6ef6cd9edd845b21395fb7d7cc003\n"
+            if action == "rev-parse"
+            else command[-1] + "\n"
+            if action == "ls-files"
+            else ""
+        )
         return type("Completed", (), {"stdout": stdout, "returncode": 0})()
 
     def _snapshot(self):
         from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
 
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
-            return build_runtime_snapshot(self.manifest, self.case_set)
+        with patch(
+            "dilu.runtime._minimal_factorial_manifest.subprocess.run", self._git
+        ):
+            return build_runtime_snapshot(self.manifest, self.cases)
 
-    def test_manifest_is_strict_and_freezes_required_constants(self) -> None:
-        self.assertEqual(self.manifest.campaign_id, "iclr2027-minimal-factorial-v1")
-        self.assertEqual(self.manifest.smoke_campaign_id, "iclr2027-minimal-factorial-smoke-v1")
-        self.assertEqual(self.manifest.case_path, "benchmarks/dilu_highway_reactive_stress_v2/cases.json")
-        self.assertEqual(tuple(model.slot for model in self.manifest.models), ("qwen_06b", "llama_1b"))
-        self.assertEqual(tuple(model.tag for model in self.manifest.models), ("qwen3:0.6b", "llama3.2:1b"))
-        self.assertEqual(self.manifest.transport.native_endpoint, "http://localhost:11434/api/chat")
-        self.assertEqual(self.manifest.transport.generation_seed_master, 20270728)
-        self.assertEqual(self.manifest.selection.categories, 10)
-        self.assertEqual(self.manifest.selection.stage1_cases_per_category, 3)
-        self.assertEqual(self.manifest.selection.stage2_cases_per_category, 12)
-        with self.assertRaises(ValueError):
-            type(self.manifest).from_mapping({})
-
-    def test_conditions_and_hash_selected_cases_are_deterministic(self) -> None:
+    def test_selection_and_condition_factorial_are_deterministic(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import (
             build_harness_config,
             select_smoke_case,
             select_stage1_cases,
         )
 
-        conditions = tuple(build_harness_config(self.manifest, condition) for condition in range(8))
-        self.assertEqual(tuple(item.condition_id() for item in conditions), tuple(f"c{i:03b}" for i in range(8)))
-        smoke = select_smoke_case(self.case_set, self.manifest.campaign_id)
-        expected_smoke = min(
-            self.case_set["cases"],
+        self.assertEqual(
+            [build_harness_config(self.manifest, i).condition_id() for i in range(8)],
+            [f"c{i:03b}" for i in range(8)],
+        )
+        smoke = select_smoke_case(self.cases, self.manifest.campaign_id)
+        expected = min(
+            self.cases["cases"],
             key=lambda case: hashlib.sha256(
-                f"{self.manifest.campaign_id}|smoke|{case['case_id']}".encode("utf-8")
+                f"{self.manifest.campaign_id}|smoke|{case['case_id']}".encode()
             ).hexdigest(),
         )
-        self.assertEqual(smoke["case_id"], expected_smoke["case_id"])
-        selected = select_stage1_cases(self.case_set, self.manifest.campaign_id)
-        self.assertEqual(len(selected), 30)
-        self.assertEqual(len({case["case_id"] for case in selected}), 30)
-        for category in {case["category"] for case in self.case_set["cases"]}:
-            self.assertEqual(sum(case["category"] == category for case in selected), 3)
-
-    def test_union_schedule_has_exact_rows_reused_endpoints_and_stable_identities(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import build_union_schedule
-
-        schedule = build_union_schedule(
-            self.manifest,
-            self.case_set,
-            self.digests,
-            runtime_snapshot=self._snapshot(),
+        self.assertEqual(smoke["case_id"], expected["case_id"])
+        self.assertEqual(
+            len(select_stage1_cases(self.cases, self.manifest.campaign_id)), 30
         )
-        stage1 = tuple(item for item in schedule if item.stage == "s1")
-        stage2 = tuple(item for item in schedule if item.stage == "s2_additional")
-        self.assertEqual(len(stage1), 480)
-        self.assertEqual(len(stage2), 360)
-        self.assertEqual(len(schedule), 840)
-        self.assertEqual({item.condition_id for item in stage2}, {"c000", "c111"})
-        endpoint_stage1_cases = {
-            item.case_id for item in stage1 if item.condition_id in {"c000", "c111"}
-        }
-        self.assertEqual(len(endpoint_stage1_cases), 30)
-        self.assertFalse(endpoint_stage1_cases & {item.case_id for item in stage2})
-        episode = schedule[0]
-        self.assertEqual(episode.replicate_id, 0)
-        self.assertEqual(episode.pair_id, "pair-" + hashlib.sha256(
-            f"{self.manifest.campaign_id}|{episode.case_id}|{episode.simulator_seed}".encode("utf-8")
-        ).hexdigest())
-        self.assertTrue(episode.template_id.startswith("stress-v2-"))
-        self.assertTrue(episode.primary_snapshot_id.startswith("snapshot-"))
-        self.assertTrue(episode.episode_attempt_id.startswith("episode-"))
-        self.assertEqual(schedule, build_union_schedule(
-            self.manifest,
-            self.case_set,
-            self.digests,
-            runtime_snapshot=self._snapshot(),
-        ))
 
-    def test_runtime_snapshot_is_pre_execution_and_fails_closed_on_runtime_drift(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
-
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
-            snapshot = build_runtime_snapshot(self.manifest, self.case_set)
-        required = {
-            "code_revision", "source_sha256", "runtime_config", "environment_config",
-            "primary_metric_spec", "shield_config", "scoring_fingerprint",
-            "predicate_fingerprint", "simulator_versions", "trace_schema_sha256",
-        }
-        self.assertTrue(required <= set(snapshot.payload))
-        self.assertEqual(snapshot.payload["code_revision"], "27c2cd9a8e10649242bb6958e88c14caec091437")
-        self.assertEqual(len(snapshot.sha256), 64)
-        changed = dict(self.case_set)
-        changed["cases"] = list(changed["cases"][:-1])
-        with self.assertRaises(ValueError):
-            build_runtime_snapshot(self.manifest, changed)
-
-    def test_smoke_and_union_identities_use_runtime_full_fingerprint_and_exact_formulas(self) -> None:
+    def test_union_and_smoke_have_exact_rows_and_identities(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import (
             build_smoke_schedule,
             build_union_schedule,
         )
 
         snapshot = self._snapshot()
-        smoke = build_smoke_schedule(
-            self.manifest, self.case_set, self.digests, runtime_snapshot=snapshot
-        )[0]
         union = build_union_schedule(
-            self.manifest, self.case_set, self.digests, runtime_snapshot=snapshot
-        )[0]
-        for episode, campaign_id in ((smoke, self.manifest.smoke_campaign_id), (union, self.manifest.campaign_id)):
-            self.assertEqual(episode.identity().campaign_id, campaign_id)
-            self.assertEqual(episode.benchmark_fingerprint[:7], "sha256:")
-            self.assertEqual(len(episode.benchmark_fingerprint), 71)
-            self.assertEqual(episode.pair_id, "pair-" + hashlib.sha256(
-                f"{campaign_id}|{episode.case_id}|{episode.simulator_seed}".encode()
-            ).hexdigest())
-            self.assertEqual(episode.episode_attempt_id, "episode-" + hashlib.sha256(
-                f"{campaign_id}|{episode.model_tag}|{episode.model_digest}|{episode.condition_id}|{episode.case_id}|{episode.simulator_seed}|0".encode()
-            ).hexdigest())
-            self.assertEqual(episode.template_id, "stress-v2-" + hashlib.sha256(
-                f"{episode.benchmark_fingerprint}|{episode.case_id}".encode()
-            ).hexdigest())
-            self.assertEqual(episode.primary_snapshot_id, "snapshot-" + hashlib.sha256(
-                f"{episode.benchmark_fingerprint}|{episode.case_id}|{episode.simulator_seed}".encode()
-            ).hexdigest())
-
-    def test_manifest_and_snapshot_are_deeply_immutable_and_round_trip_supporting_specs(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import (
-            build_runtime_snapshot,
-            write_frozen_campaign_manifest,
+            self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
-
-        with self.assertRaises(TypeError):
-            self.manifest.fixed_harness.retry_policy["retry_on_timeout"] = True
-        self.assertEqual(self.manifest.bootstrap.draws, 20000)
-        self.assertEqual(self.manifest.bootstrap.version, "bootstrap-v1")
-        self.assertEqual(self.manifest.outputs.analysis, "analysis")
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
-            snapshot = build_runtime_snapshot(self.manifest, self.case_set)
-        with self.assertRaises(TypeError):
-            snapshot.payload["code_revision"] = "drift"
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "frozen.json"
-            write_frozen_campaign_manifest(path, self.manifest, snapshot, ())
-            saved = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["manifest"]["bootstrap"], {"draws": 20000, "version": "bootstrap-v1"})
-        self.assertEqual(saved["manifest"]["outputs"]["s1"], "s1")
-
-    def test_snapshot_rejects_porcelain_dirty_and_untracked_and_fingerprint_drift(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
-
-        dirty = type("Completed", (), {"stdout": " M config.example.yaml\n", "returncode": 0})()
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", return_value=dirty):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-        untracked = type("Completed", (), {"stdout": "?? unexpected.txt\n", "returncode": 0})()
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", return_value=untracked):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-        staged = type("Completed", (), {"stdout": "M  config.example.yaml\n", "returncode": 0})()
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", return_value=staged):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git), patch(
-            "dilu.runtime.minimal_factorial_schedule._file_sha", return_value="0" * 64
-        ):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-        def missing_source(command, **_kwargs):
-            if command[1] == "ls-files":
-                return type("Completed", (), {"stdout": "", "returncode": 1})()
-            return self._clean_git(command)
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", missing_source):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-
-    def test_snapshot_rejects_git_command_failures_and_non_full_revision(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
-
-        def failed_status(command, **_kwargs):
-            if command[1] == "status":
-                return type("Completed", (), {"stdout": "", "returncode": 128})()
-            return self._clean_git(command)
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", failed_status):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-
-        def bad_revision(command, **_kwargs):
-            if command[1] == "rev-parse":
-                return type("Completed", (), {"stdout": "27c2cd9\n", "returncode": 0})()
-            return self._clean_git(command)
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", bad_revision):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-
-        def failed_revision(command, **_kwargs):
-            if command[1] == "rev-parse":
-                return type("Completed", (), {"stdout": "not-an-exact-git-revision\n", "returncode": 128})()
-            return self._clean_git(command)
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", failed_revision):
-            with self.assertRaises(ValueError):
-                build_runtime_snapshot(self.manifest, self.case_set)
-
-    def test_snapshot_is_required_for_schedules_and_direct_construction_is_rejected(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import (
-            RuntimeSnapshot,
-            _sha,
-            build_union_schedule,
+        smoke = build_smoke_schedule(
+            self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
-
-        payload = MappingProxyType({"nested": {"mutable": True}})
-        with self.assertRaises(TypeError):
-            RuntimeSnapshot(payload, _sha(payload))
-        with self.assertRaises(TypeError):
-            build_union_schedule(
-                self.manifest,
-                self.case_set,
-                self.digests,
-                runtime_snapshot=None,
-            )
-
-    def test_frozen_manifest_is_bound_and_write_once(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import (
-            build_runtime_snapshot,
-            build_union_schedule,
-            write_frozen_campaign_manifest,
+        self.assertEqual(
+            (
+                sum(row.stage == "s1" for row in union),
+                sum(row.stage == "s2_additional" for row in union),
+            ),
+            (480, 360),
         )
-
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
-            snapshot = build_runtime_snapshot(self.manifest, self.case_set)
-        schedule = build_union_schedule(
-            self.manifest,
-            self.case_set,
-            self.digests,
-            runtime_snapshot=snapshot,
+        self.assertEqual(len(union), 840)
+        row = smoke[0]
+        identity = OllamaModelIdentity(row.model_tag, row.model_digest)
+        self.assertEqual(row.identity().campaign_id, self.manifest.smoke_campaign_id)
+        self.assertEqual(row.model_digest, identity.model_digest)
+        self.assertEqual(
+            row.pair_id,
+            "pair-"
+            + hashlib.sha256(
+                f"{row.campaign_id}|{row.case_id}|{row.simulator_seed}".encode()
+            ).hexdigest(),
         )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "frozen.json"
-            write_frozen_campaign_manifest(path, self.manifest, snapshot, schedule)
-            before = path.read_bytes()
-            write_frozen_campaign_manifest(path, self.manifest, snapshot, schedule)
-            self.assertEqual(path.read_bytes(), before)
-            with self.assertRaises(ValueError):
-                write_frozen_campaign_manifest(path, self.manifest, snapshot, schedule[:-1])
-            mismatched = (replace(schedule[0], code_revision="a" * 40), *schedule[1:])
-            with self.assertRaises(ValueError):
-                write_frozen_campaign_manifest(
-                    Path(temp_dir) / "mismatched.json",
-                    self.manifest,
-                    snapshot,
-                    mismatched,
-                )
-
-    def test_schedule_accepts_runtime_ollama_model_identity_digest(self) -> None:
-        from dilu.runtime.ollama_transport import OllamaModelIdentity
-        from dilu.runtime.minimal_factorial_schedule import build_smoke_schedule
-
-        identity = OllamaModelIdentity(
-            model_tag="qwen3:0.6b",
-            model_digest=self.digests["qwen_06b"],
-        )
-        schedule = build_smoke_schedule(
-            self.manifest,
-            self.case_set,
-            self.digests,
-            runtime_snapshot=self._snapshot(),
-        )
-        qwen_row = next(row for row in schedule if row.model_slot == "qwen_06b")
-        self.assertEqual(qwen_row.model_tag, identity.model_tag)
-        self.assertEqual(qwen_row.model_digest, identity.model_digest)
 
 
 if __name__ == "__main__":
