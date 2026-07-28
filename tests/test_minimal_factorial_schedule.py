@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +23,12 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             "qwen_06b": "a" * 64,
             "llama_1b": "b" * 64,
         }
+
+    @staticmethod
+    def _clean_git(command, **_kwargs):
+        action = command[1]
+        stdout = "27c2cd9\n" if action == "rev-parse" else command[-1] + "\n" if action == "ls-files" else ""
+        return type("Completed", (), {"stdout": stdout, "returncode": 0})()
 
     def test_manifest_is_strict_and_freezes_required_constants(self) -> None:
         self.assertEqual(self.manifest.campaign_id, "iclr2027-minimal-factorial-v1")
@@ -92,8 +99,7 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
     def test_runtime_snapshot_is_pre_execution_and_fails_closed_on_runtime_drift(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
 
-        completed = type("Completed", (), {"stdout": "27c2cd9\n", "returncode": 0})()
-        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", return_value=completed):
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
             snapshot = build_runtime_snapshot(self.manifest, self.case_set)
         required = {
             "code_revision", "source_sha256", "runtime_config", "environment_config",
@@ -107,6 +113,85 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         changed["cases"] = list(changed["cases"][:-1])
         with self.assertRaises(ValueError):
             build_runtime_snapshot(self.manifest, changed)
+
+    def test_smoke_and_union_identities_use_runtime_full_fingerprint_and_exact_formulas(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import (
+            build_smoke_schedule,
+            build_union_schedule,
+        )
+
+        smoke = build_smoke_schedule(
+            self.manifest, self.case_set, self.digests, code_revision="27c2cd9"
+        )[0]
+        union = build_union_schedule(
+            self.manifest, self.case_set, self.digests, code_revision="27c2cd9"
+        )[0]
+        for episode, campaign_id in ((smoke, self.manifest.smoke_campaign_id), (union, self.manifest.campaign_id)):
+            self.assertEqual(episode.identity().campaign_id, campaign_id)
+            self.assertEqual(episode.benchmark_fingerprint[:7], "sha256:")
+            self.assertEqual(len(episode.benchmark_fingerprint), 71)
+            self.assertEqual(episode.pair_id, "pair-" + hashlib.sha256(
+                f"{campaign_id}|{episode.case_id}|{episode.simulator_seed}".encode()
+            ).hexdigest())
+            self.assertEqual(episode.episode_attempt_id, "episode-" + hashlib.sha256(
+                f"{campaign_id}|{episode.model_tag}|{episode.model_digest}|{episode.condition_id}|{episode.case_id}|{episode.simulator_seed}|0".encode()
+            ).hexdigest())
+            self.assertEqual(episode.template_id, "stress-v2-" + hashlib.sha256(
+                f"{episode.benchmark_fingerprint}|{episode.case_id}".encode()
+            ).hexdigest())
+            self.assertEqual(episode.primary_snapshot_id, "snapshot-" + hashlib.sha256(
+                f"{episode.benchmark_fingerprint}|{episode.case_id}|{episode.simulator_seed}".encode()
+            ).hexdigest())
+
+    def test_manifest_and_snapshot_are_deeply_immutable_and_round_trip_supporting_specs(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import (
+            build_runtime_snapshot,
+            write_frozen_campaign_manifest,
+        )
+
+        with self.assertRaises(TypeError):
+            self.manifest.fixed_harness.retry_policy["retry_on_timeout"] = True
+        self.assertEqual(self.manifest.bootstrap.draws, 20000)
+        self.assertEqual(self.manifest.bootstrap.version, "bootstrap-v1")
+        self.assertEqual(self.manifest.outputs.analysis, "analysis")
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
+            snapshot = build_runtime_snapshot(self.manifest, self.case_set)
+        with self.assertRaises(TypeError):
+            snapshot.payload["code_revision"] = "drift"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "frozen.json"
+            write_frozen_campaign_manifest(path, self.manifest, snapshot, ())
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["manifest"]["bootstrap"], {"draws": 20000, "version": "bootstrap-v1"})
+        self.assertEqual(saved["manifest"]["outputs"]["s1"], "s1")
+
+    def test_snapshot_rejects_porcelain_dirty_and_untracked_and_fingerprint_drift(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
+
+        dirty = type("Completed", (), {"stdout": " M config.example.yaml\n", "returncode": 0})()
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", return_value=dirty):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
+        untracked = type("Completed", (), {"stdout": "?? unexpected.txt\n", "returncode": 0})()
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", return_value=untracked):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
+        staged = type("Completed", (), {"stdout": "M  config.example.yaml\n", "returncode": 0})()
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", return_value=staged):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git), patch(
+            "dilu.runtime.minimal_factorial_schedule._file_sha", return_value="0" * 64
+        ):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
+        def missing_source(command, **_kwargs):
+            if command[1] == "ls-files":
+                return type("Completed", (), {"stdout": "", "returncode": 1})()
+            return self._clean_git(command)
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", missing_source):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
 
 
 if __name__ == "__main__":
