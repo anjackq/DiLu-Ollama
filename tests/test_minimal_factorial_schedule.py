@@ -27,7 +27,7 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
     @staticmethod
     def _clean_git(command, **_kwargs):
         action = command[1]
-        stdout = "27c2cd9\n" if action == "rev-parse" else command[-1] + "\n" if action == "ls-files" else ""
+        stdout = "27c2cd9a8e10649242bb6958e88c14caec091437\n" if action == "rev-parse" else command[-1] + "\n" if action == "ls-files" else ""
         return type("Completed", (), {"stdout": stdout, "returncode": 0})()
 
     def test_manifest_is_strict_and_freezes_required_constants(self) -> None:
@@ -107,7 +107,7 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             "predicate_fingerprint", "simulator_versions", "trace_schema_sha256",
         }
         self.assertTrue(required <= set(snapshot.payload))
-        self.assertEqual(snapshot.payload["code_revision"], "27c2cd9")
+        self.assertEqual(snapshot.payload["code_revision"], "27c2cd9a8e10649242bb6958e88c14caec091437")
         self.assertEqual(len(snapshot.sha256), 64)
         changed = dict(self.case_set)
         changed["cases"] = list(changed["cases"][:-1])
@@ -190,6 +190,33 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
                 return type("Completed", (), {"stdout": "", "returncode": 1})()
             return self._clean_git(command)
         with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", missing_source):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
+
+    def test_snapshot_rejects_git_command_failures_and_non_full_revision(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
+
+        def failed_status(command, **_kwargs):
+            if command[1] == "status":
+                return type("Completed", (), {"stdout": "", "returncode": 128})()
+            return self._clean_git(command)
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", failed_status):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
+
+        def bad_revision(command, **_kwargs):
+            if command[1] == "rev-parse":
+                return type("Completed", (), {"stdout": "27c2cd9\n", "returncode": 0})()
+            return self._clean_git(command)
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", bad_revision):
+            with self.assertRaises(ValueError):
+                build_runtime_snapshot(self.manifest, self.case_set)
+
+        def failed_revision(command, **_kwargs):
+            if command[1] == "rev-parse":
+                return type("Completed", (), {"stdout": "not-an-exact-git-revision\n", "returncode": 128})()
+            return self._clean_git(command)
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", failed_revision):
             with self.assertRaises(ValueError):
                 build_runtime_snapshot(self.manifest, self.case_set)
 

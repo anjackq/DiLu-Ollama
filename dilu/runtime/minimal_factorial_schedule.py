@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import re
 import subprocess
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -126,7 +127,10 @@ def build_union_schedule(manifest: ExperimentManifest, case_set: Mapping[str, An
 
 def build_runtime_snapshot(manifest: ExperimentManifest, case_set: Mapping[str, Any]) -> RuntimeSnapshot:
     fingerprint = _case_fp(case_set); root = manifest.source_path.parents[2]; _clean_and_tracked(root, manifest.runtime_sources)
-    revision = _git(root, ["rev-parse", "HEAD"]).stdout.strip(); source_sha = {path: _file_sha(root / path) for path in _SOURCE_SHA}
+    revision_result = _git(root, ["rev-parse", "HEAD"])
+    revision = revision_result.stdout.strip()
+    if revision_result.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40}", revision): raise ValueError("Git revision is not an exact commit SHA.")
+    source_sha = {path: _file_sha(root / path) for path in _SOURCE_SHA}
     runtime = load_runtime_config(str(root / manifest.runtime_sources.runtime_config)); runtime_sha = _sha(runtime)
     scoring_sha = _file_sha(Path(__file__).with_name("dilu_scoring.py")); predicate_sha = _sha([case["success_criteria"] for case in case_set["cases"]]); trace_sha = _file_sha(Path(__file__).with_name("_scientific_trace_serialization.py"))
     if source_sha != _SOURCE_SHA or (runtime_sha, scoring_sha, predicate_sha, trace_sha) != (_RUNTIME_SHA, _SCORING_SHA, _PREDICATE_SHA, _TRACE_SHA): raise ValueError("Runtime source or fingerprint drifted.")
@@ -159,7 +163,8 @@ def _case_fp(case_set: Mapping[str, Any]) -> str:
     if build_benchmark_case_set_fingerprint(dict(case_set)) != _SHORT_CASE_FP or "sha256:" + _sha(case_set) != _CASE_FP: raise ValueError("Case fingerprint drifted.")
     return _CASE_FP
 def _clean_and_tracked(root: Path, sources: RuntimeSources) -> None:
-    if sources.require_clean_git and _git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=no"]).stdout: raise ValueError("Runtime snapshot requires a clean Git worktree.")
+    status = _git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=no"])
+    if sources.require_clean_git and (status.returncode != 0 or status.stdout): raise ValueError("Runtime snapshot requires a clean Git worktree.")
     for source in (sources.runtime_config, sources.base_runtime_config, sources.protocol_constants):
         result = _git(root, ["ls-files", "--error-unmatch", "--", source])
         if result.returncode != 0 or result.stdout.strip() != source: raise ValueError("Runtime source is not tracked.")
