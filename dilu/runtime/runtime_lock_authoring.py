@@ -20,6 +20,7 @@ from ._runtime_lock_authoring_support import (
     canonical_bytes,
     probe_model,
     publish_once,
+    validate_exact_lock_tree,
 )
 from ._scientific_runtime_binding import (
     RuntimeLockBinding,
@@ -138,6 +139,14 @@ def author_verified_runtime_locks(
         smoke,
         capabilities,
     )
+    locks_root = destination / "s1" / "locks"
+    expected_lock_paths = tuple(
+        path.relative_to(locks_root)
+        for plan in plans
+        for path in (plan.runtime_path, plan.authorization_path)
+    )
+    if locks_root.exists():
+        validate_exact_lock_tree(locks_root, expected_lock_paths)
     _publish_campaign_artifacts(
         destination=destination,
         manifest=manifest,
@@ -149,6 +158,7 @@ def author_verified_runtime_locks(
         preflight_bytes=preflight_bytes,
     )
     lock_artifacts = _publish_and_verify_locks(plans)
+    validate_exact_lock_tree(locks_root, expected_lock_paths)
     if publication_hook is not None:
         publication_hook(destination)
     return S1AuthoringResult(

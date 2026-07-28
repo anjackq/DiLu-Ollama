@@ -72,6 +72,54 @@ class ConfigurableFakes(NativeFakes):
 
 
 class RuntimeLockAuthoringFailureTests(unittest.TestCase):
+    def test_nonexact_lock_tree_entries_block_authoring(self) -> None:
+        lock_name = "RUNTIME_PROTOCOL_LOCK.json"
+        auth_name = "PROTOCOL_FROZEN.json"
+        intrusions = {
+            "extra_model_slot": (
+                ("rogue_model/c000/" + lock_name, "file"),
+                ("rogue_model/c000/" + auth_name, "file"),
+            ),
+            "extra_condition": (
+                ("qwen_06b/c999/" + lock_name, "file"),
+                ("qwen_06b/c999/" + auth_name, "file"),
+            ),
+            "orphan_lock": (("qwen_06b/c998/" + lock_name, "file"),),
+            "orphan_authorization": (("qwen_06b/c997/" + auth_name, "file"),),
+            "unexpected_file": (("UNEXPECTED.txt", "file"),),
+            "unexpected_directory": (("qwen_06b/unexpected", "directory"),),
+            "wrong_entry_type": (("qwen_06b/c000/" + lock_name, "directory"),),
+        }
+        for label, entries in intrusions.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "results"
+                locks = output / "s1" / "locks"
+                for relative, entry_type in entries:
+                    path = locks / relative
+                    if entry_type == "directory":
+                        path.mkdir(parents=True)
+                    else:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b"{}")
+
+                with self.assertRaisesRegex(ValueError, "tree is not exact"):
+                    run_authoring(output, NativeFakes())
+
+    def test_existing_planned_orphan_lock_or_authorization_blocks_rerun(self) -> None:
+        names = ("RUNTIME_PROTOCOL_LOCK.json", "PROTOCOL_FROZEN.json")
+        for missing_name in names:
+            with (
+                self.subTest(missing_name=missing_name),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                output = Path(tmp) / "results"
+                run_authoring(output, NativeFakes())
+                condition_root = output / "s1" / "locks" / "qwen_06b" / "c000"
+                condition_root.joinpath(missing_name).unlink()
+
+                with self.assertRaisesRegex(ValueError, "tree is not exact"):
+                    run_authoring(output, NativeFakes())
+
     def test_probe_failures_block_all_publication(self) -> None:
         failures = {
             "schema": "schema",
