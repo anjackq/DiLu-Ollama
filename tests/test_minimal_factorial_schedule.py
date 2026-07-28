@@ -4,7 +4,9 @@ import hashlib
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 
@@ -20,8 +22,8 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         self.manifest = load_experiment_manifest(MANIFEST_PATH)
         self.case_set = json.loads(CASE_PATH.read_text(encoding="utf-8"))
         self.digests = {
-            "qwen_06b": "a" * 64,
-            "llama_1b": "b" * 64,
+            "qwen_06b": "sha256:" + "a" * 64,
+            "llama_1b": "sha256:" + "b" * 64,
         }
 
     @staticmethod
@@ -29,6 +31,12 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         action = command[1]
         stdout = "27c2cd9a8e10649242bb6958e88c14caec091437\n" if action == "rev-parse" else command[-1] + "\n" if action == "ls-files" else ""
         return type("Completed", (), {"stdout": stdout, "returncode": 0})()
+
+    def _snapshot(self):
+        from dilu.runtime.minimal_factorial_schedule import build_runtime_snapshot
+
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
+            return build_runtime_snapshot(self.manifest, self.case_set)
 
     def test_manifest_is_strict_and_freezes_required_constants(self) -> None:
         self.assertEqual(self.manifest.campaign_id, "iclr2027-minimal-factorial-v1")
@@ -71,7 +79,10 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         from dilu.runtime.minimal_factorial_schedule import build_union_schedule
 
         schedule = build_union_schedule(
-            self.manifest, self.case_set, self.digests, code_revision="27c2cd9"
+            self.manifest,
+            self.case_set,
+            self.digests,
+            runtime_snapshot=self._snapshot(),
         )
         stage1 = tuple(item for item in schedule if item.stage == "s1")
         stage2 = tuple(item for item in schedule if item.stage == "s2_additional")
@@ -93,7 +104,10 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         self.assertTrue(episode.primary_snapshot_id.startswith("snapshot-"))
         self.assertTrue(episode.episode_attempt_id.startswith("episode-"))
         self.assertEqual(schedule, build_union_schedule(
-            self.manifest, self.case_set, self.digests, code_revision="27c2cd9"
+            self.manifest,
+            self.case_set,
+            self.digests,
+            runtime_snapshot=self._snapshot(),
         ))
 
     def test_runtime_snapshot_is_pre_execution_and_fails_closed_on_runtime_drift(self) -> None:
@@ -120,11 +134,12 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             build_union_schedule,
         )
 
+        snapshot = self._snapshot()
         smoke = build_smoke_schedule(
-            self.manifest, self.case_set, self.digests, code_revision="27c2cd9"
+            self.manifest, self.case_set, self.digests, runtime_snapshot=snapshot
         )[0]
         union = build_union_schedule(
-            self.manifest, self.case_set, self.digests, code_revision="27c2cd9"
+            self.manifest, self.case_set, self.digests, runtime_snapshot=snapshot
         )[0]
         for episode, campaign_id in ((smoke, self.manifest.smoke_campaign_id), (union, self.manifest.campaign_id)):
             self.assertEqual(episode.identity().campaign_id, campaign_id)
@@ -219,6 +234,74 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", failed_revision):
             with self.assertRaises(ValueError):
                 build_runtime_snapshot(self.manifest, self.case_set)
+
+    def test_snapshot_is_required_for_schedules_and_direct_construction_is_rejected(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import (
+            RuntimeSnapshot,
+            _sha,
+            build_union_schedule,
+        )
+
+        payload = MappingProxyType({"nested": {"mutable": True}})
+        with self.assertRaises(TypeError):
+            RuntimeSnapshot(payload, _sha(payload))
+        with self.assertRaises(TypeError):
+            build_union_schedule(
+                self.manifest,
+                self.case_set,
+                self.digests,
+                runtime_snapshot=None,
+            )
+
+    def test_frozen_manifest_is_bound_and_write_once(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import (
+            build_runtime_snapshot,
+            build_union_schedule,
+            write_frozen_campaign_manifest,
+        )
+
+        with patch("dilu.runtime.minimal_factorial_schedule.subprocess.run", self._clean_git):
+            snapshot = build_runtime_snapshot(self.manifest, self.case_set)
+        schedule = build_union_schedule(
+            self.manifest,
+            self.case_set,
+            self.digests,
+            runtime_snapshot=snapshot,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "frozen.json"
+            write_frozen_campaign_manifest(path, self.manifest, snapshot, schedule)
+            before = path.read_bytes()
+            write_frozen_campaign_manifest(path, self.manifest, snapshot, schedule)
+            self.assertEqual(path.read_bytes(), before)
+            with self.assertRaises(ValueError):
+                write_frozen_campaign_manifest(path, self.manifest, snapshot, schedule[:-1])
+            mismatched = (replace(schedule[0], code_revision="a" * 40), *schedule[1:])
+            with self.assertRaises(ValueError):
+                write_frozen_campaign_manifest(
+                    Path(temp_dir) / "mismatched.json",
+                    self.manifest,
+                    snapshot,
+                    mismatched,
+                )
+
+    def test_schedule_accepts_runtime_ollama_model_identity_digest(self) -> None:
+        from dilu.runtime.ollama_transport import OllamaModelIdentity
+        from dilu.runtime.minimal_factorial_schedule import build_smoke_schedule
+
+        identity = OllamaModelIdentity(
+            model_tag="qwen3:0.6b",
+            model_digest=self.digests["qwen_06b"],
+        )
+        schedule = build_smoke_schedule(
+            self.manifest,
+            self.case_set,
+            self.digests,
+            runtime_snapshot=self._snapshot(),
+        )
+        qwen_row = next(row for row in schedule if row.model_slot == "qwen_06b")
+        self.assertEqual(qwen_row.model_tag, identity.model_tag)
+        self.assertEqual(qwen_row.model_digest, identity.model_digest)
 
 
 if __name__ == "__main__":
