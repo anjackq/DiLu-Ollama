@@ -256,17 +256,23 @@ def build_runtime_snapshot(
 
 
 def validate_schedule(
-    manifest: ExperimentManifest, snapshot: RuntimeSnapshot, schedule: Sequence[Any]
+    manifest: ExperimentManifest,
+    snapshot: RuntimeSnapshot,
+    schedule: Sequence[Any],
+    case_set: Mapping[str, Any],
 ) -> None:
     if canonical_sha256(snapshot.payload) != snapshot.sha256:
         raise ValueError("Runtime snapshot hash drifted.")
-    validate_schedule_rows(manifest, snapshot, schedule)
+    validate_schedule_rows(manifest, snapshot, schedule, case_set)
 
 
 def serialize_frozen_campaign(
-    manifest: ExperimentManifest, snapshot: RuntimeSnapshot, schedule: Sequence[Any]
+    manifest: ExperimentManifest,
+    snapshot: RuntimeSnapshot,
+    schedule: Sequence[Any],
+    case_set: Mapping[str, Any],
 ) -> bytes:
-    validate_schedule(manifest, snapshot, schedule)
+    validate_schedule(manifest, snapshot, schedule, case_set)
     payload = {
         "manifest": _manifest_payload(manifest),
         "runtime_snapshot": plain(snapshot.payload),
@@ -281,8 +287,13 @@ def write_frozen_campaign_manifest(
     manifest: ExperimentManifest,
     snapshot: RuntimeSnapshot,
     schedule: Sequence[Any],
+    *,
+    case_set: Mapping[str, Any],
 ) -> None:
-    publish_once(Path(path), serialize_frozen_campaign(manifest, snapshot, schedule))
+    publish_once(
+        Path(path),
+        serialize_frozen_campaign(manifest, snapshot, schedule, case_set),
+    )
 
 
 def _clean_and_tracked(root: Path, sources: RuntimeSources) -> None:

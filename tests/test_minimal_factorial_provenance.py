@@ -45,7 +45,10 @@ class MinimalFactorialProvenanceTests(unittest.TestCase):
             return build_runtime_snapshot(self.manifest, self.cases)
 
     def test_schedule_rejects_tampered_snapshot_hash_and_nonhex_revision(self) -> None:
-        from dilu.runtime.minimal_factorial_schedule import build_union_schedule
+        from dilu.runtime.minimal_factorial_schedule import (
+            RuntimeSnapshot,
+            build_union_schedule,
+        )
 
         snapshot = self._snapshot()
         object.__setattr__(snapshot, "sha256", "0" * 64)
@@ -53,9 +56,8 @@ class MinimalFactorialProvenanceTests(unittest.TestCase):
             build_union_schedule(
                 self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
             )
-        snapshot = self._snapshot()
-        object.__setattr__(
-            snapshot, "payload", {**snapshot.payload, "code_revision": "x" * 40}
+        snapshot = RuntimeSnapshot.create(
+            {**self._snapshot().payload, "code_revision": "x" * 40}
         )
         with self.assertRaises(ValueError):
             build_union_schedule(
@@ -76,7 +78,11 @@ class MinimalFactorialProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 write_frozen_campaign_manifest(
-                    Path(directory) / "frozen.json", self.manifest, snapshot, invalid
+                    Path(directory) / "frozen.json",
+                    self.manifest,
+                    snapshot,
+                    invalid,
+                    case_set=self.cases,
                 )
 
     def test_barrier_writers_preserve_first_distinct_artifact(self) -> None:
@@ -97,7 +103,13 @@ class MinimalFactorialProvenanceTests(unittest.TestCase):
             def write(rows):
                 barrier.wait()
                 try:
-                    write_frozen_campaign_manifest(path, self.manifest, snapshot, rows)
+                    write_frozen_campaign_manifest(
+                        path,
+                        self.manifest,
+                        snapshot,
+                        rows,
+                        case_set=self.cases,
+                    )
                     outcomes.append("ok")
                 except ValueError:
                     outcomes.append("different")

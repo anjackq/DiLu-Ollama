@@ -75,6 +75,7 @@ class MinimalFactorialIdentityValidationTests(unittest.TestCase):
                         self.manifest,
                         snapshot,
                         mutated,
+                        case_set=self.cases,
                     )
 
 

@@ -15,7 +15,7 @@ def validate_schedule_rows(
     manifest: Any,
     snapshot: Any,
     schedule: Sequence[Any],
-    case_set: Mapping[str, Any] | None = None,
+    case_set: Mapping[str, Any],
 ) -> None:
     fingerprint = snapshot.payload.get("case_set_fingerprint")
     revision = snapshot.payload.get("code_revision")
@@ -23,7 +23,7 @@ def validate_schedule_rows(
         raise ValueError("Frozen snapshot fingerprint or revision is invalid.")
     if not _REVISION_RE.fullmatch(revision):
         raise ValueError("Frozen snapshot revision is invalid.")
-    cases = {case["case_id"]: case for case in (case_set or {}).get("cases", [])}
+    cases = {case["case_id"]: case for case in case_set.get("cases", [])}
     models = {model.slot: model.tag for model in manifest.models}
     for episode in schedule:
         validate_episode(episode, manifest, models, fingerprint, revision, cases)
@@ -37,6 +37,8 @@ def validate_episode(
     revision: str,
     cases: Mapping[str, Mapping[str, Any]],
 ) -> None:
+    if episode.stage not in {"smoke", "stage1", "stage2_additional"}:
+        raise ValueError("Scheduled episode stage is not frozen.")
     expected_campaign = (
         manifest.smoke_campaign_id if episode.stage == "smoke" else manifest.campaign_id
     )
@@ -50,7 +52,9 @@ def validate_episode(
     if episode.condition_id not in {f"c{index:03b}" for index in range(8)}:
         raise ValueError("Scheduled episode condition is not frozen.")
     case = cases.get(episode.case_id)
-    if case is not None and case.get("seed") != episode.simulator_seed:
+    if case is None:
+        raise ValueError("Scheduled episode case is not frozen.")
+    if case.get("seed") != episode.simulator_seed:
         raise ValueError("Scheduled episode case seed drifted.")
     if episode.replicate_id != 0:
         raise ValueError("Scheduled episode replicate drifted.")

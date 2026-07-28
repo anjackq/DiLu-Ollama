@@ -54,13 +54,26 @@ class RuntimeSources(FrozenSpec):
 
 
 @dataclass(frozen=True, init=False)
+class RetrySpec(FrozenSpec):
+    max_transport_unavailable_retries: int
+    retry_cooldown_sec: float
+    retry_on_timeout: bool
+    retry_on_empty_output: bool
+    retry_on_schema_rejection: bool
+
+
+@dataclass(frozen=True, init=False)
 class FixedHarnessSpec(FrozenSpec):
     parser_mode: str
     resolver_mode: str
     fallback_policy: str
     trace_level: str
-    retry_policy: "RetrySpec"
+    retry_policy: RetrySpec
     shield_source: str
+
+    @property
+    def retry_policy(self) -> RetrySpec:
+        return RetrySpec(self.values["retry_policy"])
 
 
 @dataclass(frozen=True, init=False)
@@ -101,15 +114,6 @@ class OutputSpec(FrozenSpec):
     llm_campaign: str
     baselines: str
     analysis: str
-
-
-@dataclass(frozen=True, init=False)
-class RetrySpec(FrozenSpec):
-    max_transport_unavailable_retries: int
-    retry_cooldown_sec: float
-    retry_on_timeout: bool
-    retry_on_empty_output: bool
-    retry_on_schema_rejection: bool
 
 
 def freeze(value: Any) -> Any:

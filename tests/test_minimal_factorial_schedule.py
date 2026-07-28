@@ -65,6 +65,12 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         self.assertEqual(
             len(select_stage1_cases(self.cases, self.manifest.campaign_id)), 30
         )
+        selected = select_stage1_cases(self.cases, self.manifest.campaign_id)
+        for category in {case["category"] for case in self.cases["cases"]}:
+            self.assertEqual(
+                sum(case["category"] == category for case in selected),
+                3,
+            )
 
     def test_union_and_smoke_have_exact_rows_and_identities(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import (
@@ -81,16 +87,26 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         )
         self.assertEqual(
             (
-                sum(row.stage == "s1" for row in union),
-                sum(row.stage == "s2_additional" for row in union),
+                sum(row.stage == "stage1" for row in union),
+                sum(row.stage == "stage2_additional" for row in union),
             ),
             (480, 360),
         )
         self.assertEqual(len(union), 840)
         self.assertEqual(len(smoke), 16)
         self.assertEqual(
+            len({row.episode_attempt_id for row in union}),
+            840,
+        )
+        self.assertEqual(
             {row.condition_id for row in smoke}, {f"c{i:03b}" for i in range(8)}
         )
+        stage1_cases = {row.case_id for row in union if row.stage == "stage1"}
+        stage2_rows = [row for row in union if row.stage == "stage2_additional"]
+        self.assertEqual(len(stage1_cases), 30)
+        self.assertEqual({row.condition_id for row in stage2_rows}, {"c000", "c111"})
+        self.assertEqual(len({row.case_id for row in stage2_rows}), 90)
+        self.assertFalse(stage1_cases & {row.case_id for row in stage2_rows})
         for slot in self.digests:
             for endpoint in ("c000", "c111"):
                 endpoint_rows = [
@@ -99,6 +115,10 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
                     if row.model_slot == slot and row.condition_id == endpoint
                 ]
                 self.assertEqual(len(endpoint_rows), 120)
+                self.assertEqual(
+                    sum(row.stage == "stage1" for row in endpoint_rows),
+                    30,
+                )
         row = smoke[0]
         identity = OllamaModelIdentity(row.model_tag, row.model_digest)
         self.assertEqual(row.identity().campaign_id, self.manifest.smoke_campaign_id)

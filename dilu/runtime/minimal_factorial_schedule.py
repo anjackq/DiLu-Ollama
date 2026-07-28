@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ._minimal_factorial_manifest import (
@@ -15,7 +16,9 @@ from ._minimal_factorial_manifest import (
     build_runtime_snapshot,
     case_fingerprint,
     load_experiment_manifest,
-    write_frozen_campaign_manifest,
+)
+from ._minimal_factorial_manifest import (
+    write_frozen_campaign_manifest as _write_frozen_campaign_manifest,
 )
 from ._minimal_factorial_schedule_support import canonical_sha256
 from ._scientific_runtime_binding import ScientificEpisodeIdentity
@@ -121,7 +124,7 @@ def build_union_schedule(
         case for case in case_set["cases"] if case["case_id"] not in selected
     )
     return _episodes(
-        "s1",
+        "stage1",
         manifest.campaign_id,
         manifest,
         stage1,
@@ -130,7 +133,7 @@ def build_union_schedule(
         revision,
         fingerprint,
     ) + _episodes(
-        "s2_additional",
+        "stage2_additional",
         manifest.campaign_id,
         manifest,
         remaining,
@@ -139,6 +142,68 @@ def build_union_schedule(
         revision,
         fingerprint,
     )
+
+
+def write_frozen_campaign_manifest(
+    path: str | Path,
+    manifest: ExperimentManifest,
+    snapshot: RuntimeSnapshot,
+    schedule: Sequence[ScheduledEpisode],
+    *,
+    case_set: Mapping[str, Any],
+) -> None:
+    """Publish only an exact smoke or claim-bearing frozen schedule."""
+    bindings = _model_digest_bindings(manifest, schedule)
+    stages = {episode.stage for episode in schedule}
+    if stages == {"smoke"}:
+        expected = build_smoke_schedule(
+            manifest,
+            case_set,
+            bindings,
+            runtime_snapshot=snapshot,
+        )
+    elif stages == {"stage1", "stage2_additional"}:
+        expected = build_union_schedule(
+            manifest,
+            case_set,
+            bindings,
+            runtime_snapshot=snapshot,
+        )
+    else:
+        raise ValueError("Frozen schedule stage vocabulary is invalid.")
+    actual_payloads = tuple(
+        canonical_sha256(episode.to_payload()) for episode in schedule
+    )
+    expected_payloads = tuple(
+        canonical_sha256(episode.to_payload()) for episode in expected
+    )
+    if len(set(actual_payloads)) != len(actual_payloads) or sorted(
+        actual_payloads
+    ) != sorted(expected_payloads):
+        raise ValueError("Frozen schedule is not the exact eligible schedule.")
+    _write_frozen_campaign_manifest(
+        path,
+        manifest,
+        snapshot,
+        schedule,
+        case_set=case_set,
+    )
+
+
+def _model_digest_bindings(
+    manifest: ExperimentManifest,
+    schedule: Sequence[ScheduledEpisode],
+) -> dict[str, str]:
+    models = {model.slot: model.tag for model in manifest.models}
+    observed: dict[str, set[str]] = {slot: set() for slot in models}
+    for episode in schedule:
+        if models.get(episode.model_slot) != episode.model_tag:
+            raise ValueError("Frozen schedule model slot/tag binding drifted.")
+        require_model_digest("scheduled model_digest", episode.model_digest)
+        observed[episode.model_slot].add(episode.model_digest)
+    if any(len(digests) != 1 for digests in observed.values()):
+        raise ValueError("Each frozen model slot must bind exactly one digest.")
+    return {slot: next(iter(digests)) for slot, digests in observed.items()}
 
 
 def _binding(snapshot: RuntimeSnapshot, case_set: Mapping[str, Any]) -> tuple[str, str]:
