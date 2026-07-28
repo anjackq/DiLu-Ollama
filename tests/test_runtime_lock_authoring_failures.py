@@ -137,7 +137,10 @@ class RuntimeLockAuthoringFailureTests(unittest.TestCase):
             original.rename(intermediate)
             intermediate.rename(wrong_case)
 
-            with self.assertRaisesRegex(ValueError, "exact|case-colliding"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "exact|case-colliding|casing",
+            ):
                 run_authoring(output, NativeFakes())
 
     def test_case_colliding_expected_paths_are_rejected(self) -> None:

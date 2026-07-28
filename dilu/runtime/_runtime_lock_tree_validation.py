@@ -10,10 +10,16 @@ from pathlib import Path
 
 def validate_unredirected_artifact_paths(artifact_paths: Sequence[Path]) -> None:
     """Reject redirects in every existing artifact or ancestor component."""
+    checked: set[str] = set()
     for artifact_path in artifact_paths:
         absolute = Path(os.path.abspath(artifact_path))
         components = _path_components(absolute)
         for index, path in enumerate(components):
+            serialized = str(path)
+            if serialized in checked:
+                continue
+            checked.add(serialized)
+            _validate_physical_name(path)
             if not os.path.lexists(path):
                 continue
             if _path_is_redirect(path):
@@ -23,6 +29,22 @@ def validate_unredirected_artifact_paths(artifact_paths: Sequence[Path]) -> None
                 not is_artifact and not path.is_dir()
             ):
                 raise ValueError("Runtime-lock output path has an invalid entry type.")
+
+
+def _validate_physical_name(path: Path) -> None:
+    parent = path.parent
+    if not parent.is_dir():
+        return
+    with os.scandir(parent) as entries:
+        matches = [
+            entry.name
+            for entry in entries
+            if entry.name.casefold() == path.name.casefold()
+        ]
+    if len(matches) > 1:
+        raise ValueError("Runtime-lock output path has a case-colliding entry.")
+    if matches and matches[0] != path.name:
+        raise ValueError("Runtime-lock output path casing does not match disk.")
 
 
 def validate_exact_lock_tree(
