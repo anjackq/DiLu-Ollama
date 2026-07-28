@@ -87,6 +87,18 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             (480, 360),
         )
         self.assertEqual(len(union), 840)
+        self.assertEqual(len(smoke), 16)
+        self.assertEqual(
+            {row.condition_id for row in smoke}, {f"c{i:03b}" for i in range(8)}
+        )
+        for slot in self.digests:
+            for endpoint in ("c000", "c111"):
+                endpoint_rows = [
+                    row
+                    for row in union
+                    if row.model_slot == slot and row.condition_id == endpoint
+                ]
+                self.assertEqual(len(endpoint_rows), 120)
         row = smoke[0]
         identity = OllamaModelIdentity(row.model_tag, row.model_digest)
         self.assertEqual(row.identity().campaign_id, self.manifest.smoke_campaign_id)
