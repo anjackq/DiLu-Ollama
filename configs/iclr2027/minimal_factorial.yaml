@@ -1,0 +1,59 @@
+schema_version: iclr2027_minimal_factorial_manifest_v1
+campaign_id: iclr2027-minimal-factorial-v1
+smoke_campaign_id: iclr2027-minimal-factorial-smoke-v1
+case_set: benchmarks/dilu_highway_reactive_stress_v2/cases.json
+models:
+  - slot: qwen_06b
+    tag: qwen3:0.6b
+  - slot: llama_1b
+    tag: llama3.2:1b
+transport:
+  native_endpoint: http://localhost:11434/api/chat
+  think_mode: no_think
+  temperature: 0.0
+  context_tokens: 8192
+  max_output_tokens: 128
+  timeout_sec: 30.0
+  generation_seed_master: 20270728
+runtime_sources:
+  runtime_config: configs/iclr2027/minimal_factorial_runtime.yaml
+  base_runtime_config: config.example.yaml
+  protocol_constants: configs/iclr2027/protocol_constants.yaml
+  require_clean_git: true
+fixed_harness:
+  parser_mode: strict_only
+  resolver_mode: disabled
+  fallback_policy: fixed_idle
+  trace_level: mandatory_scientific
+  retry_policy:
+    max_transport_unavailable_retries: 1
+    retry_cooldown_sec: 10.0
+    retry_on_timeout: false
+    retry_on_empty_output: false
+    retry_on_schema_rejection: false
+  shield_source: implementation_defaults
+simulation:
+  target_env_id: highway-fast-v0
+  few_shot_num: 0
+  memory_enabled: false
+  reflection_enabled: false
+scoring:
+  behavior_score: driving_score_balanced_v1
+  task_predicates: stress_v2_case_success_criteria
+  split_score_implementation: dilu.runtime.dilu_scoring
+selection:
+  categories: 10
+  stage1_cases_per_category: 3
+  stage2_cases_per_category: 12
+  smoke_hash_prefix: iclr2027-minimal-factorial-v1|smoke
+  stage1_hash_prefix: iclr2027-minimal-factorial-v1
+bootstrap:
+  draws: 20000
+  version: bootstrap-v1
+outputs:
+  root: results/iclr2027_minimal_factorial
+  s1: s1
+  smoke: smoke
+  llm_campaign: llm_campaign
+  baselines: baselines
+  analysis: analysis

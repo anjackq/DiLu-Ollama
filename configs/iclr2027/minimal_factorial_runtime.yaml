@@ -1,0 +1,12 @@
+base_config: ../../config.example.yaml
+OPENAI_API_TYPE: ollama
+OLLAMA_USE_NATIVE_CHAT: true
+OLLAMA_THINK_MODE: no_think
+reflection_module: false
+few_shot_num: 0
+sim_env_id: highway-fast-v0
+sim_use_native_env_defaults: true
+eval_enable_intent_resolver: false
+eval_save_run_artifacts: false
+eval_record_video: false
+adaptive_timeout_penalty_enabled: false
