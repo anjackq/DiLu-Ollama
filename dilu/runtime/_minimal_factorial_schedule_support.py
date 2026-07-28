@@ -55,22 +55,36 @@ class RuntimeSources(FrozenSpec):
 
 @dataclass(frozen=True, init=False)
 class FixedHarnessSpec(FrozenSpec):
-    pass
+    parser_mode: str
+    resolver_mode: str
+    fallback_policy: str
+    trace_level: str
+    retry_policy: "RetrySpec"
+    shield_source: str
 
 
 @dataclass(frozen=True, init=False)
 class SimulationSpec(FrozenSpec):
-    pass
+    target_env_id: str
+    few_shot_num: int
+    memory_enabled: bool
+    reflection_enabled: bool
 
 
 @dataclass(frozen=True, init=False)
 class ScoringSpec(FrozenSpec):
-    pass
+    behavior_score: str
+    task_predicates: str
+    split_score_implementation: str
 
 
 @dataclass(frozen=True, init=False)
 class SelectionSpec(FrozenSpec):
-    pass
+    categories: int
+    stage1_cases_per_category: int
+    stage2_cases_per_category: int
+    smoke_hash_prefix: str
+    stage1_hash_prefix: str
 
 
 @dataclass(frozen=True, init=False)
@@ -87,6 +101,15 @@ class OutputSpec(FrozenSpec):
     llm_campaign: str
     baselines: str
     analysis: str
+
+
+@dataclass(frozen=True, init=False)
+class RetrySpec(FrozenSpec):
+    max_transport_unavailable_retries: int
+    retry_cooldown_sec: float
+    retry_on_timeout: bool
+    retry_on_empty_output: bool
+    retry_on_schema_rejection: bool
 
 
 def freeze(value: Any) -> Any:

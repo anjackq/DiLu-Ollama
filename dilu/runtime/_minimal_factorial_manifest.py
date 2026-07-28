@@ -25,6 +25,7 @@ from ._harness_config_support import (
     TraceLevel,
     TransportProfile,
 )
+from ._minimal_factorial_provenance import validate_schedule_rows
 from ._minimal_factorial_schedule_support import (
     BootstrapSpec,
     FixedHarnessSpec,
@@ -40,7 +41,6 @@ from ._minimal_factorial_schedule_support import (
     plain,
     publish_once,
 )
-from ._scientific_transport_validation import require_model_digest
 from .config_loader import load_runtime_config
 from .dilu_scoring import BALANCED_DRIVING_SCORE_POLICY_VERSION
 from .harness_config import (
@@ -258,37 +258,9 @@ def build_runtime_snapshot(
 def validate_schedule(
     manifest: ExperimentManifest, snapshot: RuntimeSnapshot, schedule: Sequence[Any]
 ) -> None:
-    fingerprint = snapshot.payload.get("case_set_fingerprint")
-    revision = snapshot.payload.get("code_revision")
     if canonical_sha256(snapshot.payload) != snapshot.sha256:
         raise ValueError("Runtime snapshot hash drifted.")
-    if fingerprint != CASE_FINGERPRINT or not isinstance(revision, str):
-        raise ValueError("Frozen manifest snapshot binding is invalid.")
-    if not REVISION_RE.fullmatch(revision):
-        raise ValueError("Frozen manifest has invalid code revision.")
-    for episode in schedule:
-        expected = (
-            manifest.smoke_campaign_id
-            if episode.stage == "smoke"
-            else manifest.campaign_id
-        )
-        if (
-            episode.campaign_id != expected
-            or episode.code_revision != revision
-            or episode.benchmark_fingerprint != fingerprint
-        ):
-            raise ValueError("Scheduled episode does not match frozen snapshot.")
-        require_model_digest("scheduled model_digest", episode.model_digest)
-        episode.identity()
-        pair = "pair-" + _digest(
-            f"{episode.campaign_id}|{episode.case_id}|{episode.simulator_seed}"
-        )
-        attempt = "episode-" + _digest(
-            f"{episode.campaign_id}|{episode.model_tag}|{episode.model_digest}|"
-            f"{episode.condition_id}|{episode.case_id}|{episode.simulator_seed}|0"
-        )
-        if episode.pair_id != pair or episode.episode_attempt_id != attempt:
-            raise ValueError("Scheduled episode identity drifted.")
+    validate_schedule_rows(manifest, snapshot, schedule)
 
 
 def serialize_frozen_campaign(
