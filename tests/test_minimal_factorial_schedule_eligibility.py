@@ -8,6 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from dilu.runtime.ollama_transport import OllamaModelIdentity
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "configs" / "iclr2027" / "minimal_factorial.yaml"
 
@@ -25,6 +27,10 @@ class MinimalFactorialScheduleEligibilityTests(unittest.TestCase):
         self.digests = {
             "qwen_06b": "sha256:" + "a" * 64,
             "llama_1b": "sha256:" + "b" * 64,
+        }
+        self.bindings = {
+            model.slot: OllamaModelIdentity(model.tag, self.digests[model.slot])
+            for model in self.manifest.models
         }
         with patch(
             "dilu.runtime._minimal_factorial_manifest.subprocess.run", self._git
@@ -108,9 +114,10 @@ class MinimalFactorialScheduleEligibilityTests(unittest.TestCase):
                         self.snapshot,
                         rows,
                         case_set=self.cases,
+                        model_bindings=self.bindings,
                     )
             except TypeError:
-                self.fail("writer must require an explicit frozen case_set")
+                self.fail("writer must require explicit trusted model_bindings")
 
     def test_writer_rejects_unknown_and_mixed_stage_vocabularies(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import build_smoke_schedule
@@ -179,6 +186,88 @@ class MinimalFactorialScheduleEligibilityTests(unittest.TestCase):
             model_digest="sha256:" + "c" * 64,
         )
         self._assert_rejected((wrong, *self.schedule[1:]), "multiple-digests")
+
+    def test_writer_rejects_coordinated_digest_replacement_for_entire_slot(
+        self,
+    ) -> None:
+        tampered = tuple(
+            self._rehash(row, model_digest="sha256:" + "c" * 64)
+            if row.model_slot == "qwen_06b"
+            else row
+            for row in self.schedule
+        )
+        self._assert_rejected(tampered, "coordinated-slot-digest")
+
+    def test_writer_serializes_permuted_rows_in_canonical_order(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import (
+            write_frozen_campaign_manifest,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first.json"
+            second = Path(directory) / "second.json"
+            for path, rows in (
+                (first, self.schedule),
+                (second, tuple(reversed(self.schedule))),
+            ):
+                write_frozen_campaign_manifest(
+                    path,
+                    self.manifest,
+                    self.snapshot,
+                    rows,
+                    case_set=self.cases,
+                    model_bindings=self.bindings,
+                )
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            original = first.read_bytes()
+            write_frozen_campaign_manifest(
+                first,
+                self.manifest,
+                self.snapshot,
+                tuple(reversed(self.schedule)),
+                case_set=self.cases,
+                model_bindings=self.bindings,
+            )
+            self.assertEqual(first.read_bytes(), original)
+
+    def test_writer_rejects_untrusted_binding_slots_tags_and_digests(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import (
+            write_frozen_campaign_manifest,
+        )
+
+        qwen = self.bindings["qwen_06b"]
+        invalid_bindings = {
+            "missing_slot": {"qwen_06b": qwen},
+            "extra_slot": {
+                **self.bindings,
+                "extra": OllamaModelIdentity("extra:model", "sha256:" + "d" * 64),
+            },
+            "wrong_tag": {
+                **self.bindings,
+                "qwen_06b": OllamaModelIdentity(
+                    "wrong:model",
+                    qwen.model_digest,
+                ),
+            },
+            "wrong_digest": {
+                **self.bindings,
+                "qwen_06b": OllamaModelIdentity(
+                    qwen.model_tag,
+                    "sha256:" + "c" * 64,
+                ),
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for label, bindings in invalid_bindings.items():
+                with self.subTest(label=label), self.assertRaises(ValueError):
+                    write_frozen_campaign_manifest(
+                        Path(directory) / f"{label}.json",
+                        self.manifest,
+                        self.snapshot,
+                        self.schedule,
+                        case_set=self.cases,
+                        model_bindings=bindings,
+                    )
 
 
 if __name__ == "__main__":

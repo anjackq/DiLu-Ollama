@@ -7,6 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from dilu.runtime.ollama_transport import OllamaModelIdentity
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -21,6 +23,10 @@ class MinimalFactorialIdentityValidationTests(unittest.TestCase):
         self.digests = {
             "qwen_06b": "sha256:" + "a" * 64,
             "llama_1b": "sha256:" + "b" * 64,
+        }
+        self.bindings = {
+            model.slot: OllamaModelIdentity(model.tag, self.digests[model.slot])
+            for model in self.manifest.models
         }
 
     @staticmethod
@@ -76,6 +82,7 @@ class MinimalFactorialIdentityValidationTests(unittest.TestCase):
                         snapshot,
                         mutated,
                         case_set=self.cases,
+                        model_bindings=self.bindings,
                     )
 
 

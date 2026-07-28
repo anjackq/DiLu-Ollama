@@ -8,6 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from dilu.runtime.ollama_transport import OllamaModelIdentity
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -22,6 +24,10 @@ class MinimalFactorialProvenanceTests(unittest.TestCase):
         self.digests = {
             "qwen_06b": "sha256:" + "a" * 64,
             "llama_1b": "sha256:" + "b" * 64,
+        }
+        self.bindings = {
+            model.slot: OllamaModelIdentity(model.tag, self.digests[model.slot])
+            for model in self.manifest.models
         }
 
     @staticmethod
@@ -83,6 +89,7 @@ class MinimalFactorialProvenanceTests(unittest.TestCase):
                     snapshot,
                     invalid,
                     case_set=self.cases,
+                    model_bindings=self.bindings,
                 )
 
     def test_barrier_writers_preserve_first_distinct_artifact(self) -> None:
@@ -109,6 +116,7 @@ class MinimalFactorialProvenanceTests(unittest.TestCase):
                         snapshot,
                         rows,
                         case_set=self.cases,
+                        model_bindings=self.bindings,
                     )
                     outcomes.append("ok")
                 except ValueError:

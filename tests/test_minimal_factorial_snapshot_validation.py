@@ -91,6 +91,25 @@ class MinimalFactorialSnapshotValidationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self._build()
 
+    def test_rejects_failed_and_short_git_revision(self) -> None:
+        for label, revision in (
+            ("failed", self._completed(returncode=128)),
+            ("short", self._completed("46367da\n")),
+        ):
+            with self.subTest(label=label):
+
+                def invalid_revision(command, **kwargs):
+                    if command[1] == "rev-parse":
+                        return revision
+                    return self._clean_git(command, **kwargs)
+
+                with patch(
+                    "dilu.runtime._minimal_factorial_manifest.subprocess.run",
+                    invalid_revision,
+                ):
+                    with self.assertRaises(ValueError):
+                        self._build()
+
     def test_rejects_source_scoring_and_predicate_fingerprint_drift(self) -> None:
         original_file_sha = manifest_module._file_sha
         original_canonical = manifest_module.canonical_sha256
@@ -134,6 +153,27 @@ class MinimalFactorialSnapshotValidationTests(unittest.TestCase):
             patch(
                 "dilu.runtime._minimal_factorial_manifest.canonical_sha256",
                 drift_predicate,
+            ),
+        ):
+            with self.assertRaises(ValueError):
+                self._build()
+
+    def test_rejects_isolated_trace_schema_fingerprint_drift(self) -> None:
+        original_file_sha = manifest_module._file_sha
+
+        def drift_trace(path):
+            if path.name == "_scientific_trace_serialization.py":
+                return "0" * 64
+            return original_file_sha(path)
+
+        with (
+            patch(
+                "dilu.runtime._minimal_factorial_manifest.subprocess.run",
+                self._clean_git,
+            ),
+            patch(
+                "dilu.runtime._minimal_factorial_manifest._file_sha",
+                drift_trace,
             ),
         ):
             with self.assertRaises(ValueError):

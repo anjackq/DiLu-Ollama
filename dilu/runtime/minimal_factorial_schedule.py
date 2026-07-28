@@ -24,6 +24,7 @@ from ._minimal_factorial_schedule_support import canonical_sha256
 from ._scientific_runtime_binding import ScientificEpisodeIdentity
 from ._scientific_transport_validation import require_model_digest
 from .harness_config import HarnessConfig
+from .ollama_transport import OllamaModelIdentity
 
 
 @dataclass(frozen=True)
@@ -151,22 +152,23 @@ def write_frozen_campaign_manifest(
     schedule: Sequence[ScheduledEpisode],
     *,
     case_set: Mapping[str, Any],
+    model_bindings: Mapping[str, OllamaModelIdentity],
 ) -> None:
     """Publish only an exact smoke or claim-bearing frozen schedule."""
-    bindings = _model_digest_bindings(manifest, schedule)
+    digests = _trusted_model_digests(manifest, model_bindings)
     stages = {episode.stage for episode in schedule}
     if stages == {"smoke"}:
         expected = build_smoke_schedule(
             manifest,
             case_set,
-            bindings,
+            digests,
             runtime_snapshot=snapshot,
         )
     elif stages == {"stage1", "stage2_additional"}:
         expected = build_union_schedule(
             manifest,
             case_set,
-            bindings,
+            digests,
             runtime_snapshot=snapshot,
         )
     else:
@@ -185,25 +187,28 @@ def write_frozen_campaign_manifest(
         path,
         manifest,
         snapshot,
-        schedule,
+        expected,
         case_set=case_set,
     )
 
 
-def _model_digest_bindings(
+def _trusted_model_digests(
     manifest: ExperimentManifest,
-    schedule: Sequence[ScheduledEpisode],
+    model_bindings: Mapping[str, OllamaModelIdentity],
 ) -> dict[str, str]:
     models = {model.slot: model.tag for model in manifest.models}
-    observed: dict[str, set[str]] = {slot: set() for slot in models}
-    for episode in schedule:
-        if models.get(episode.model_slot) != episode.model_tag:
-            raise ValueError("Frozen schedule model slot/tag binding drifted.")
-        require_model_digest("scheduled model_digest", episode.model_digest)
-        observed[episode.model_slot].add(episode.model_digest)
-    if any(len(digests) != 1 for digests in observed.values()):
-        raise ValueError("Each frozen model slot must bind exactly one digest.")
-    return {slot: next(iter(digests)) for slot, digests in observed.items()}
+    if set(model_bindings) != set(models):
+        raise ValueError("Trusted model binding slots drifted.")
+    digests: dict[str, str] = {}
+    for slot, tag in models.items():
+        binding = model_bindings[slot]
+        if not isinstance(binding, OllamaModelIdentity) or binding.model_tag != tag:
+            raise ValueError("Trusted model slot/tag binding drifted.")
+        require_model_digest(
+            f"model_bindings.{slot}.model_digest", binding.model_digest
+        )
+        digests[slot] = binding.model_digest
+    return digests
 
 
 def _binding(snapshot: RuntimeSnapshot, case_set: Mapping[str, Any]) -> tuple[str, str]:

@@ -7,6 +7,8 @@ from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import patch
 
+from dilu.runtime.ollama_transport import OllamaModelIdentity
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -18,6 +20,14 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             ROOT / "configs/iclr2027/minimal_factorial.yaml"
         )
         self.cases = json.loads((ROOT / self.manifest.case_path).read_text())
+        self.digests = {
+            "qwen_06b": "sha256:" + "a" * 64,
+            "llama_1b": "sha256:" + "b" * 64,
+        }
+        self.bindings = {
+            model.slot: OllamaModelIdentity(model.tag, self.digests[model.slot])
+            for model in self.manifest.models
+        }
 
     @staticmethod
     def _git(command, **_kwargs):
@@ -117,10 +127,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
         schedule = build_smoke_schedule(
             self.manifest,
             self.cases,
-            {
-                "qwen_06b": "sha256:" + "a" * 64,
-                "llama_1b": "sha256:" + "b" * 64,
-            },
+            self.digests,
             runtime_snapshot=snapshot,
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -131,6 +138,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
                 snapshot,
                 schedule,
                 case_set=self.cases,
+                model_bindings=self.bindings,
             )
             saved = json.loads(path.read_text())
         self.assertEqual(
@@ -153,18 +161,27 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_runtime_snapshot(self.manifest, self.cases)
         snapshot = self._snapshot()
-        digests = {"qwen_06b": "sha256:" + "a" * 64, "llama_1b": "sha256:" + "b" * 64}
         schedule = build_union_schedule(
-            self.manifest, self.cases, digests, runtime_snapshot=snapshot
+            self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "frozen.json"
             write_frozen_campaign_manifest(
-                path, self.manifest, snapshot, schedule, case_set=self.cases
+                path,
+                self.manifest,
+                snapshot,
+                schedule,
+                case_set=self.cases,
+                model_bindings=self.bindings,
             )
             content = path.read_bytes()
             write_frozen_campaign_manifest(
-                path, self.manifest, snapshot, schedule, case_set=self.cases
+                path,
+                self.manifest,
+                snapshot,
+                schedule,
+                case_set=self.cases,
+                model_bindings=self.bindings,
             )
             self.assertEqual(path.read_bytes(), content)
             with self.assertRaises(ValueError):
@@ -174,6 +191,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
                     snapshot,
                     schedule[:-1],
                     case_set=self.cases,
+                    model_bindings=self.bindings,
                 )
 
     def test_racing_writer_keeps_first_artifact(self) -> None:
@@ -183,14 +201,18 @@ class MinimalFactorialManifestTests(unittest.TestCase):
         )
 
         snapshot = self._snapshot()
-        digests = {"qwen_06b": "sha256:" + "a" * 64, "llama_1b": "sha256:" + "b" * 64}
         schedule = build_union_schedule(
-            self.manifest, self.cases, digests, runtime_snapshot=snapshot
+            self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "frozen.json"
             write_frozen_campaign_manifest(
-                path, self.manifest, snapshot, schedule, case_set=self.cases
+                path,
+                self.manifest,
+                snapshot,
+                schedule,
+                case_set=self.cases,
+                model_bindings=self.bindings,
             )
             original = path.read_bytes()
             with self.assertRaises(ValueError):
@@ -200,6 +222,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
                     snapshot,
                     schedule[:-1],
                     case_set=self.cases,
+                    model_bindings=self.bindings,
                 )
             self.assertEqual(path.read_bytes(), original)
 
