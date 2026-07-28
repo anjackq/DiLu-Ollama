@@ -36,12 +36,21 @@ class FrozenSpec:
 
 @dataclass(frozen=True, init=False)
 class TransportSpec(FrozenSpec):
-    pass
+    native_endpoint: str
+    think_mode: str
+    temperature: float
+    context_tokens: int
+    max_output_tokens: int
+    timeout_sec: float
+    generation_seed_master: int
 
 
 @dataclass(frozen=True, init=False)
 class RuntimeSources(FrozenSpec):
-    pass
+    runtime_config: str
+    base_runtime_config: str
+    protocol_constants: str
+    require_clean_git: bool
 
 
 @dataclass(frozen=True, init=False)
@@ -66,12 +75,18 @@ class SelectionSpec(FrozenSpec):
 
 @dataclass(frozen=True, init=False)
 class BootstrapSpec(FrozenSpec):
-    pass
+    draws: int
+    version: str
 
 
 @dataclass(frozen=True, init=False)
 class OutputSpec(FrozenSpec):
-    pass
+    root: str
+    s1: str
+    smoke: str
+    llm_campaign: str
+    baselines: str
+    analysis: str
 
 
 def freeze(value: Any) -> Any:

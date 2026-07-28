@@ -40,6 +40,7 @@ from ._minimal_factorial_schedule_support import (
     plain,
     publish_once,
 )
+from ._scientific_transport_validation import require_model_digest
 from .config_loader import load_runtime_config
 from .dilu_scoring import BALANCED_DRIVING_SCORE_POLICY_VERSION
 from .harness_config import (
@@ -277,6 +278,17 @@ def validate_schedule(
             or episode.benchmark_fingerprint != fingerprint
         ):
             raise ValueError("Scheduled episode does not match frozen snapshot.")
+        require_model_digest("scheduled model_digest", episode.model_digest)
+        episode.identity()
+        pair = "pair-" + _digest(
+            f"{episode.campaign_id}|{episode.case_id}|{episode.simulator_seed}"
+        )
+        attempt = "episode-" + _digest(
+            f"{episode.campaign_id}|{episode.model_tag}|{episode.model_digest}|"
+            f"{episode.condition_id}|{episode.case_id}|{episode.simulator_seed}|0"
+        )
+        if episode.pair_id != pair or episode.episode_attempt_id != attempt:
+            raise ValueError("Scheduled episode identity drifted.")
 
 
 def serialize_frozen_campaign(
@@ -367,6 +379,10 @@ def _git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 def _file_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _versions(packages: Sequence[str]) -> dict[str, str]:

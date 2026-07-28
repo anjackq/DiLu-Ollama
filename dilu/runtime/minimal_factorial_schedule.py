@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 from ._minimal_factorial_manifest import (
+    REVISION_RE,
     ExperimentManifest,
     ModelSpec,
     RuntimeSnapshot,
@@ -16,8 +17,10 @@ from ._minimal_factorial_manifest import (
     load_experiment_manifest,
     write_frozen_campaign_manifest,
 )
+from ._minimal_factorial_schedule_support import canonical_sha256
 from ._scientific_runtime_binding import ScientificEpisodeIdentity
 from ._scientific_transport_validation import require_model_digest
+from .harness_config import HarnessConfig
 
 
 @dataclass(frozen=True)
@@ -27,7 +30,7 @@ class ScheduledEpisode:
     model_slot: str
     model_tag: str
     model_digest: str
-    condition: Any
+    condition: HarnessConfig
     condition_id: str
     case_id: str
     simulator_seed: int
@@ -142,10 +145,12 @@ def _binding(snapshot: RuntimeSnapshot, case_set: Mapping[str, Any]) -> tuple[st
     fingerprint = case_fingerprint(case_set)
     if not isinstance(snapshot, RuntimeSnapshot):
         raise TypeError("runtime_snapshot must be a RuntimeSnapshot.")
+    if canonical_sha256(snapshot.payload) != snapshot.sha256:
+        raise ValueError("Runtime snapshot hash drifted.")
     if snapshot.payload.get("case_set_fingerprint") != fingerprint:
         raise ValueError("Runtime snapshot case fingerprint drifted.")
     revision = snapshot.payload.get("code_revision")
-    if not isinstance(revision, str) or len(revision) != 40:
+    if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
         raise ValueError("Runtime snapshot revision is invalid.")
     return fingerprint, revision
 
@@ -187,7 +192,7 @@ def _episode(
     campaign: str,
     model: ModelSpec,
     digest: str,
-    condition: Any,
+    condition: HarnessConfig,
     case: Mapping[str, Any],
     revision: str,
     fingerprint: str,
