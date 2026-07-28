@@ -15,6 +15,7 @@ from ._runtime_lock_authoring_support import (
     build_request_evidence,
     bytes_sha256,
     canonical_bytes,
+    derive_response_evidence,
 )
 from ._runtime_lock_authoring_workflow import (
     RuntimeLockArtifact,
@@ -65,12 +66,6 @@ _REQUEST_FIELDS = {
     "output_enforcement",
     "think_mode",
     "timeout_sec",
-}
-_TIMING_FIELDS = {
-    "total_duration_ns",
-    "load_duration_ns",
-    "prompt_eval_duration_ns",
-    "eval_duration_ns",
 }
 
 
@@ -255,29 +250,23 @@ def _validate_record(
             raise ValueError("Completed backend schema evidence drifted.")
     elif "format" in payload:
         raise ValueError("Completed prompt-only payload contains schema.")
-    action = record["canonical_action"]
-    prompt_tokens = record["prompt_tokens"]
-    completion_tokens = record["completion_tokens"]
-    timing = record["backend_timing"]
-    if (
-        isinstance(action, bool)
-        or not isinstance(action, int)
-        or action not in range(5)
-        or not _nonnegative_int(prompt_tokens)
-        or not _nonnegative_int(completion_tokens)
-        or record["total_tokens"] != prompt_tokens + completion_tokens
-        or not isinstance(record["http_status"], int)
-        or not 200 <= record["http_status"] < 300
-        or not all(
-            isinstance(record[name], str)
-            for name in ("response_body", "raw_response", "stop_reason")
-        )
-        or not isinstance(timing, Mapping)
-        or set(timing) != _TIMING_FIELDS
-        or not all(_nonnegative_int(value) for value in timing.values())
-    ):
+    response_body = record["response_body"]
+    status = record["http_status"]
+    if not isinstance(response_body, str) or not _direct_status(status):
         raise ValueError("Completed response evidence drifted.")
-    return before, record["request_body"], action
+    try:
+        response_payload = json.loads(response_body)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Completed response body is malformed JSON.") from exc
+    expected_response, parsed_action = derive_response_evidence(
+        expected_request,
+        status,
+        response_payload,
+        response_body,
+    )
+    if any(record[field] != value for field, value in expected_response.items()):
+        raise ValueError("Completed response evidence drifted.")
+    return before, record["request_body"], parsed_action
 
 
 def _identity(value: object, model_tag: str) -> OllamaModelIdentity:
@@ -328,5 +317,5 @@ def _load_canonical_object(path: Path) -> tuple[bytes, dict[str, Any]]:
     return content, decoded
 
 
-def _nonnegative_int(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+def _direct_status(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and 200 <= value < 300

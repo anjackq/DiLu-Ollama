@@ -1,3 +1,5 @@
+"""Coherent-rewrite rejection for completed runtime-lock evidence."""
+
 from __future__ import annotations
 
 import hashlib
@@ -189,6 +191,67 @@ def _mutate_model_binding(records: list[dict[str, object]]) -> None:
         payload["model"] = new_tag
 
 
+def _response_body(
+    records: list[dict[str, object]],
+    index: int,
+) -> dict[str, object]:
+    serialized = records[index]["response_body"]
+    if not isinstance(serialized, str):
+        raise AssertionError("test fixture response body must be text")
+    body = json.loads(serialized)
+    if not isinstance(body, dict):
+        raise AssertionError("test fixture response body must be a mapping")
+    return body
+
+
+def _replace_response_body(
+    records: list[dict[str, object]],
+    index: int,
+    body: dict[str, object],
+) -> None:
+    records[index]["response_body"] = canonical_bytes(body).decode("utf-8")
+
+
+def _mutate_raw_response(records: list[dict[str, object]]) -> None:
+    for index in range(2):
+        records[index]["raw_response"] = "noncanonical response text"
+
+
+def _mutate_body_content(records: list[dict[str, object]]) -> None:
+    for index in range(2):
+        body = _response_body(records, index)
+        message = body["message"]
+        if not isinstance(message, dict):
+            raise AssertionError("test fixture message must be a mapping")
+        message["content"] = "noncanonical response text"
+        _replace_response_body(records, index, body)
+
+
+def _mutate_decoded_action(records: list[dict[str, object]]) -> None:
+    for index in range(2):
+        records[index]["canonical_action"] = 4
+
+
+def _mutate_stop_reason(records: list[dict[str, object]]) -> None:
+    for index in range(2):
+        records[index]["stop_reason"] = "length"
+
+
+def _mutate_tokens(records: list[dict[str, object]]) -> None:
+    for index in range(2):
+        records[index]["prompt_tokens"] = 20
+        records[index]["completion_tokens"] = 8
+        records[index]["total_tokens"] = 28
+
+
+def _mutate_timing(records: list[dict[str, object]]) -> None:
+    for index in range(2):
+        timing = records[index]["backend_timing"]
+        if not isinstance(timing, dict):
+            raise AssertionError("test fixture timing must be a mapping")
+        timing["total_duration_ns"] = 999_000_000
+
+
 class ExistingRequestPlanTests(unittest.TestCase):
     def test_coherent_request_plan_rewrites_reject_without_posts(self) -> None:
         mutations = {
@@ -205,6 +268,27 @@ class ExistingRequestPlanTests(unittest.TestCase):
             "record_order": _mutate_order,
             "enforcement": _mutate_enforcement,
             "model_binding": _mutate_model_binding,
+        }
+        for label, mutation in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "results"
+                run_authoring(output, NativeFakes())
+                _coherently_rewrite_campaign(output, mutation)
+                rerun_fakes = NativeFakes()
+
+                with self.assertRaises(ValueError):
+                    run_authoring(output, rerun_fakes)
+
+                self.assertEqual(rerun_fakes.post_calls, [])
+
+    def test_coherent_response_evidence_rewrites_reject_without_posts(self) -> None:
+        mutations = {
+            "raw_response": _mutate_raw_response,
+            "response_body_content": _mutate_body_content,
+            "decoded_action": _mutate_decoded_action,
+            "stop_reason": _mutate_stop_reason,
+            "tokens": _mutate_tokens,
+            "timing": _mutate_timing,
         }
         for label, mutation in mutations.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:

@@ -268,6 +268,39 @@ def _direct_call(
         response_payload = response.json()
     except (TypeError, ValueError) as exc:
         raise ValueError("Native capability probe returned malformed JSON.") from exc
+    response_evidence, action = derive_response_evidence(
+        request,
+        status,
+        response_payload,
+        response_body,
+    )
+    return (
+        {
+            "request": build_request_evidence(request),
+            "payload": dict(payload),
+            "payload_sha256": bytes_sha256(payload_body),
+            "request_body": payload_body.decode("utf-8"),
+            **response_evidence,
+        },
+        action,
+    )
+
+
+def derive_response_evidence(
+    request: GenerationRequest,
+    status: int,
+    response_payload: object,
+    response_body: str,
+) -> tuple[dict[str, object], int]:
+    """Parse one response into the exact evidence fields persisted by authoring."""
+    if (
+        isinstance(status, bool)
+        or not isinstance(status, int)
+        or not 200 <= status < 300
+    ):
+        raise ValueError("Native capability response requires a direct 2xx status.")
+    if not isinstance(response_body, str):
+        raise ValueError("Native capability response body is malformed.")
     attempt = parse_native_response_attempt(
         request,
         f"{request.request_id}:a1",
@@ -293,21 +326,15 @@ def _direct_call(
     ):
         raise ValueError("Native capability probe omitted required evidence.")
     action = parse_canonical_action(attempt.contract_text)
-    return (
-        {
-            "request": build_request_evidence(request),
-            "payload": dict(payload),
-            "payload_sha256": bytes_sha256(payload_body),
-            "request_body": payload_body.decode("utf-8"),
-            "http_status": status,
-            "response_body": response_body,
-            "raw_response": attempt.raw_response,
-            "canonical_action": action,
-            "stop_reason": attempt.stop_reason,
-            "prompt_tokens": attempt.prompt_tokens,
-            "completion_tokens": attempt.completion_tokens,
-            "total_tokens": attempt.prompt_tokens + attempt.completion_tokens,
-            "backend_timing": asdict(attempt.backend_timing),
-        },
-        action,
-    )
+    evidence = {
+        "http_status": status,
+        "response_body": response_body,
+        "raw_response": attempt.raw_response,
+        "canonical_action": action,
+        "stop_reason": attempt.stop_reason,
+        "prompt_tokens": attempt.prompt_tokens,
+        "completion_tokens": attempt.completion_tokens,
+        "total_tokens": attempt.prompt_tokens + attempt.completion_tokens,
+        "backend_timing": asdict(attempt.backend_timing),
+    }
+    return evidence, action
