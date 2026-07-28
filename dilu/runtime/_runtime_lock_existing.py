@@ -10,7 +10,12 @@ from types import MappingProxyType
 from typing import Any
 
 from ._minimal_factorial_manifest import serialize_frozen_campaign
-from ._runtime_lock_authoring_support import bytes_sha256, canonical_bytes
+from ._runtime_lock_authoring_support import (
+    build_probe_requests,
+    build_request_evidence,
+    bytes_sha256,
+    canonical_bytes,
+)
 from ._runtime_lock_authoring_workflow import (
     RuntimeLockArtifact,
     artifact_paths,
@@ -23,9 +28,14 @@ from ._runtime_lock_tree_validation import (
     validate_exact_lock_tree,
     validate_unredirected_artifact_paths,
 )
+from .harness_config import ThinkMode
 from .minimal_factorial_schedule import ExperimentManifest, RuntimeSnapshot
 from .ollama_transport import OllamaModelIdentity
-from .scientific_transport_types import ScientificTransportCapabilities
+from .scientific_transport_types import (
+    GenerationRequest,
+    ScientificTransportCapabilities,
+    build_native_chat_payload,
+)
 
 _RECORD_FIELDS = {
     "model_slot",
@@ -157,8 +167,16 @@ def _load_bindings(
     *,
     canonical_schema_bytes: bytes,
 ) -> dict[str, OllamaModelIdentity]:
+    expected_slots = [
+        model.slot for model in manifest.models for _probe_index in range(3)
+    ]
+    if [
+        record.get("model_slot") if isinstance(record, Mapping) else None
+        for record in records
+    ] != expected_slots:
+        raise ValueError("Completed preflight record order drifted.")
     bindings: dict[str, OllamaModelIdentity] = {}
-    for model in manifest.models:
+    for model_index, model in enumerate(manifest.models):
         model_records = [
             record
             for record in records
@@ -166,17 +184,29 @@ def _load_bindings(
         ]
         if len(model_records) != 3:
             raise ValueError("Completed preflight model record count drifted.")
+        identity = _identity(model_records[0]["identity_before"], model.tag)
+        expected_requests = build_probe_requests(
+            model_slot=model.slot,
+            identity=identity,
+            native_endpoint=manifest.transport.native_endpoint,
+            seed=manifest.transport.generation_seed_master + model_index,
+            temperature=manifest.transport.temperature,
+            context_tokens=manifest.transport.context_tokens,
+            max_output_tokens=manifest.transport.max_output_tokens,
+            timeout_sec=manifest.transport.timeout_sec,
+            think_mode=ThinkMode(manifest.transport.think_mode),
+        )
         validated = [
             _validate_record(
                 record,
                 model_slot=model.slot,
                 model_tag=model.tag,
                 canonical_schema_bytes=canonical_schema_bytes,
-                expected_enforcement=enforcement,
+                expected_request=expected_request,
             )
-            for record, enforcement in zip(
+            for record, expected_request in zip(
                 model_records,
-                ("prompt_only", "prompt_only", "backend_schema"),
+                expected_requests,
                 strict=True,
             )
         ]
@@ -195,7 +225,7 @@ def _validate_record(
     model_slot: str,
     model_tag: str,
     canonical_schema_bytes: bytes,
-    expected_enforcement: str,
+    expected_request: GenerationRequest,
 ) -> tuple[OllamaModelIdentity, str, int]:
     if set(record) != _RECORD_FIELDS or record["model_slot"] != model_slot:
         raise ValueError("Completed preflight record fields drifted.")
@@ -208,10 +238,11 @@ def _validate_record(
     if (
         not isinstance(request, Mapping)
         or set(request) != _REQUEST_FIELDS
-        or request["model_tag"] != before.model_tag
-        or request["model_digest"] != before.model_digest
-        or request["output_enforcement"] != expected_enforcement
+        or before.model_tag != expected_request.model_tag
+        or before.model_digest != expected_request.model_digest
+        or dict(request) != build_request_evidence(expected_request)
         or not isinstance(payload, Mapping)
+        or dict(payload) != build_native_chat_payload(expected_request)
     ):
         raise ValueError("Completed preflight request evidence drifted.")
     payload_bytes = canonical_bytes(payload)
@@ -219,7 +250,7 @@ def _validate_record(
         "payload_sha256"
     ] != bytes_sha256(payload_bytes):
         raise ValueError("Completed preflight payload bytes drifted.")
-    if expected_enforcement == "backend_schema":
+    if expected_request.output_enforcement.value == "backend_schema":
         if canonical_bytes(payload.get("format")) != canonical_schema_bytes:
             raise ValueError("Completed backend schema evidence drifted.")
     elif "format" in payload:

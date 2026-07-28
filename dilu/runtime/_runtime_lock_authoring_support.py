@@ -90,29 +90,21 @@ def probe_model(
     records: list[dict[str, Any]] = []
     payload_bodies: list[bytes] = []
     actions: list[int] = []
-    for index, enforcement in enumerate(
-        (
-            OutputEnforcement.PROMPT_ONLY,
-            OutputEnforcement.PROMPT_ONLY,
-            OutputEnforcement.BACKEND_SCHEMA,
-        )
-    ):
-        request = _probe_request(
-            model_slot=model_slot,
-            identity=before,
-            native_endpoint=native_endpoint,
-            seed=seed,
-            temperature=temperature,
-            context_tokens=context_tokens,
-            max_output_tokens=max_output_tokens,
-            timeout_sec=timeout_sec,
-            think_mode=think_mode,
-            enforcement=enforcement,
-            index=index,
-        )
+    requests = build_probe_requests(
+        model_slot=model_slot,
+        identity=before,
+        native_endpoint=native_endpoint,
+        seed=seed,
+        temperature=temperature,
+        context_tokens=context_tokens,
+        max_output_tokens=max_output_tokens,
+        timeout_sec=timeout_sec,
+        think_mode=think_mode,
+    )
+    for request in requests:
         payload = build_native_chat_payload(request)
         if (
-            enforcement is OutputEnforcement.BACKEND_SCHEMA
+            request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
             and canonical_bytes(payload.get("format")) != canonical_schema_bytes
         ):
             raise ValueError("Native capability schema drift before direct POST.")
@@ -182,7 +174,7 @@ def _inspect_direct_identity(
     )
 
 
-def _probe_request(
+def build_probe_requests(
     *,
     model_slot: str,
     identity: OllamaModelIdentity,
@@ -193,33 +185,59 @@ def _probe_request(
     max_output_tokens: int,
     timeout_sec: float,
     think_mode: ThinkMode,
-    enforcement: OutputEnforcement,
-    index: int,
-) -> GenerationRequest:
-    label = ("prompt", "prompt-repeat", "schema")[index]
-    return GenerationRequest(
-        model_tag=identity.model_tag,
-        model_digest=identity.model_digest,
-        request_id=f"s1-{model_slot}-{label}",
-        messages=(
-            (
-                "system",
-                "Return exactly one canonical driving action: "
-                "Response to user:#### N, where N is 0 through 4.",
-            ),
-            ("user", "Choose the canonical IDLE action for this capability probe."),
-        ),
-        native_endpoint=native_endpoint,
-        options=NativeGenerationOptions(
-            seed=seed,
-            temperature=temperature,
-            num_ctx=context_tokens,
-            num_predict=max_output_tokens,
-        ),
-        output_enforcement=enforcement,
-        think_mode=think_mode,
-        timeout_sec=timeout_sec,
+) -> tuple[GenerationRequest, ...]:
+    """Build the exact trusted prompt, repeat, and schema request sequence."""
+    labels = ("prompt", "prompt-repeat", "schema")
+    enforcements = (
+        OutputEnforcement.PROMPT_ONLY,
+        OutputEnforcement.PROMPT_ONLY,
+        OutputEnforcement.BACKEND_SCHEMA,
     )
+    messages = (
+        (
+            "system",
+            "Return exactly one canonical driving action: "
+            "Response to user:#### N, where N is 0 through 4.",
+        ),
+        ("user", "Choose the canonical IDLE action for this capability probe."),
+    )
+    options = NativeGenerationOptions(
+        seed=seed,
+        temperature=temperature,
+        num_ctx=context_tokens,
+        num_predict=max_output_tokens,
+    )
+    return tuple(
+        GenerationRequest(
+            model_tag=identity.model_tag,
+            model_digest=identity.model_digest,
+            request_id=f"s1-{model_slot}-{label}",
+            messages=messages,
+            native_endpoint=native_endpoint,
+            options=options,
+            output_enforcement=enforcement,
+            think_mode=think_mode,
+            timeout_sec=timeout_sec,
+        )
+        for label, enforcement in zip(labels, enforcements, strict=True)
+    )
+
+
+def build_request_evidence(request: GenerationRequest) -> dict[str, object]:
+    """Serialize every frozen request field recorded by direct probing."""
+    return {
+        "model_tag": request.model_tag,
+        "model_digest": request.model_digest,
+        "request_id": request.request_id,
+        "messages": [
+            {"role": role, "content": content} for role, content in request.messages
+        ],
+        "native_endpoint": request.native_endpoint,
+        "options": request.options.to_payload(),
+        "output_enforcement": request.output_enforcement.value,
+        "think_mode": request.think_mode.value,
+        "timeout_sec": float(request.timeout_sec),
+    }
 
 
 def _direct_call(
@@ -275,22 +293,9 @@ def _direct_call(
     ):
         raise ValueError("Native capability probe omitted required evidence.")
     action = parse_canonical_action(attempt.contract_text)
-    request_evidence = {
-        "model_tag": request.model_tag,
-        "model_digest": request.model_digest,
-        "request_id": request.request_id,
-        "messages": [
-            {"role": role, "content": content} for role, content in request.messages
-        ],
-        "native_endpoint": request.native_endpoint,
-        "options": request.options.to_payload(),
-        "output_enforcement": request.output_enforcement.value,
-        "think_mode": request.think_mode.value,
-        "timeout_sec": float(request.timeout_sec),
-    }
     return (
         {
-            "request": request_evidence,
+            "request": build_request_evidence(request),
             "payload": dict(payload),
             "payload_sha256": bytes_sha256(payload_body),
             "request_body": payload_body.decode("utf-8"),
