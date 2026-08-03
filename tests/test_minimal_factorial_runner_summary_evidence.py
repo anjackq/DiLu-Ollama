@@ -47,6 +47,24 @@ class _FakeTrace:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         pass
 
+    def references_for_attempt(
+        self,
+        campaign_id: str,
+        episode_attempt_id: str,
+    ) -> tuple[SimpleNamespace, ...]:
+        del campaign_id, episode_attempt_id
+        return (
+            SimpleNamespace(
+                to_dict=lambda: {
+                    "relative_path": "traces/decision_traces.jsonl",
+                    "line_number": 1,
+                    "record_sha256": "sha256:" + "a" * 64,
+                    "schema_version": "iclr2027.scientific_trace.v1",
+                    "schema_sha256": "sha256:" + "b" * 64,
+                }
+            ),
+        )
+
 
 def _row() -> SimpleNamespace:
     return SimpleNamespace(

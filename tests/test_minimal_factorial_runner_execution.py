@@ -57,6 +57,25 @@ class _FakeTraceWriter:
         self.artifact_root = artifact_root
         self.resume = resume
 
+    def references_for_attempt(
+        self,
+        campaign_id: str,
+        episode_attempt_id: str,
+    ) -> tuple[SimpleNamespace, ...]:
+        del campaign_id
+        line_number = int(episode_attempt_id.rsplit("-", 1)[1]) + 1
+        return (
+            SimpleNamespace(
+                to_dict=lambda: {
+                    "relative_path": "traces/decision_traces.jsonl",
+                    "line_number": line_number,
+                    "record_sha256": "sha256:" + f"{line_number:064x}",
+                    "schema_version": "iclr2027.scientific_trace.v1",
+                    "schema_sha256": "sha256:" + "e" * 64,
+                }
+            ),
+        )
+
 
 def _row(index: int) -> SimpleNamespace:
     attempt_id = f"episode-{index}"
@@ -154,6 +173,16 @@ class MinimalFactorialExecutionTests(unittest.TestCase):
                 )
             self.assertTrue((output_root / "episodes.jsonl").is_file())
             self.assertFalse((output_root / "episode_summaries.jsonl").exists())
+            summaries = execution._load_summaries(
+                output_root / "episodes.jsonl",
+                expected_campaign_provenance_sha256=(
+                    summary.campaign_provenance_sha256
+                ),
+            )
+            self.assertEqual(
+                len(summaries[0]["scientific_trace_references"]),
+                1,
+            )
             self.assertTrue(episode_temp_dirs)
             self.assertTrue(
                 all(not path.exists() for path in episode_temp_dirs),

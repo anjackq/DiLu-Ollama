@@ -118,11 +118,20 @@ def execute_campaign(
             terminal = ledger.attempt_status(row.episode_attempt_id)
             if terminal is not AttemptStatus.COMPLETED:
                 raise RuntimeError("Episode returned without completed evidence.")
+            references = trace_writer.references_for_attempt(
+                row.campaign_id,
+                row.episode_attempt_id,
+            )
+            if not references:
+                raise RuntimeError("Completed episode returned without trace evidence.")
             summary = {
                 **dict(result),
                 **row.to_payload(),
                 "runtime_snapshot_sha256": "sha256:" + prepared.snapshot.sha256,
                 "campaign_provenance_sha256": campaign_provenance,
+                "scientific_trace_references": [
+                    reference.to_dict() for reference in references
+                ],
             }
             summary_appender(summaries_path, summary, ledger)
         except Exception as exc:
