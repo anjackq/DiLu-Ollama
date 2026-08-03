@@ -12,8 +12,20 @@ from pathlib import Path
 from typing import Any
 
 from ._scientific_transport_response import parse_native_response_attempt
-from .action_resolution import FIXED_IDLE_ACTION_ID, parse_canonical_action
-from .harness_config import OutputEnforcement, ThinkMode
+from .action_resolution import (
+    CANONICAL_ACTION_IDS,
+    FIXED_IDLE_ACTION_ID,
+    ActionResolutionResult,
+    ActionSyntaxStatus,
+    resolve_action,
+)
+from .harness_config import (
+    FallbackPolicy,
+    OutputEnforcement,
+    ParserMode,
+    ResolverMode,
+    ThinkMode,
+)
 from .ollama_transport import (
     OllamaModelIdentity,
     inspect_ollama_model_identity,
@@ -28,6 +40,9 @@ from .scientific_transport_types import (
 GetCallable = Callable[..., Any]
 PostCallable = Callable[..., Any]
 S1_COLD_START_OBSERVATION_TIMEOUT_SEC = 120.0
+OLLAMA_NATIVE_CAPABILITY_PREFLIGHT_ARTIFACT_TYPE = (
+    "ollama_native_capability_preflight_v2"
+)
 _FIXED_IDLE_ACTION_TEXT = f"Response to user:#### {FIXED_IDLE_ACTION_ID}"
 
 
@@ -91,7 +106,7 @@ def probe_model(
     )
     records: list[dict[str, Any]] = []
     payload_bodies: list[bytes] = []
-    actions: list[int] = []
+    resolutions: list[ActionResolutionResult] = []
     requests = build_probe_requests(
         model_slot=model_slot,
         identity=before,
@@ -112,20 +127,19 @@ def probe_model(
             raise ValueError("Native capability schema drift before direct POST.")
         payload_body = canonical_bytes(payload)
         payload_bodies.append(payload_body)
-        record, action = _direct_call(
+        record, resolution = _direct_call(
             request=request,
             payload=payload,
             payload_body=payload_body,
             post=post,
         )
         records.append(record)
-        actions.append(action)
-    if payload_bodies[0] != payload_bodies[1] or actions[0] != actions[1]:
+        resolutions.append(resolution)
+    if (
+        payload_bodies[0] != payload_bodies[1]
+        or resolutions[0].final_resolved_action != resolutions[1].final_resolved_action
+    ):
         raise ValueError("Prompt-only repeat evidence mismatch.")
-    if any(action != FIXED_IDLE_ACTION_ID for action in actions):
-        raise ValueError(
-            "Native capability probe did not return the fixed IDLE action."
-        )
     after = _inspect_direct_identity(
         native_endpoint,
         model_tag,
@@ -261,7 +275,7 @@ def _direct_call(
     payload: Mapping[str, Any],
     payload_body: bytes,
     post: PostCallable,
-) -> tuple[dict[str, Any], int]:
+) -> tuple[dict[str, Any], ActionResolutionResult]:
     response = post(
         request.native_endpoint,
         data=payload_body,
@@ -283,12 +297,11 @@ def _direct_call(
         response_payload = response.json()
     except (TypeError, ValueError) as exc:
         raise ValueError("Native capability probe returned malformed JSON.") from exc
-    response_evidence, action = derive_response_evidence(
+    response_evidence, resolution = derive_response_evidence(
         request,
         status,
         response_payload,
         response_body,
-        enforce_expected_action=False,
     )
     return (
         {
@@ -298,7 +311,7 @@ def _direct_call(
             "request_body": payload_body.decode("utf-8"),
             **response_evidence,
         },
-        action,
+        resolution,
     )
 
 
@@ -307,9 +320,7 @@ def derive_response_evidence(
     status: int,
     response_payload: object,
     response_body: str,
-    *,
-    enforce_expected_action: bool = True,
-) -> tuple[dict[str, object], int]:
+) -> tuple[dict[str, object], ActionResolutionResult]:
     """Parse one response into the exact evidence fields persisted by authoring."""
     if (
         isinstance(status, bool)
@@ -343,20 +354,51 @@ def derive_response_evidence(
         or attempt.completion_tokens is None
     ):
         raise ValueError("Native capability probe omitted required evidence.")
-    action = parse_canonical_action(attempt.contract_text)
-    if enforce_expected_action and action != FIXED_IDLE_ACTION_ID:
+    resolution = resolve_action(
+        attempt.contract_text,
+        available_action_ids=CANONICAL_ACTION_IDS,
+        parser_mode=ParserMode.STRICT_ONLY,
+        resolver_mode=ResolverMode.DISABLED,
+        fallback_policy=FallbackPolicy.FIXED_IDLE,
+    )
+    if request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA and (
+        resolution.syntax_status is not ActionSyntaxStatus.STRICT_VALID
+        or resolution.strict_action not in CANONICAL_ACTION_IDS
+        or resolution.used_fallback
+    ):
         raise ValueError(
-            "Native capability probe did not return the fixed IDLE action."
+            "Native capability probe backend schema did not return a strict canonical action."
         )
     evidence = {
         "http_status": status,
         "response_body": response_body,
         "raw_response": attempt.raw_response,
-        "canonical_action": action,
+        "contract_text": attempt.contract_text,
+        "action_resolution": serialize_action_resolution(resolution),
         "stop_reason": attempt.stop_reason,
         "prompt_tokens": attempt.prompt_tokens,
         "completion_tokens": attempt.completion_tokens,
         "total_tokens": attempt.prompt_tokens + attempt.completion_tokens,
         "backend_timing": asdict(attempt.backend_timing),
     }
-    return evidence, action
+    return evidence, resolution
+
+
+def serialize_action_resolution(
+    resolution: ActionResolutionResult,
+) -> dict[str, object]:
+    """Serialize the complete typed resolution, including computed fallback use."""
+    return {
+        "raw_response": resolution.raw_response,
+        "syntax_status": resolution.syntax_status.value,
+        "strict_action": resolution.strict_action,
+        "recovered_action": resolution.recovered_action,
+        "recovery_stage": resolution.recovery_stage.value,
+        "violation": (
+            None if resolution.violation is None else resolution.violation.value
+        ),
+        "action_available": resolution.action_available.value,
+        "fallback_action": resolution.fallback_action,
+        "final_resolved_action": resolution.final_resolved_action,
+        "used_fallback": resolution.used_fallback,
+    }

@@ -10,6 +10,7 @@ from typing import Any
 
 from ._runtime_lock_authoring_support import (
     GetCallable,
+    OLLAMA_NATIVE_CAPABILITY_PREFLIGHT_ARTIFACT_TYPE,
     PostCallable,
     bytes_sha256,
     canonical_bytes,
@@ -90,7 +91,7 @@ def build_fresh_campaign_plan(
     )
     preflight_bytes = canonical_bytes(
         {
-            "artifact_type": "ollama_native_capability_preflight_v1",
+            "artifact_type": OLLAMA_NATIVE_CAPABILITY_PREFLIGHT_ARTIFACT_TYPE,
             "runtime_snapshot_sha256": "sha256:" + snapshot.sha256,
             "records": records,
         }

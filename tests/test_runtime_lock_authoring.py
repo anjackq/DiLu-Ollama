@@ -25,6 +25,7 @@ DIGESTS = {
     "llama3.2:1b": "sha256:" + "b" * 64,
 }
 FIXED_IDLE_ACTION_TEXT = f"Response to user:#### {FIXED_IDLE_ACTION_ID}"
+PROMPT_ONLY_INVALID_TEXT = f"{FIXED_IDLE_ACTION_TEXT} /no_think"
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -142,9 +143,9 @@ class NativeFakes:
                 "payload": payload,
             }
         )
-        content = FIXED_IDLE_ACTION_TEXT
+        content = PROMPT_ONLY_INVALID_TEXT
         if "format" in payload:
-            content = json.dumps(content)
+            content = json.dumps(FIXED_IDLE_ACTION_TEXT)
         return FakeResponse(model, content=content, url=url)
 
 
@@ -250,17 +251,50 @@ class RuntimeLockAuthoringTests(unittest.TestCase):
                 )
             preflight_bytes = (output / "s1" / "model_preflight.json").read_bytes()
             preflight = json.loads(preflight_bytes)
+            self.assertEqual(
+                preflight["artifact_type"],
+                "ollama_native_capability_preflight_v2",
+            )
             self.assertEqual(len(preflight["records"]), 6)
             self.assertEqual(
                 result.preflight_sha256,
                 "sha256:" + hashlib.sha256(preflight_bytes).hexdigest(),
             )
-            self.assertTrue(
-                all(
-                    record["canonical_action"] == FIXED_IDLE_ACTION_ID
-                    for record in preflight["records"]
+            prompt_resolution = {
+                "raw_response": PROMPT_ONLY_INVALID_TEXT,
+                "syntax_status": "invalid",
+                "strict_action": None,
+                "recovered_action": None,
+                "recovery_stage": "none",
+                "violation": "syntax_invalid",
+                "action_available": "not_applicable",
+                "fallback_action": FIXED_IDLE_ACTION_ID,
+                "final_resolved_action": FIXED_IDLE_ACTION_ID,
+                "used_fallback": True,
+            }
+            schema_resolution = {
+                "raw_response": FIXED_IDLE_ACTION_TEXT,
+                "syntax_status": "strict_valid",
+                "strict_action": FIXED_IDLE_ACTION_ID,
+                "recovered_action": None,
+                "recovery_stage": "none",
+                "violation": None,
+                "action_available": "available",
+                "fallback_action": None,
+                "final_resolved_action": FIXED_IDLE_ACTION_ID,
+                "used_fallback": False,
+            }
+            for offset in (0, 3):
+                first, repeat, schema = preflight["records"][offset : offset + 3]
+                self.assertEqual(first["raw_response"], PROMPT_ONLY_INVALID_TEXT)
+                self.assertEqual(first["contract_text"], PROMPT_ONLY_INVALID_TEXT)
+                self.assertEqual(first["action_resolution"], prompt_resolution)
+                self.assertEqual(repeat["action_resolution"], prompt_resolution)
+                self.assertEqual(
+                    schema["raw_response"], json.dumps(FIXED_IDLE_ACTION_TEXT)
                 )
-            )
+                self.assertEqual(schema["contract_text"], FIXED_IDLE_ACTION_TEXT)
+                self.assertEqual(schema["action_resolution"], schema_resolution)
             self.assertEqual(
                 [record["request"]["timeout_sec"] for record in preflight["records"]],
                 [120.0, 30.0, 30.0, 120.0, 30.0, 30.0],
@@ -275,7 +309,8 @@ class RuntimeLockAuthoringTests(unittest.TestCase):
                 "request_body",
                 "response_body",
                 "raw_response",
-                "canonical_action",
+                "contract_text",
+                "action_resolution",
                 "stop_reason",
                 "prompt_tokens",
                 "completion_tokens",

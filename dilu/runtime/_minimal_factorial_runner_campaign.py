@@ -9,7 +9,10 @@ from typing import Any, Mapping, Sequence
 
 from ._minimal_factorial_manifest import serialize_frozen_campaign
 from ._minimal_factorial_schedule_support import plain
-from ._runtime_lock_authoring_support import canonical_bytes
+from ._runtime_lock_authoring_support import (
+    OLLAMA_NATIVE_CAPABILITY_PREFLIGHT_ARTIFACT_TYPE,
+    canonical_bytes,
+)
 from ._runtime_lock_authoring_workflow import build_capabilities
 from ._runtime_lock_existing import _load_bindings, _load_canonical_object
 from .minimal_factorial_schedule import (
@@ -185,7 +188,8 @@ def load_frozen_s1(
     content, preflight = _load_canonical_object(preflight_path)
     if (
         set(preflight) != {"artifact_type", "runtime_snapshot_sha256", "records"}
-        or preflight["artifact_type"] != "ollama_native_capability_preflight_v1"
+        or preflight["artifact_type"]
+        != OLLAMA_NATIVE_CAPABILITY_PREFLIGHT_ARTIFACT_TYPE
         or preflight["runtime_snapshot_sha256"] != "sha256:" + snapshot.sha256
     ):
         raise ValueError("Frozen S1 preflight drifted from runtime snapshot.")

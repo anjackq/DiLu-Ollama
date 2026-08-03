@@ -229,7 +229,10 @@ def _mutate_body_content(records: list[dict[str, object]]) -> None:
 
 def _mutate_decoded_action(records: list[dict[str, object]]) -> None:
     for index in range(2):
-        records[index]["canonical_action"] = 4
+        resolution = records[index]["action_resolution"]
+        if not isinstance(resolution, dict):
+            raise AssertionError("test fixture resolution must be a mapping")
+        resolution["final_resolved_action"] = 4
 
 
 def _coherently_mutate_action_to_zero(records: list[dict[str, object]]) -> None:
@@ -243,7 +246,19 @@ def _coherently_mutate_action_to_zero(records: list[dict[str, object]]) -> None:
         message["content"] = raw_response
         _replace_response_body(records, index, body)
         records[index]["raw_response"] = raw_response
-        records[index]["canonical_action"] = 0
+        records[index]["contract_text"] = action_text
+        records[index]["action_resolution"] = {
+            "raw_response": action_text,
+            "syntax_status": "strict_valid",
+            "strict_action": 0,
+            "recovered_action": None,
+            "recovery_stage": "none",
+            "violation": None,
+            "action_available": "available",
+            "fallback_action": None,
+            "final_resolved_action": 0,
+            "used_fallback": False,
+        }
 
 
 def _mutate_stop_reason(records: list[dict[str, object]]) -> None:
@@ -267,6 +282,26 @@ def _mutate_timing(records: list[dict[str, object]]) -> None:
 
 
 class ExistingRequestPlanTests(unittest.TestCase):
+    def test_v1_preflight_rejects_without_posts_and_runner_loading(self) -> None:
+        from dilu.runtime._minimal_factorial_runner_campaign import load_frozen_s1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = load_experiment_manifest(MANIFEST_PATH)
+            output = root / manifest.outputs.root
+            run_authoring(output, NativeFakes())
+            preflight_path = output / "s1" / "model_preflight.json"
+            preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+            preflight["artifact_type"] = "ollama_native_capability_preflight_v1"
+            preflight_path.write_bytes(canonical_bytes(preflight))
+            rerun_fakes = NativeFakes()
+
+            with self.assertRaises(ValueError):
+                run_authoring(output, rerun_fakes)
+            self.assertEqual(rerun_fakes.post_calls, [])
+            with self.assertRaises(ValueError):
+                load_frozen_s1(root, manifest, fake_snapshot())
+
     def test_coherent_request_plan_rewrites_reject_without_posts(self) -> None:
         mutations = {
             "endpoint_fallback": _mutate_endpoint,
@@ -300,7 +335,6 @@ class ExistingRequestPlanTests(unittest.TestCase):
             "raw_response": _mutate_raw_response,
             "response_body_content": _mutate_body_content,
             "decoded_action": _mutate_decoded_action,
-            "coherent_action_zero": _coherently_mutate_action_to_zero,
             "stop_reason": _mutate_stop_reason,
             "tokens": _mutate_tokens,
             "timing": _mutate_timing,
@@ -316,6 +350,17 @@ class ExistingRequestPlanTests(unittest.TestCase):
                     run_authoring(output, rerun_fakes)
 
                 self.assertEqual(rerun_fakes.post_calls, [])
+
+    def test_coherent_canonical_action_zero_revalidates_without_posts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "results"
+            run_authoring(output, NativeFakes())
+            _coherently_rewrite_campaign(output, _coherently_mutate_action_to_zero)
+            rerun_fakes = NativeFakes()
+
+            run_authoring(output, rerun_fakes)
+
+            self.assertEqual(rerun_fakes.post_calls, [])
 
 
 if __name__ == "__main__":

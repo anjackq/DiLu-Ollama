@@ -16,7 +16,9 @@ from ._runtime_lock_authoring_support import (
     bytes_sha256,
     canonical_bytes,
     derive_response_evidence,
+    OLLAMA_NATIVE_CAPABILITY_PREFLIGHT_ARTIFACT_TYPE,
 )
+from .action_resolution import ActionResolutionResult
 from ._runtime_lock_authoring_workflow import (
     RuntimeLockArtifact,
     artifact_paths,
@@ -47,7 +49,8 @@ _RECORD_FIELDS = {
     "http_status",
     "response_body",
     "raw_response",
-    "canonical_action",
+    "contract_text",
+    "action_resolution",
     "stop_reason",
     "prompt_tokens",
     "completion_tokens",
@@ -98,7 +101,7 @@ def load_existing_campaign(
         "records",
     }:
         raise ValueError("Completed preflight fields drifted.")
-    if preflight["artifact_type"] != "ollama_native_capability_preflight_v1":
+    if preflight["artifact_type"] != OLLAMA_NATIVE_CAPABILITY_PREFLIGHT_ARTIFACT_TYPE:
         raise ValueError("Completed preflight artifact type drifted.")
     if preflight["runtime_snapshot_sha256"] != "sha256:" + snapshot.sha256:
         raise ValueError("Completed preflight runtime snapshot drifted.")
@@ -206,7 +209,10 @@ def _load_bindings(
             )
         ]
         first, repeat, _schema = validated
-        if first[1:] != repeat[1:]:
+        if (
+            first[1] != repeat[1]
+            or first[2].final_resolved_action != repeat[2].final_resolved_action
+        ):
             raise ValueError("Completed prompt-only repeat evidence drifted.")
         bindings[model.slot] = first[0]
     if len(bindings) != len(manifest.models):
@@ -221,7 +227,7 @@ def _validate_record(
     model_tag: str,
     canonical_schema_bytes: bytes,
     expected_request: GenerationRequest,
-) -> tuple[OllamaModelIdentity, str, int]:
+) -> tuple[OllamaModelIdentity, str, ActionResolutionResult]:
     if set(record) != _RECORD_FIELDS or record["model_slot"] != model_slot:
         raise ValueError("Completed preflight record fields drifted.")
     before = _identity(record["identity_before"], model_tag)
@@ -258,7 +264,7 @@ def _validate_record(
         response_payload = json.loads(response_body)
     except (TypeError, ValueError) as exc:
         raise ValueError("Completed response body is malformed JSON.") from exc
-    expected_response, parsed_action = derive_response_evidence(
+    expected_response, resolution = derive_response_evidence(
         expected_request,
         status,
         response_payload,
@@ -266,7 +272,7 @@ def _validate_record(
     )
     if any(record[field] != value for field, value in expected_response.items()):
         raise ValueError("Completed response evidence drifted.")
-    return before, record["request_body"], parsed_action
+    return before, record["request_body"], resolution
 
 
 def _identity(value: object, model_tag: str) -> OllamaModelIdentity:

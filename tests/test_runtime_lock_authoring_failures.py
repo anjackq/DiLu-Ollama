@@ -12,6 +12,8 @@ from tests.test_runtime_lock_authoring import (
     ROOT,
     FakeResponse,
     NativeFakes,
+    PROMPT_ONLY_INVALID_TEXT,
+    canonical_bytes,
     fake_snapshot,
     run_authoring,
 )
@@ -22,13 +24,17 @@ class ConfigurableFakes(NativeFakes):
         self,
         *,
         post_failure: str | None = None,
+        prompt_action: str | None = None,
         repeat_action: str | None = None,
+        schema_action: str | None = None,
         identity_drift: bool = False,
         identity_fallback: bool = False,
     ) -> None:
         super().__init__()
         self.post_failure = post_failure
+        self.prompt_action = prompt_action
         self.repeat_action = repeat_action
+        self.schema_action = schema_action
         self.identity_drift = identity_drift
         self.identity_fallback = identity_fallback
 
@@ -57,9 +63,15 @@ class ConfigurableFakes(NativeFakes):
             allow_redirects=allow_redirects,
         )
         call_index = len(self.post_calls)
-        if self.repeat_action and call_index == 2:
+        if self.prompt_action and (call_index - 1) % 3 < 2:
+            response._payload["message"]["content"] = self.prompt_action
+            response.text = canonical_bytes(response._payload).decode()
+        if self.repeat_action and call_index % 3 == 2:
             response._payload["message"]["content"] = self.repeat_action
-            response.text = "{}"
+            response.text = canonical_bytes(response._payload).decode()
+        if self.schema_action and call_index % 3 == 0:
+            response._payload["message"]["content"] = self.schema_action
+            response.text = canonical_bytes(response._payload).decode()
         if self.post_failure == "schema" and call_index == 3:
             response._payload["message"]["content"] = "not-json"
         elif self.post_failure == "redirect" and call_index == 1:
@@ -254,6 +266,24 @@ class RuntimeLockAuthoringFailureTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     run_authoring(output, fakes)
                 self.assertFalse(output.exists())
+
+    def test_probe_accepts_same_fallback_repeat_and_canonical_domain_actions(
+        self,
+    ) -> None:
+        scenarios = (
+            ConfigurableFakes(repeat_action=f"{PROMPT_ONLY_INVALID_TEXT}-different"),
+            ConfigurableFakes(
+                prompt_action="Response to user:#### 4",
+                schema_action='"Response to user:#### 0"',
+            ),
+        )
+        for fakes in scenarios:
+            with (
+                self.subTest(fakes=type(fakes).__name__),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                result = run_authoring(Path(tmp) / "results", fakes)
+                self.assertEqual(len(result.lock_artifacts), 16)
 
     def test_source_revision_and_dirty_snapshot_failures_precede_posts(self) -> None:
         failures = (
