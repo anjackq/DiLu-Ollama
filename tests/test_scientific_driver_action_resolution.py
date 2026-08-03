@@ -177,6 +177,39 @@ class ScenarioAndDriverIntegrationTests(unittest.TestCase):
             ProtocolInvariantCode.ACTION_AVAILABILITY_UNRESOLVED,
         )
 
+    def test_scientific_availability_is_canonicalized_at_ingress(self) -> None:
+        class ActionId(int):
+            pass
+
+        agent = _scientific_agent_response("invalid")
+        agent.sce.available_action_ids = lambda: [
+            ActionId(1),
+            ActionId(0),
+            ActionId(2),
+            ActionId(3),
+            ActionId(4),
+            ActionId(1),
+        ]
+
+        available_action_ids = agent._scientific_available_action_ids()
+
+        self.assertEqual(available_action_ids, [0, 1, 2, 3, 4])
+        self.assertTrue(
+            all(type(action_id) is int for action_id in available_action_ids)
+        )
+
+    def test_scientific_availability_rejects_noncanonical_domain(self) -> None:
+        agent = _scientific_agent_response("invalid")
+        agent.sce.available_action_ids = lambda: [0, 1, 2, 3, 4, 5]
+
+        with self.assertRaises(RuntimeProtocolError) as context:
+            agent._scientific_available_action_ids()
+
+        self.assertEqual(
+            context.exception.invariant_code,
+            ProtocolInvariantCode.ACTION_AVAILABILITY_UNRESOLVED,
+        )
+
     def test_scientific_decisions_use_only_typed_action_resolution(self) -> None:
         cases = (
             ("Response to user:#### 3", 3, ActionSyntaxStatus.STRICT_VALID, None, 3),

@@ -643,7 +643,7 @@ class DriverAgent:
                 {"error_type": type(exc).__name__},
             )
             raise RuntimeProtocolError(violation) from exc
-        return available_action_ids
+        return sorted({int(action_id) for action_id in available_action_ids})
 
     def _resolve_scientific_action(
         self,
