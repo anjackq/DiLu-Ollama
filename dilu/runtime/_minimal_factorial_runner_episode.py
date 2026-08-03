@@ -87,6 +87,7 @@ def run_scheduled_episode(
     )
     return {
         **result,
+        "runtime_lock_source_artifact_sha256": (runtime_lock.source_artifact_sha256),
         "runtime_lock_authorization_artifact_sha256": (
             runtime_lock.authorization_artifact_sha256
         ),

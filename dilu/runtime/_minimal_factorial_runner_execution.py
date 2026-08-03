@@ -69,7 +69,7 @@ def execute_campaign(
     output_root = prepared.output_root
     ledger_path = output_root / "campaign_attempts.jsonl"
     trace_path = output_root / "traces" / "decision_traces.jsonl"
-    summaries_path = output_root / "episode_summaries.jsonl"
+    summaries_path = output_root / "episodes.jsonl"
     campaign_provenance = _campaign_provenance_sha256(
         getattr(prepared, "schedule", denominator_rows),
         prepared.snapshot.sha256,

@@ -72,7 +72,7 @@ class MinimalFactorialSummaryEvidenceTests(unittest.TestCase):
             raise OSError("fake fsync failure after write")
 
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "episode_summaries.jsonl"
+            path = Path(tmp) / "episodes.jsonl"
             with mock.patch.object(
                 append_io,
                 "_append_and_sync_data",
@@ -122,7 +122,7 @@ class MinimalFactorialSummaryEvidenceTests(unittest.TestCase):
         ledger = mock.Mock()
         ledger.attempt_status.return_value = runner.AttemptStatus.COMPLETED
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "episode_summaries.jsonl"
+            path = Path(tmp) / "episodes.jsonl"
             first_summary = _summary("episode-001")
             second_summary = _summary("episode-002")
 
@@ -242,7 +242,7 @@ class MinimalFactorialSummaryEvidenceTests(unittest.TestCase):
         ledger.attempt_status.return_value = runner.AttemptStatus.COMPLETED
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            path = root / "episode_summaries.jsonl"
+            path = root / "episodes.jsonl"
             runner._append_episode_summary(
                 path,
                 {
@@ -286,7 +286,7 @@ class MinimalFactorialSummaryEvidenceTests(unittest.TestCase):
         ledger = mock.Mock()
         ledger.attempt_status.return_value = runner.AttemptStatus.COMPLETED
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "episode_summaries.jsonl"
+            path = Path(tmp) / "episodes.jsonl"
             runner._append_episode_summary(
                 path,
                 _summary("episode-001"),

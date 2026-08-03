@@ -49,6 +49,7 @@ class MinimalFactorialEpisodeBindingTests(unittest.TestCase):
         )
         captured: dict[str, object] = {}
         runtime_lock = SimpleNamespace(
+            source_artifact_sha256="sha256:" + "0" * 64,
             authorization_artifact_sha256="sha256:" + "1" * 64,
             binding_sha256="sha256:" + "2" * 64,
             prompt_sha256="sha256:" + "3" * 64,
@@ -106,6 +107,10 @@ class MinimalFactorialEpisodeBindingTests(unittest.TestCase):
             )
 
         self.assertEqual(result["episode_attempt_id"], "episode-017")
+        self.assertEqual(
+            result["runtime_lock_source_artifact_sha256"],
+            runtime_lock.source_artifact_sha256,
+        )
         self.assertEqual(
             result["runtime_lock_authorization_artifact_sha256"],
             runtime_lock.authorization_artifact_sha256,

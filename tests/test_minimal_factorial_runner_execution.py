@@ -152,6 +152,8 @@ class MinimalFactorialExecutionTests(unittest.TestCase):
                     resume=False,
                     stage="smoke",
                 )
+            self.assertTrue((output_root / "episodes.jsonl").is_file())
+            self.assertFalse((output_root / "episode_summaries.jsonl").exists())
             self.assertTrue(episode_temp_dirs)
             self.assertTrue(
                 all(not path.exists() for path in episode_temp_dirs),

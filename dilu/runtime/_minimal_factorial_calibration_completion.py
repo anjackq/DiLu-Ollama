@@ -47,7 +47,7 @@ def require_complete_claim_campaign(
         raise ValueError("Claim attempt ledger is not exactly 840/840 completed.")
     try:
         summaries = load_summary_records(
-            claim_path.parent / "episode_summaries.jsonl",
+            claim_path.parent / "episodes.jsonl",
             expected_campaign_provenance_sha256=campaign_sha256,
         )
     except ValueError as exc:

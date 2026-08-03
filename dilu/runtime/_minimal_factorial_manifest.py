@@ -52,6 +52,7 @@ from .harness_config import (
 )
 from .highway_env_config import resolve_simulation_env_bundle
 from .task_benchmark import build_benchmark_case_set_fingerprint
+from .scientific_trace import trace_schema_sha256
 
 SHORT_CASE_FINGERPRINT = "dilu_highway_reactive_stress_v2:ed2f63e396fc1b87"
 CASE_FINGERPRINT = (
@@ -249,7 +250,7 @@ def build_runtime_snapshot(
             "scoring_fingerprint": observed[2],
             "predicate_fingerprint": observed[3],
             "simulator_versions": _versions(("gymnasium", "highway-env", "numpy")),
-            "trace_schema_sha256": observed[4],
+            "trace_schema_sha256": trace_schema_sha256(),
             "case_set_fingerprint": fingerprint,
         }
     )
