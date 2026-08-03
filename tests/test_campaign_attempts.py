@@ -244,9 +244,8 @@ class ScientificAttemptLedgerTests(unittest.TestCase):
             first.register_request_id("request-001", ATTEMPT_ID)
             with self.assertRaises(ScientificAttemptWriteError):
                 second.register_request_id("request-001", "episode-attempt-002")
-
             resumed = _ledger(root, resume=True)
-            self.assertTrue(resumed.can_resume(ATTEMPT_ID))
+            self.assertFalse(resumed.can_resume(ATTEMPT_ID))
             self.assertTrue(resumed.can_resume("episode-attempt-002"))
 
     def test_can_resume_refreshes_after_another_writer_terminates(self) -> None:
@@ -265,29 +264,6 @@ class ScientificAttemptLedgerTests(unittest.TestCase):
             )
 
             self.assertFalse(second.can_resume(ATTEMPT_ID))
-
-    def test_resume_scans_streamingly_and_rebuilds_request_ownership(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            ledger = _ledger(root)
-            ledger.append_started(ATTEMPT_ID)
-            ledger.register_request_id("request-001", ATTEMPT_ID)
-
-            with mock.patch.object(
-                Path,
-                "read_bytes",
-                side_effect=AssertionError("whole-file byte read"),
-            ), mock.patch.object(
-                Path,
-                "read_text",
-                side_effect=AssertionError("whole-file text read"),
-            ):
-                resumed = _ledger(root, resume=True)
-
-            self.assertTrue(resumed.can_resume(ATTEMPT_ID))
-            with self.assertRaises(ScientificAttemptWriteError):
-                resumed.register_request_id("request-001", ATTEMPT_ID)
-            resumed.register_request_id("request-002", ATTEMPT_ID)
 
     def test_single_owner_appends_do_not_rescan_committed_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

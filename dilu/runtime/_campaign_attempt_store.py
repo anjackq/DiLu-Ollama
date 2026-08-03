@@ -8,10 +8,13 @@ from typing import Any, Iterator
 from ._append_intent_io import (
     AppendCommitAmbiguousError,
     AppendIntentWriteError,
-    append_intent_path_for,
     durable_append_with_intent,
 )
-from ._campaign_attempt_io import exclusive_append_lock, lock_path_for, poison_path_for
+from ._campaign_attempt_io import exclusive_append_lock
+from ._campaign_attempt_state import (
+    attempt_is_resumable,
+    initialize_attempt_ledger_state,
+)
 from ._campaign_attempt_serialization import (
     ATTEMPT_EVENT_FIELDS,
     REQUEST_EVENT_FIELDS,
@@ -21,6 +24,7 @@ from ._campaign_attempt_serialization import (
     reject_json_constant,
     require_keys,
 )
+from . import _minimal_factorial_runner_evidence as _summary_evidence
 from ._scientific_trace_store import (
     ScientificTraceWriteError,
     ScientificTraceWriter,
@@ -45,20 +49,7 @@ class ScientificAttemptLedger:
         campaign_id: str,
         resume: bool = False,
     ) -> None:
-        _require_text("campaign_id", campaign_id)
-        self.path = Path(path).resolve()
-        self._lock_path = lock_path_for(self.path)
-        self._poison_path = poison_path_for(self.path)
-        self._pending_path = append_intent_path_for(self.path)
-        self.campaign_id = campaign_id
-        self._attempt_status: dict[str, AttemptStatus] = {}
-        self._request_owner: dict[str, str] = {}
-        self._line_count = 0
-        self._byte_offset = 0
-        self._last_hash: str | None = None
-        self._poisoned = False
-        self._poisoned_attempts: set[str] = set()
-        self._terminal_records: list[ScientificAttemptRecord] = []
+        initialize_attempt_ledger_state(self, path, campaign_id)
         if self._poison_path.exists() or self._pending_path.exists():
             raise ScientificAttemptWriteError(
                 "Attempt ledger is poisoned by an ambiguous durable append."
@@ -112,6 +103,20 @@ class ScientificAttemptLedger:
             )
             return self._append_attempt(record)
 
+    def append_summary_failure(
+        self,
+        episode_attempt_id: str,
+        *,
+        failure_class: str,
+        failure_message: str,
+    ) -> AttemptReference:
+        return _summary_evidence.append_summary_failure(
+            self,
+            episode_attempt_id,
+            failure_class=failure_class,
+            failure_message=failure_message,
+        )
+
     def register_request_id(
         self,
         request_id: str,
@@ -148,11 +153,7 @@ class ScientificAttemptLedger:
             return False
         try:
             with self._append_guard():
-                return (
-                    episode_attempt_id not in self._poisoned_attempts
-                    and self._attempt_status.get(episode_attempt_id)
-                    is AttemptStatus.STARTED
-                )
+                return attempt_is_resumable(self, episode_attempt_id)
         except ScientificAttemptWriteError:
             if (
                 self._poisoned
@@ -161,6 +162,15 @@ class ScientificAttemptLedger:
             ):
                 return False
             raise
+
+    def attempt_status(self, episode_attempt_id: str) -> AttemptStatus | None:
+        _require_text("episode_attempt_id", episode_attempt_id)
+        with self._append_guard():
+            return self._attempt_status.get(episode_attempt_id)
+
+    def attempt_statuses(self) -> dict[str, AttemptStatus]:
+        with self._append_guard():
+            return dict(self._attempt_status)
 
     def validate_trace_evidence(self, writer: ScientificTraceWriter) -> None:
         if not isinstance(writer, ScientificTraceWriter):
@@ -299,6 +309,8 @@ class ScientificAttemptLedger:
             self._replay_attempt(payload)
         elif event_type == "request_registered":
             self._replay_request(payload)
+        elif event_type == "summary_publication_failed":
+            _summary_evidence.replay_summary_failure(self, payload)
         else:
             raise ValueError("Unknown campaign attempt event type.")
         self._line_count += 1

@@ -103,7 +103,12 @@ class ScientificEpisodeRuntime:
             raise RuntimeProtocolError(violation) from exc
 
     def begin_attempt(self) -> None:
-        self.attempt_ledger.append_started(self.identity.episode_attempt_id)
+        attempt_id = self.identity.episode_attempt_id
+        if self.attempt_ledger.attempt_status(attempt_id) is AttemptStatus.STARTED:
+            if not self.attempt_ledger.can_resume(attempt_id):
+                raise RuntimeError("Started attempt is not ledger-approved to resume.")
+            return
+        self.attempt_ledger.append_started(attempt_id)
 
     def generation_context(self, decision_index: int) -> ScientificGenerationContext:
         _require_nonnegative_int("decision_index", decision_index)
