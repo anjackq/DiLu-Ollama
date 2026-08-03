@@ -162,7 +162,9 @@ class MinimalFactorialScheduleEligibilityTests(unittest.TestCase):
 
         selected_ids = {
             case["case_id"]
-            for case in select_stage1_cases(self.cases, self.manifest.campaign_id)
+            for case in select_stage1_cases(
+                self.cases, self.manifest.selection.stage1_hash_prefix
+            )
         }
         remaining = next(
             case for case in self.cases["cases"] if case["case_id"] not in selected_ids

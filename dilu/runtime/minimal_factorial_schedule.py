@@ -67,24 +67,24 @@ class ScheduledEpisode:
 
 
 def select_smoke_case(
-    case_set: Mapping[str, Any], campaign_id: str
+    case_set: Mapping[str, Any], hash_prefix: str
 ) -> Mapping[str, Any]:
     case_fingerprint(case_set)
     return min(
         case_set["cases"],
-        key=lambda case: _digest(f"{campaign_id}|smoke|{case['case_id']}"),
+        key=lambda case: _digest(f"{hash_prefix}|{case['case_id']}"),
     )
 
 
 def select_stage1_cases(
-    case_set: Mapping[str, Any], campaign_id: str
+    case_set: Mapping[str, Any], hash_prefix: str
 ) -> tuple[Mapping[str, Any], ...]:
     case_fingerprint(case_set)
     selected: list[Mapping[str, Any]] = []
     for category in sorted({case["category"] for case in case_set["cases"]}):
         cases = [case for case in case_set["cases"] if case["category"] == category]
         selected.extend(
-            sorted(cases, key=lambda case: _digest(f"{campaign_id}|{case['case_id']}"))[
+            sorted(cases, key=lambda case: _digest(f"{hash_prefix}|{case['case_id']}"))[
                 :3
             ]
         )
@@ -103,7 +103,7 @@ def build_smoke_schedule(
         "smoke",
         manifest.smoke_campaign_id,
         manifest,
-        (select_smoke_case(case_set, manifest.campaign_id),),
+        (select_smoke_case(case_set, manifest.selection.smoke_hash_prefix),),
         range(8),
         model_digests,
         revision,
@@ -119,7 +119,7 @@ def build_union_schedule(
     runtime_snapshot: RuntimeSnapshot,
 ) -> tuple[ScheduledEpisode, ...]:
     fingerprint, revision = _binding(runtime_snapshot, case_set)
-    stage1 = select_stage1_cases(case_set, manifest.campaign_id)
+    stage1 = select_stage1_cases(case_set, manifest.selection.stage1_hash_prefix)
     selected = {case["case_id"] for case in stage1}
     remaining = tuple(
         case for case in case_set["cases"] if case["case_id"] not in selected

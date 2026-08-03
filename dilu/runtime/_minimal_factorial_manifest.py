@@ -58,7 +58,7 @@ SHORT_CASE_FINGERPRINT = "dilu_highway_reactive_stress_v2:ed2f63e396fc1b87"
 CASE_FINGERPRINT = (
     "sha256:bd6d65d694a1452e0770e9854e478bb463be8302168e8c17396e86786401fd33"
 )
-MANIFEST_SHA = "39cc138fca22472a7f4c05586df65d0983e0ab0ff2d2af67c9b939ecf8f4782e"
+MANIFEST_SHA = "4fa4feacce0a657ef03d9dfcc2a9c9d8a5ec1ce7a880df07def502136c97d7f9"
 REVISION_RE = re.compile(r"\A[0-9a-fA-F]{40}\Z")
 SOURCE_SHA = {
     "configs/iclr2027/minimal_factorial_runtime.yaml": (

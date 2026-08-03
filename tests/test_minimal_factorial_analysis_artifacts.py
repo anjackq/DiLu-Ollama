@@ -21,7 +21,7 @@ from dilu.runtime.minimal_factorial_analysis import (
 
 
 def _tables() -> AnalysisTables:
-    provenance = {"campaign_id": "iclr2027-minimal-factorial-v1"}
+    provenance = {"campaign_id": "iclr2027-minimal-factorial-v2"}
     contrast = {
         **provenance,
         "contrast_id": "P_MAIN",

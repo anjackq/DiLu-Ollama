@@ -73,9 +73,12 @@ def load_analysis_inputs(
             "case_set_fingerprint"
         ):
             raise ValueError("Registered case-set fingerprint drifted.")
+        selection = _object(registered.get("selection"), "registered selection")
         selected = {
             str(case["case_id"])
-            for case in select_stage1_cases(case_set, str(registered["campaign_id"]))
+            for case in select_stage1_cases(
+                case_set, str(selection["stage1_hash_prefix"])
+            )
         }
         observed_selected = {
             str(row.get("case_id"))

@@ -80,7 +80,7 @@ def _claim_contract(claim: Mapping[str, Any]) -> _ClaimContract:
         raise TypeError("claim manifest must be an object")
     manifest = _mapping(claim.get("manifest"), "registered manifest")
     campaign_id = _text(manifest, "campaign_id")
-    if campaign_id != "iclr2027-minimal-factorial-v1":
+    if campaign_id != "iclr2027-minimal-factorial-v2":
         raise ValueError("claim campaign ID is not registered")
     models = _rows(manifest.get("models"), "registered models")
     if len(models) != 2 or len({_text(row, "slot") for row in models}) != 2:

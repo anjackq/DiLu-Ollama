@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -54,18 +55,25 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             [build_harness_config(self.manifest, i).condition_id() for i in range(8)],
             [f"c{i:03b}" for i in range(8)],
         )
-        smoke = select_smoke_case(self.cases, self.manifest.campaign_id)
+        smoke = select_smoke_case(self.cases, self.manifest.selection.smoke_hash_prefix)
         expected = min(
             self.cases["cases"],
             key=lambda case: hashlib.sha256(
-                f"{self.manifest.campaign_id}|smoke|{case['case_id']}".encode()
+                f"{self.manifest.selection.smoke_hash_prefix}|{case['case_id']}".encode()
             ).hexdigest(),
         )
         self.assertEqual(smoke["case_id"], expected["case_id"])
         self.assertEqual(
-            len(select_stage1_cases(self.cases, self.manifest.campaign_id)), 30
+            len(
+                select_stage1_cases(
+                    self.cases, self.manifest.selection.stage1_hash_prefix
+                )
+            ),
+            30,
         )
-        selected = select_stage1_cases(self.cases, self.manifest.campaign_id)
+        selected = select_stage1_cases(
+            self.cases, self.manifest.selection.stage1_hash_prefix
+        )
         for category in {case["category"] for case in self.cases["cases"]}:
             self.assertEqual(
                 sum(case["category"] == category for case in selected),
@@ -130,6 +138,60 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
                 f"{row.campaign_id}|{row.case_id}|{row.simulator_seed}".encode()
             ).hexdigest(),
         )
+
+    def test_v2_preserves_v1_case_selection_but_versions_evidence_ids(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import (
+            build_smoke_schedule,
+            build_union_schedule,
+        )
+
+        snapshot = self._snapshot()
+        v1_manifest = replace(
+            self.manifest,
+            campaign_id="iclr2027-minimal-factorial-v1",
+            smoke_campaign_id="iclr2027-minimal-factorial-smoke-v1",
+        )
+        v1_smoke = build_smoke_schedule(
+            v1_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+        v2_smoke = build_smoke_schedule(
+            self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+        v1_union = build_union_schedule(
+            v1_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+        v2_union = build_union_schedule(
+            self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+
+        self.assertEqual(
+            {row.case_id for row in v1_smoke},
+            {row.case_id for row in v2_smoke},
+        )
+        self.assertEqual(
+            {row.case_id for row in v1_union if row.stage == "stage1"},
+            {row.case_id for row in v2_union if row.stage == "stage1"},
+        )
+        self.assertEqual(
+            [(row.stage, row.case_id) for row in v1_union],
+            [(row.stage, row.case_id) for row in v2_union],
+        )
+        self.assertTrue(
+            {row.pair_id for row in v1_union}.isdisjoint(
+                {row.pair_id for row in v2_union}
+            )
+        )
+        self.assertTrue(
+            {row.episode_attempt_id for row in v1_union}.isdisjoint(
+                {row.episode_attempt_id for row in v2_union}
+            )
+        )
+        self.assertNotEqual(v1_smoke[0].pair_id, v2_smoke[0].pair_id)
+        self.assertNotEqual(
+            v1_smoke[0].episode_attempt_id,
+            v2_smoke[0].episode_attempt_id,
+        )
+        self.assertEqual(v2_smoke[0].case_id, "mandatory_overtake_slow_lead_002")
 
 
 if __name__ == "__main__":

@@ -92,11 +92,13 @@ class MinimalFactorialManifestTests(unittest.TestCase):
                 "stage2_per_category": (
                     self.manifest.selection.stage2_cases_per_category
                 ),
+                "smoke_hash_prefix": self.manifest.selection.smoke_hash_prefix,
+                "stage1_hash_prefix": self.manifest.selection.stage1_hash_prefix,
             },
             {
                 "schema_version": "iclr2027_minimal_factorial_manifest_v1",
-                "campaign_id": "iclr2027-minimal-factorial-v1",
-                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v1",
+                "campaign_id": "iclr2027-minimal-factorial-v2",
+                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v2",
                 "case_path": ("benchmarks/dilu_highway_reactive_stress_v2/cases.json"),
                 "models": (
                     ("qwen_06b", "qwen3:0.6b"),
@@ -107,6 +109,8 @@ class MinimalFactorialManifestTests(unittest.TestCase):
                 "categories": 10,
                 "stage1_per_category": 3,
                 "stage2_per_category": 12,
+                "smoke_hash_prefix": "iclr2027-minimal-factorial-v1|smoke",
+                "stage1_hash_prefix": "iclr2027-minimal-factorial-v1",
             },
         )
         self.assertEqual(
@@ -114,7 +118,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             {"draws": 20000, "version": "bootstrap-v1"},
         )
         outputs = {
-            "root": "results/iclr2027_minimal_factorial",
+            "root": "results/iclr2027_minimal_factorial_v2",
             "s1": "s1",
             "smoke": "smoke",
             "llm_campaign": "llm_campaign",
