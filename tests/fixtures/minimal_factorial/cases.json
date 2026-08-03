@@ -1,0 +1,25 @@
+{
+  "benchmark_name": "offline-wiring-only",
+  "cases": [
+    {"case_id": "offline-00-a", "category": "category-00", "seed": 1000},
+    {"case_id": "offline-00-b", "category": "category-00", "seed": 1001},
+    {"case_id": "offline-01-a", "category": "category-01", "seed": 1010},
+    {"case_id": "offline-01-b", "category": "category-01", "seed": 1011},
+    {"case_id": "offline-02-a", "category": "category-02", "seed": 1020},
+    {"case_id": "offline-02-b", "category": "category-02", "seed": 1021},
+    {"case_id": "offline-03-a", "category": "category-03", "seed": 1030},
+    {"case_id": "offline-03-b", "category": "category-03", "seed": 1031},
+    {"case_id": "offline-04-a", "category": "category-04", "seed": 1040},
+    {"case_id": "offline-04-b", "category": "category-04", "seed": 1041},
+    {"case_id": "offline-05-a", "category": "category-05", "seed": 1050},
+    {"case_id": "offline-05-b", "category": "category-05", "seed": 1051},
+    {"case_id": "offline-06-a", "category": "category-06", "seed": 1060},
+    {"case_id": "offline-06-b", "category": "category-06", "seed": 1061},
+    {"case_id": "offline-07-a", "category": "category-07", "seed": 1070},
+    {"case_id": "offline-07-b", "category": "category-07", "seed": 1071},
+    {"case_id": "offline-08-a", "category": "category-08", "seed": 1080},
+    {"case_id": "offline-08-b", "category": "category-08", "seed": 1081},
+    {"case_id": "offline-09-a", "category": "category-09", "seed": 1090},
+    {"case_id": "offline-09-b", "category": "category-09", "seed": 1091}
+  ]
+}
