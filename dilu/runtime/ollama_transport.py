@@ -9,6 +9,7 @@ import requests
 
 
 OLLAMA_DIGEST_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z", re.IGNORECASE)
+OLLAMA_BARE_DIGEST_PATTERN = re.compile(r"\A[0-9a-f]{64}\Z", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,7 @@ def parse_ollama_model_identity(
     digest = exact_matches[0].get("digest")
     return OllamaModelIdentity(
         model_tag=requested_model_tag,
-        model_digest=_normalize_model_digest(digest),
+        model_digest=_normalize_ollama_tags_digest(digest),
     )
 
 
@@ -115,6 +116,14 @@ def _normalize_model_digest(value: Any) -> str:
     if not OLLAMA_DIGEST_PATTERN.fullmatch(normalized):
         raise ValueError("model_digest must be a full sha256:<64 hex> digest.")
     return normalized
+
+
+def _normalize_ollama_tags_digest(value: Any) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if OLLAMA_BARE_DIGEST_PATTERN.fullmatch(normalized):
+            return f"sha256:{normalized}"
+    return _normalize_model_digest(value)
 
 
 def normalize_ollama_native_chat_mode(raw: Any) -> str:

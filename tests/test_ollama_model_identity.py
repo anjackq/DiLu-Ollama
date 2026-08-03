@@ -14,6 +14,7 @@ from evaluate_models_ollama import _inspect_ollama_model
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
+DIGEST_A_RAW = "a" * 64
 
 
 class _FakeTagsResponse:
@@ -30,6 +31,29 @@ class _FakeTagsResponse:
 
 
 class OllamaModelIdentityTests(unittest.TestCase):
+    def test_native_bare_hex_digest_is_canonicalized(self) -> None:
+        identity = parse_ollama_model_identity(
+            {
+                "models": [
+                    {
+                        "name": "qwen3:0.6b",
+                        "model": "qwen3:0.6b",
+                        "digest": DIGEST_A_RAW.upper(),
+                    }
+                ]
+            },
+            "qwen3:0.6b",
+        )
+
+        self.assertEqual(identity.model_digest, DIGEST_A)
+
+    def test_internal_identity_rejects_bare_hex_digest(self) -> None:
+        with self.assertRaises(ValueError):
+            OllamaModelIdentity(
+                model_tag="qwen3:0.6b",
+                model_digest=DIGEST_A_RAW,
+            )
+
     def test_exact_unique_tag_returns_frozen_full_digest_identity(self) -> None:
         identity = parse_ollama_model_identity(
             {
@@ -59,6 +83,10 @@ class OllamaModelIdentityTests(unittest.TestCase):
                 ]
             },
             {"models": [{"name": "qwen3:0.6b", "digest": "sha256:abcd"}]},
+            {"models": [{"name": "qwen3:0.6b", "digest": "a" * 63}]},
+            {"models": [{"name": "qwen3:0.6b", "digest": "a" * 65}]},
+            {"models": [{"name": "qwen3:0.6b", "digest": "g" * 64}]},
+            {"models": [{"name": "qwen3:0.6b", "digest": "sha512:" + "a" * 64}]},
             {"models": [{"name": "qwen3:0.6b"}]},
             {
                 "models": [
@@ -139,10 +167,13 @@ class OllamaModelIdentityTests(unittest.TestCase):
             stdout="family: qwen3\nparameters: 600M\nquantization: Q4_K_M\n",
             stderr="",
         )
-        with patch(
-            "evaluate_models_ollama.inspect_ollama_model_identity",
-            return_value=OllamaModelIdentity("qwen3:0.6b", DIGEST_A),
-        ), patch("evaluate_models_ollama.subprocess.run", return_value=completed):
+        with (
+            patch(
+                "evaluate_models_ollama.inspect_ollama_model_identity",
+                return_value=OllamaModelIdentity("qwen3:0.6b", DIGEST_A),
+            ),
+            patch("evaluate_models_ollama.subprocess.run", return_value=completed),
+        ):
             metadata = _inspect_ollama_model("qwen3:0.6b")
 
         self.assertEqual(metadata["model_digest"], DIGEST_A)
