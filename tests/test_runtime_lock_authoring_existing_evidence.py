@@ -232,6 +232,20 @@ def _mutate_decoded_action(records: list[dict[str, object]]) -> None:
         records[index]["canonical_action"] = 4
 
 
+def _coherently_mutate_action_to_zero(records: list[dict[str, object]]) -> None:
+    action_text = "Response to user:#### 0"
+    for index in range(3):
+        body = _response_body(records, index)
+        message = body["message"]
+        if not isinstance(message, dict):
+            raise AssertionError("test fixture message must be a mapping")
+        raw_response = action_text if index < 2 else json.dumps(action_text)
+        message["content"] = raw_response
+        _replace_response_body(records, index, body)
+        records[index]["raw_response"] = raw_response
+        records[index]["canonical_action"] = 0
+
+
 def _mutate_stop_reason(records: list[dict[str, object]]) -> None:
     for index in range(2):
         records[index]["stop_reason"] = "length"
@@ -286,6 +300,7 @@ class ExistingRequestPlanTests(unittest.TestCase):
             "raw_response": _mutate_raw_response,
             "response_body_content": _mutate_body_content,
             "decoded_action": _mutate_decoded_action,
+            "coherent_action_zero": _coherently_mutate_action_to_zero,
             "stop_reason": _mutate_stop_reason,
             "tokens": _mutate_tokens,
             "timing": _mutate_timing,

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ._scientific_transport_response import parse_native_response_attempt
-from .action_resolution import parse_canonical_action
+from .action_resolution import FIXED_IDLE_ACTION_ID, parse_canonical_action
 from .harness_config import OutputEnforcement, ThinkMode
 from .ollama_transport import (
     OllamaModelIdentity,
@@ -27,6 +27,8 @@ from .scientific_transport_types import (
 
 GetCallable = Callable[..., Any]
 PostCallable = Callable[..., Any]
+S1_COLD_START_OBSERVATION_TIMEOUT_SEC = 120.0
+_FIXED_IDLE_ACTION_TEXT = f"Response to user:#### {FIXED_IDLE_ACTION_ID}"
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -120,6 +122,10 @@ def probe_model(
         actions.append(action)
     if payload_bodies[0] != payload_bodies[1] or actions[0] != actions[1]:
         raise ValueError("Prompt-only repeat evidence mismatch.")
+    if any(action != FIXED_IDLE_ACTION_ID for action in actions):
+        raise ValueError(
+            "Native capability probe did not return the fixed IDLE action."
+        )
     after = _inspect_direct_identity(
         native_endpoint,
         model_tag,
@@ -193,13 +199,17 @@ def build_probe_requests(
         OutputEnforcement.PROMPT_ONLY,
         OutputEnforcement.BACKEND_SCHEMA,
     )
+    timeouts = (
+        S1_COLD_START_OBSERVATION_TIMEOUT_SEC,
+        timeout_sec,
+        timeout_sec,
+    )
     messages = (
         (
             "system",
-            "Return exactly one canonical driving action: "
-            "Response to user:#### N, where N is 0 through 4.",
+            "Echo the user's message exactly. Return no other text.",
         ),
-        ("user", "Choose the canonical IDLE action for this capability probe."),
+        ("user", _FIXED_IDLE_ACTION_TEXT),
     )
     options = NativeGenerationOptions(
         seed=seed,
@@ -217,9 +227,14 @@ def build_probe_requests(
             options=options,
             output_enforcement=enforcement,
             think_mode=think_mode,
-            timeout_sec=timeout_sec,
+            timeout_sec=request_timeout_sec,
         )
-        for label, enforcement in zip(labels, enforcements, strict=True)
+        for label, enforcement, request_timeout_sec in zip(
+            labels,
+            enforcements,
+            timeouts,
+            strict=True,
+        )
     )
 
 
@@ -273,6 +288,7 @@ def _direct_call(
         status,
         response_payload,
         response_body,
+        enforce_expected_action=False,
     )
     return (
         {
@@ -291,6 +307,8 @@ def derive_response_evidence(
     status: int,
     response_payload: object,
     response_body: str,
+    *,
+    enforce_expected_action: bool = True,
 ) -> tuple[dict[str, object], int]:
     """Parse one response into the exact evidence fields persisted by authoring."""
     if (
@@ -326,6 +344,10 @@ def derive_response_evidence(
     ):
         raise ValueError("Native capability probe omitted required evidence.")
     action = parse_canonical_action(attempt.contract_text)
+    if enforce_expected_action and action != FIXED_IDLE_ACTION_ID:
+        raise ValueError(
+            "Native capability probe did not return the fixed IDLE action."
+        )
     evidence = {
         "http_status": status,
         "response_body": response_body,

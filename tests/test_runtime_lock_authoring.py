@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from dilu.runtime._minimal_factorial_manifest import RuntimeSnapshot
+from dilu.runtime.action_resolution import FIXED_IDLE_ACTION_ID
 from dilu.runtime.minimal_factorial_schedule import (
     case_fingerprint,
     load_experiment_manifest,
@@ -23,6 +24,7 @@ DIGESTS = {
     "qwen3:0.6b": "sha256:" + "a" * 64,
     "llama3.2:1b": "sha256:" + "b" * 64,
 }
+FIXED_IDLE_ACTION_TEXT = f"Response to user:#### {FIXED_IDLE_ACTION_ID}"
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -55,7 +57,7 @@ class FakeResponse:
         self,
         model: str,
         *,
-        content: str = "Response to user:#### 3",
+        content: str = FIXED_IDLE_ACTION_TEXT,
         status: int = 200,
         history: tuple[object, ...] = (),
         malformed: bool = False,
@@ -140,7 +142,7 @@ class NativeFakes:
                 "payload": payload,
             }
         )
-        content = "Response to user:#### 3"
+        content = FIXED_IDLE_ACTION_TEXT
         if "format" in payload:
             content = json.dumps(content)
         return FakeResponse(model, content=content, url=url)
@@ -220,9 +222,25 @@ class RuntimeLockAuthoringTests(unittest.TestCase):
             )
             for offset in (0, 3):
                 first, repeat, schema = fakes.post_calls[offset : offset + 3]
+                self.assertEqual(
+                    [first["timeout"], repeat["timeout"], schema["timeout"]],
+                    [120.0, 30.0, 30.0],
+                )
                 self.assertEqual(first["data"], repeat["data"])
                 self.assertEqual(first["payload"], repeat["payload"])
                 self.assertNotIn("format", first["payload"])
+                self.assertEqual(
+                    first["payload"]["messages"],
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Echo the user's message exactly. Return no other text."
+                            ),
+                        },
+                        {"role": "user", "content": FIXED_IDLE_ACTION_TEXT},
+                    ],
+                )
                 self.assertEqual(
                     schema["payload"]["format"], canonical_action_text_schema()
                 )
@@ -234,7 +252,17 @@ class RuntimeLockAuthoringTests(unittest.TestCase):
                 "sha256:" + hashlib.sha256(preflight_bytes).hexdigest(),
             )
             self.assertTrue(
-                all(record["canonical_action"] == 3 for record in preflight["records"])
+                all(
+                    record["canonical_action"] == FIXED_IDLE_ACTION_ID
+                    for record in preflight["records"]
+                )
+            )
+            self.assertEqual(
+                [record["request"]["timeout_sec"] for record in preflight["records"]],
+                [120.0, 30.0, 30.0, 120.0, 30.0, 30.0],
+            )
+            self.assertEqual(
+                load_experiment_manifest(MANIFEST_PATH).transport.timeout_sec, 30.0
             )
             required_evidence = {
                 "request",
