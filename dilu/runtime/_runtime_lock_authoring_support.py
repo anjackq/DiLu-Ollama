@@ -207,9 +207,9 @@ def build_probe_requests(
     messages = (
         (
             "system",
-            "Echo the user's message exactly. Return no other text.",
+            f"Return exactly this text and nothing else: {_FIXED_IDLE_ACTION_TEXT}",
         ),
-        ("user", _FIXED_IDLE_ACTION_TEXT),
+        ("user", "Perform the response-format capability check."),
     )
     options = NativeGenerationOptions(
         seed=seed,

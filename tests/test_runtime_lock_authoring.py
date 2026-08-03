@@ -235,10 +235,14 @@ class RuntimeLockAuthoringTests(unittest.TestCase):
                         {
                             "role": "system",
                             "content": (
-                                "Echo the user's message exactly. Return no other text."
+                                "Return exactly this text and nothing else: "
+                                f"{FIXED_IDLE_ACTION_TEXT}"
                             ),
                         },
-                        {"role": "user", "content": FIXED_IDLE_ACTION_TEXT},
+                        {
+                            "role": "user",
+                            "content": "Perform the response-format capability check.",
+                        },
                     ],
                 )
                 self.assertEqual(
