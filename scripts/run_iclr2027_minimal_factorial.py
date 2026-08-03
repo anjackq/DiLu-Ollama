@@ -5,10 +5,15 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import sys
 from pathlib import Path
 from typing import Sequence
 
-from dilu.runtime.minimal_factorial_runner import (
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from dilu.runtime.minimal_factorial_runner import (  # noqa: E402
     campaign_status,
     run_claim_stage,
     run_probe_lock,
