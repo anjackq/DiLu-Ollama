@@ -42,7 +42,10 @@ from .minimal_factorial_schedule import (
     load_experiment_manifest,
 )
 from .runtime_lock_authoring import author_verified_runtime_locks
-from .scientific_runtime import build_scientific_episode_runtime
+from .scientific_runtime import (
+    ScientificCompletionPublisher,
+    build_scientific_episode_runtime,
+)
 from .scientific_trace import ScientificTraceWriter
 from .task_benchmark import (
     benchmark_max_steps,
@@ -167,7 +170,7 @@ def _run_scheduled_episode(
     trace_writer: Any,
     client: Any,
     episode_temp_dir: Path,
-    completion_publisher: Any,
+    completion_publisher: ScientificCompletionPublisher,
 ) -> dict[str, Any]:
     return _run_scheduled_episode_impl(
         prepared,
@@ -196,12 +199,7 @@ def _record_infrastructure_failure(
     if status is None:
         ledger.append_started(attempt_id)
     elif status is AttemptStatus.COMPLETED:
-        ledger.append_summary_failure(
-            attempt_id,
-            failure_class="summary_durability_failure",
-            failure_message=f"{type(error).__name__}: {error}",
-        )
-        return
+        raise error
     elif status is not AttemptStatus.STARTED:
         return
     ledger.append_terminal(

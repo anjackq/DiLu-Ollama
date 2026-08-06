@@ -117,7 +117,9 @@ class MinimalFactorialEvidenceTests(unittest.TestCase):
             trace_absence_reason="aborted_before_first_decision",
         )
 
-    def test_post_terminal_summary_failure_appends_typed_evidence(self) -> None:
+    def test_explicit_post_terminal_summary_failure_appends_typed_evidence(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = Path(tmp) / "attempts.jsonl"
             ledger = ScientificAttemptLedger(
@@ -140,10 +142,10 @@ class MinimalFactorialEvidenceTests(unittest.TestCase):
                 ),
             )
 
-            runner._record_infrastructure_failure(
-                ledger,
-                SimpleNamespace(episode_attempt_id="episode-001"),
-                OSError("fake fsync failure after summary write"),
+            ledger.append_summary_failure(
+                "episode-001",
+                failure_class="summary_durability_failure",
+                failure_message="OSError: fake fsync failure after summary write",
             )
 
             self.assertIs(

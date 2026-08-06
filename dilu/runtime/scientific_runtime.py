@@ -48,6 +48,12 @@ from .scientific_transport_types import ScientificGenerationContext
 from .shield_stack import ShieldStackResult
 
 
+ScientificCompletionPublisher = Callable[
+    [Mapping[str, Any], tuple[TraceReference, ...]],
+    None,
+]
+
+
 @dataclass(frozen=True)
 class ScientificEpisodeRuntime:
     harness_config: HarnessConfig
@@ -56,9 +62,7 @@ class ScientificEpisodeRuntime:
     transport_client: OllamaScientificClient
     trace_writer: ScientificTraceWriter
     attempt_ledger: ScientificAttemptLedger
-    completion_publisher: (
-        Callable[[Mapping[str, Any], tuple[TraceReference, ...]], None] | None
-    ) = None
+    completion_publisher: ScientificCompletionPublisher | None = None
 
     def __post_init__(self) -> None:
         expected_types = (
@@ -318,9 +322,7 @@ def build_scientific_episode_runtime(
     transport_client: OllamaScientificClient,
     trace_writer: ScientificTraceWriter,
     attempt_ledger: ScientificAttemptLedger,
-    completion_publisher: (
-        Callable[[Mapping[str, Any], tuple[TraceReference, ...]], None] | None
-    ) = None,
+    completion_publisher: ScientificCompletionPublisher | None = None,
 ) -> ScientificEpisodeRuntime:
     """Build a claim-bearing episode only from externally bound resources."""
     runtime = ScientificEpisodeRuntime(
@@ -354,6 +356,7 @@ __all__ = [
     "RuntimeLockBinding",
     "ScientificEpisodeIdentity",
     "ScientificEpisodeRuntime",
+    "ScientificCompletionPublisher",
     "VerifiedRuntimeLockBinding",
     "build_scientific_episode_runtime",
 ]
