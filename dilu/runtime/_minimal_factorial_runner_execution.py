@@ -103,6 +103,7 @@ def execute_campaign(
         ledger=ledger,
         trace_writer=trace_writer,
     )
+    ledger.validate_trace_evidence(trace_writer)
     statuses = ledger.attempt_statuses()
     pending = pending_selector(scheduled_rows, statuses, resume=artifact_resume)
     pending = _ledger_approved_rows(pending, statuses, ledger)
