@@ -244,17 +244,37 @@ class MinimalFactorialEvidenceTests(unittest.TestCase):
             def __init__(self, *_args: object, **_kwargs: object) -> None:
                 pass
 
+            def references_for_attempt(
+                self,
+                _campaign_id: str,
+                _episode_attempt_id: str,
+            ) -> tuple[TraceReference, ...]:
+                return (
+                    TraceReference(
+                        relative_path="traces/decision_traces.jsonl",
+                        line_number=1,
+                        record_sha256="sha256:" + "a" * 64,
+                        schema_version="iclr2027.decision_trace.v1",
+                        schema_sha256="sha256:" + "b" * 64,
+                    ),
+                )
+
         def execute_episode(
             _prepared: object,
             scheduled: SimpleNamespace,
             *,
             ledger: FakeLedger,
+            trace_writer: FakeTrace,
+            completion_publisher: object,
             **_kwargs: object,
         ) -> dict[str, object]:
             ledger.append_started(scheduled.episode_attempt_id)
-            ledger.append_terminal(
-                scheduled.episode_attempt_id,
-                status=runner.AttemptStatus.COMPLETED,
+            completion_publisher(
+                {"task_completed": True},
+                trace_writer.references_for_attempt(
+                    scheduled.campaign_id,
+                    scheduled.episode_attempt_id,
+                ),
             )
             return {"task_completed": True}
 
@@ -306,7 +326,10 @@ class MinimalFactorialEvidenceTests(unittest.TestCase):
                 )
 
         self.assertFalse(result.promotion_allowed)
-        self.assertEqual(result.ambiguous, 1)
+        self.assertEqual(result.failed, 1)
+        self.assertTrue(
+            any("episode summary evidence invalid" in error for error in result.errors)
+        )
 
     def test_duplicate_and_denominator_mismatch_block_completion(self) -> None:
         rows = _rows("stage1", 2)
@@ -323,20 +346,20 @@ class MinimalFactorialEvidenceTests(unittest.TestCase):
         self.assertIn("duplicate episode summaries", errors)
         self.assertIn("episode summary denominator mismatch", errors)
 
-    def test_summary_append_requires_terminal_attempt_evidence(self) -> None:
+    def test_summary_append_requires_live_started_attempt(self) -> None:
         ledger = mock.Mock()
-        ledger.attempt_status.return_value = runner.AttemptStatus.STARTED
+        ledger.attempt_status.return_value = runner.AttemptStatus.COMPLETED
         summary = {
             "campaign_provenance_sha256": "sha256:" + "c" * 64,
             "episode_attempt_id": "episode-001",
         }
-        with self.assertRaisesRegex(RuntimeError, "terminal"):
+        with self.assertRaisesRegex(RuntimeError, "live started"):
             runner._append_episode_summary(
                 Path("episodes.jsonl"),
                 summary,
                 ledger,
             )
-        ledger.attempt_status.return_value = runner.AttemptStatus.COMPLETED
+        ledger.attempt_status.return_value = runner.AttemptStatus.STARTED
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "episodes.jsonl"
             runner._append_episode_summary(

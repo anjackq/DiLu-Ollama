@@ -167,6 +167,7 @@ def _run_scheduled_episode(
     trace_writer: Any,
     client: Any,
     episode_temp_dir: Path,
+    completion_publisher: Any,
 ) -> dict[str, Any]:
     return _run_scheduled_episode_impl(
         prepared,
@@ -181,6 +182,7 @@ def _run_scheduled_episode(
         instruction_builder=build_benchmark_instruction,
         max_steps_builder=benchmark_max_steps,
         evaluator=run_episode,
+        completion_publisher=completion_publisher,
     )
 
 
@@ -249,9 +251,9 @@ def _append_episode_summary(
     attempt_id = summary.get("episode_attempt_id")
     if (
         not isinstance(attempt_id, str)
-        or ledger.attempt_status(attempt_id) not in _TERMINAL_STATUSES
+        or ledger.attempt_status(attempt_id) is not AttemptStatus.STARTED
     ):
-        raise RuntimeError("Episode summary requires terminal attempt evidence.")
+        raise RuntimeError("Episode summary requires a live started attempt.")
     append_summary_record(path, summary)
 
 
@@ -318,16 +320,6 @@ def _repo_root(manifest_path: Path) -> Path:
     if Path(*resolved.parts[-3:]) != expected_suffix:
         raise ValueError("manifest_path must identify the registered manifest.")
     return resolved.parents[2]
-
-
-_TERMINAL_STATUSES = frozenset(
-    {
-        AttemptStatus.COMPLETED,
-        AttemptStatus.BLOCKED,
-        AttemptStatus.FAILED,
-        AttemptStatus.WRITE_AMBIGUOUS,
-    }
-)
 
 
 __all__ = [

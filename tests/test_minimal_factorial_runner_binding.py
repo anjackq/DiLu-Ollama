@@ -48,6 +48,7 @@ class MinimalFactorialEpisodeBindingTests(unittest.TestCase):
             lock_root=Path("campaign") / "s1" / "locks",
         )
         captured: dict[str, object] = {}
+        completion_publisher = mock.Mock()
         runtime_lock = SimpleNamespace(
             source_artifact_sha256="sha256:" + "0" * 64,
             authorization_artifact_sha256="sha256:" + "1" * 64,
@@ -104,6 +105,7 @@ class MinimalFactorialEpisodeBindingTests(unittest.TestCase):
                 trace_writer=mock.sentinel.trace_writer,
                 client=mock.sentinel.client,
                 episode_temp_dir=Path("temp") / "episode-017",
+                completion_publisher=completion_publisher,
             )
 
         self.assertEqual(result["episode_attempt_id"], "episode-017")
@@ -131,6 +133,22 @@ class MinimalFactorialEpisodeBindingTests(unittest.TestCase):
         self.assertEqual(
             result["trace_schema_sha256"],
             runtime_lock.trace_schema_sha256,
+        )
+        runtime_completion_publisher = build_runtime.call_args.kwargs[
+            "completion_publisher"
+        ]
+        runtime_completion_publisher(
+            {"episode_attempt_id": "episode-017"},
+            (mock.sentinel.trace_reference,),
+        )
+        published = completion_publisher.call_args.args[0]
+        self.assertEqual(
+            published["runtime_lock_binding_sha256"],
+            runtime_lock.binding_sha256,
+        )
+        self.assertEqual(
+            completion_publisher.call_args.args[1],
+            (mock.sentinel.trace_reference,),
         )
         inspect.signature(evaluate_models_ollama.run_episode).bind(**captured)
         self.assertIs(captured["config"], prepared.runtime_config)
@@ -160,6 +178,7 @@ class MinimalFactorialEpisodeBindingTests(unittest.TestCase):
             transport_client=mock.sentinel.client,
             trace_writer=mock.sentinel.trace_writer,
             attempt_ledger=mock.sentinel.ledger,
+            completion_publisher=mock.ANY,
         )
 
 

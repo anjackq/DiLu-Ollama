@@ -20,12 +20,36 @@ def run_scheduled_episode(
     instruction_builder: Callable[[Mapping[str, Any]], str],
     max_steps_builder: Callable[..., int],
     evaluator: Callable[..., dict[str, Any]],
+    completion_publisher: Callable[..., None],
 ) -> dict[str, Any]:
     lock_root = prepared.lock_root / scheduled.model_slot / scheduled.condition_id
     runtime_lock = lock_loader(
         runtime_lock_path=lock_root / "RUNTIME_PROTOCOL_LOCK.json",
         authorization_path=lock_root / "PROTOCOL_FROZEN.json",
     )
+
+    def publish_completion(
+        result: Mapping[str, Any],
+        references: tuple[Any, ...],
+    ) -> None:
+        completion_publisher(
+            {
+                **dict(result),
+                "runtime_lock_source_artifact_sha256": (
+                    runtime_lock.source_artifact_sha256
+                ),
+                "runtime_lock_authorization_artifact_sha256": (
+                    runtime_lock.authorization_artifact_sha256
+                ),
+                "runtime_lock_binding_sha256": runtime_lock.binding_sha256,
+                "prompt_sha256": runtime_lock.prompt_sha256,
+                "capability_artifact_sha256": runtime_lock.capability_artifact_sha256,
+                "capability_snapshot_sha256": runtime_lock.capability_snapshot_sha256,
+                "trace_schema_sha256": runtime_lock.trace_schema_sha256,
+            },
+            references,
+        )
+
     scientific_runtime = runtime_builder(
         harness_config=scheduled.condition,
         identity=scheduled.identity(),
@@ -33,6 +57,7 @@ def run_scheduled_episode(
         transport_client=client,
         trace_writer=trace_writer,
         attempt_ledger=ledger,
+        completion_publisher=publish_completion,
     )
     benchmark_case = prepared.case_by_id[scheduled.case_id]
     case_env_config, case_env_snapshot = env_builder(

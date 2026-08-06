@@ -14,6 +14,10 @@ from ._minimal_factorial_runner_summaries import (
     load_summary_records,
     summary_root_sha256,
 )
+from ._minimal_factorial_runner_publication import (
+    build_completion_publisher,
+    reconcile_published_summaries,
+)
 from .ollama_scientific_client import OllamaScientificClient
 from .ollama_transport import inspect_ollama_model_identity
 from .scientific_transport_types import ScientificTransportCapabilities
@@ -74,7 +78,7 @@ def execute_campaign(
         getattr(prepared, "schedule", denominator_rows),
         prepared.snapshot.sha256,
     )
-    _load_summaries(
+    summaries = _load_summaries(
         summaries_path,
         expected_campaign_provenance_sha256=campaign_provenance,
     )
@@ -89,11 +93,23 @@ def execute_campaign(
         artifact_root=output_root,
         resume=resume or trace_path.exists(),
     )
-    retry_policy = scheduled_rows[0].condition.retry_policy
-    clients = client_builder(prepared.capabilities, retry_policy)
+    statuses = ledger.attempt_statuses()
+    reconcile_published_summaries(
+        rows=denominator_rows,
+        summaries=summaries,
+        runtime_snapshot_sha256=prepared.snapshot.sha256,
+        campaign_provenance_sha256=campaign_provenance,
+        statuses=statuses,
+        ledger=ledger,
+        trace_writer=trace_writer,
+    )
     statuses = ledger.attempt_statuses()
     pending = pending_selector(scheduled_rows, statuses, resume=artifact_resume)
     pending = _ledger_approved_rows(pending, statuses, ledger)
+    clients: Mapping[str, Any] = {}
+    if pending:
+        retry_policy = pending[0].condition.retry_policy
+        clients = client_builder(prepared.capabilities, retry_policy)
 
     for row in pending:
         try:
@@ -107,33 +123,25 @@ def execute_campaign(
             with tempfile.TemporaryDirectory(
                 prefix=f"dilu-{row.episode_attempt_id[:16]}-"
             ) as temporary:
-                result = episode_runner(
+                episode_runner(
                     prepared,
                     row,
                     ledger=ledger,
                     trace_writer=trace_writer,
                     client=client,
                     episode_temp_dir=Path(temporary),
+                    completion_publisher=build_completion_publisher(
+                        row=row,
+                        summaries_path=summaries_path,
+                        runtime_snapshot_sha256=prepared.snapshot.sha256,
+                        campaign_provenance_sha256=campaign_provenance,
+                        ledger=ledger,
+                        summary_appender=summary_appender,
+                    ),
                 )
             terminal = ledger.attempt_status(row.episode_attempt_id)
             if terminal is not AttemptStatus.COMPLETED:
                 raise RuntimeError("Episode returned without completed evidence.")
-            references = trace_writer.references_for_attempt(
-                row.campaign_id,
-                row.episode_attempt_id,
-            )
-            if not references:
-                raise RuntimeError("Completed episode returned without trace evidence.")
-            summary = {
-                **dict(result),
-                **row.to_payload(),
-                "runtime_snapshot_sha256": "sha256:" + prepared.snapshot.sha256,
-                "campaign_provenance_sha256": campaign_provenance,
-                "scientific_trace_references": [
-                    reference.to_dict() for reference in references
-                ],
-            }
-            summary_appender(summaries_path, summary, ledger)
         except Exception as exc:
             failure_recorder(ledger, row, exc)
 

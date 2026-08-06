@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from dilu.driver_agent.prompt_modules import PromptArtifact
 
@@ -56,6 +56,9 @@ class ScientificEpisodeRuntime:
     transport_client: OllamaScientificClient
     trace_writer: ScientificTraceWriter
     attempt_ledger: ScientificAttemptLedger
+    completion_publisher: (
+        Callable[[Mapping[str, Any], tuple[TraceReference, ...]], None] | None
+    ) = None
 
     def __post_init__(self) -> None:
         expected_types = (
@@ -186,7 +189,22 @@ class ScientificEpisodeRuntime:
             decision_latency_ms=decision_latency_ms,
         )
 
-    def complete_attempt(self, references: tuple[TraceReference, ...]) -> None:
+    def complete_attempt(
+        self,
+        references: tuple[TraceReference, ...],
+        *,
+        result: Mapping[str, Any] | None = None,
+    ) -> None:
+        if self.completion_publisher is not None:
+            if result is None:
+                raise ValueError("Completion publisher requires the episode result.")
+            expected_references = [reference.to_dict() for reference in references]
+            if result.get("scientific_trace_references") != expected_references:
+                raise ValueError(
+                    "Episode result trace references do not match ordered evidence."
+                )
+            self.completion_publisher(result, references)
+            return
         self.attempt_ledger.append_terminal(
             self.identity.episode_attempt_id,
             status=AttemptStatus.COMPLETED,
@@ -300,6 +318,9 @@ def build_scientific_episode_runtime(
     transport_client: OllamaScientificClient,
     trace_writer: ScientificTraceWriter,
     attempt_ledger: ScientificAttemptLedger,
+    completion_publisher: (
+        Callable[[Mapping[str, Any], tuple[TraceReference, ...]], None] | None
+    ) = None,
 ) -> ScientificEpisodeRuntime:
     """Build a claim-bearing episode only from externally bound resources."""
     runtime = ScientificEpisodeRuntime(
@@ -309,6 +330,7 @@ def build_scientific_episode_runtime(
         transport_client=transport_client,
         trace_writer=trace_writer,
         attempt_ledger=attempt_ledger,
+        completion_publisher=completion_publisher,
     )
     attempt_ledger.validate_trace_evidence(trace_writer)
     runtime.validate_binding()

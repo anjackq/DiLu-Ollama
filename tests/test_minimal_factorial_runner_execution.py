@@ -41,6 +41,9 @@ class _FakeLedger:
     def validate_trace_evidence(self, _writer: object) -> None:
         return None
 
+    def can_resume(self, attempt_id: str) -> bool:
+        return self.statuses.get(attempt_id) is runner.AttemptStatus.STARTED
+
 
 class _FakeTraceWriter:
     instances = 0
@@ -128,17 +131,20 @@ class MinimalFactorialExecutionTests(unittest.TestCase):
                 row: SimpleNamespace,
                 *,
                 ledger: _FakeLedger,
-                trace_writer: object,
+                trace_writer: _FakeTraceWriter,
                 client: object,
                 episode_temp_dir: Path,
+                completion_publisher: object,
             ) -> dict[str, object]:
-                del trace_writer
                 seen_clients.append(client)
                 episode_temp_dirs.append(episode_temp_dir)
                 ledger.append_started(row.episode_attempt_id)
-                ledger.append_terminal(
-                    row.episode_attempt_id,
-                    status=runner.AttemptStatus.COMPLETED,
+                completion_publisher(
+                    {"task_completed": True},
+                    trace_writer.references_for_attempt(
+                        row.campaign_id,
+                        row.episode_attempt_id,
+                    ),
                 )
                 return {"task_completed": True}
 
@@ -202,6 +208,82 @@ class MinimalFactorialExecutionTests(unittest.TestCase):
         self.assertEqual(summary.completed, 2)
         self.assertEqual(summary.pending, 0)
         self.assertTrue(summary.promotion_allowed)
+
+    def test_summary_is_published_before_completed_terminal(self) -> None:
+        row = _row(0)
+        events: list[str] = []
+
+        class OrderedLedger(_FakeLedger):
+            def append_terminal(
+                self,
+                attempt_id: str,
+                *,
+                status: runner.AttemptStatus,
+                **kwargs: object,
+            ) -> None:
+                del kwargs
+                events.append(status.value)
+                super().append_terminal(attempt_id, status=status)
+
+        def execute_episode(
+            _prepared: object,
+            scheduled: SimpleNamespace,
+            *,
+            ledger: OrderedLedger,
+            trace_writer: _FakeTraceWriter,
+            completion_publisher: object,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            ledger.append_started(scheduled.episode_attempt_id)
+            references = trace_writer.references_for_attempt(
+                scheduled.campaign_id,
+                scheduled.episode_attempt_id,
+            )
+            completion_publisher({"task_completed": True}, references)
+            return {"task_completed": True}
+
+        def append_summary(
+            path: Path,
+            summary: object,
+            ledger: OrderedLedger,
+        ) -> None:
+            del path, summary
+            self.assertIs(
+                ledger.attempt_status(row.episode_attempt_id),
+                runner.AttemptStatus.STARTED,
+            )
+            events.append("summary")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = SimpleNamespace(
+                output_root=Path(tmp),
+                schedule=(row,),
+                capabilities={
+                    row.model_slot: SimpleNamespace(
+                        model_tag=row.model_tag,
+                        model_digest=row.model_digest,
+                    )
+                },
+                snapshot=SimpleNamespace(sha256="a" * 64),
+            )
+            result = execution.execute_campaign(
+                prepared,
+                scheduled_rows=(row,),
+                denominator_rows=(row,),
+                resume=False,
+                stage="smoke",
+                ledger_type=OrderedLedger,
+                trace_type=_FakeTraceWriter,
+                client_builder=lambda *_args: {row.model_slot: mock.sentinel.client},
+                episode_runner=execute_episode,
+                pending_selector=runner._select_pending_rows,
+                summary_appender=append_summary,
+                failure_recorder=lambda *_args: None,
+                completion_checker=lambda *_args: (),
+            )
+
+        self.assertEqual(events, ["summary", "completed"])
+        self.assertEqual(result.completed, 1)
 
     def test_started_rows_require_ledger_resume_approval(self) -> None:
         started, unseen = _row(0), _row(1)

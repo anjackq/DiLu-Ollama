@@ -1659,7 +1659,7 @@ def _scientific_attempt_guard(
             raise
         try:
             references = runtime.current_trace_references()
-            runtime.complete_attempt(references)
+            runtime.complete_attempt(references, result=result)
         except Exception as exc:
             _abort_scientific_attempt(runtime, exc)
             raise
