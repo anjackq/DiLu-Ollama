@@ -97,8 +97,8 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             },
             {
                 "schema_version": "iclr2027_minimal_factorial_manifest_v1",
-                "campaign_id": "iclr2027-minimal-factorial-v2",
-                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v2",
+                "campaign_id": "iclr2027-minimal-factorial-v3",
+                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v3",
                 "case_path": ("benchmarks/dilu_highway_reactive_stress_v2/cases.json"),
                 "models": (
                     ("qwen_06b", "qwen3:0.6b"),
@@ -118,7 +118,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             {"draws": 20000, "version": "bootstrap-v1"},
         )
         outputs = {
-            "root": "results/iclr2027_minimal_factorial_v2",
+            "root": "results/iclr2027_minimal_factorial_v3",
             "s1": "s1",
             "smoke": "smoke",
             "llm_campaign": "llm_campaign",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from dilu.runtime.minimal_factorial_analysis import (
 
 
 def _tables() -> AnalysisTables:
-    provenance = {"campaign_id": "iclr2027-minimal-factorial-v2"}
+    provenance = {"campaign_id": "iclr2027-minimal-factorial-v3"}
     contrast = {
         **provenance,
         "contrast_id": "P_MAIN",
@@ -112,6 +113,14 @@ class MinimalFactorialAnalysisArtifactTests(unittest.TestCase):
             publish_analysis_bundle(second, validation, _tables())
 
             self.assertEqual(_files(first), EXACT_SUCCESS_FILES)
+            with (first / "condition_summary.csv").open(
+                encoding="utf-8", newline=""
+            ) as handle:
+                condition_rows = tuple(csv.DictReader(handle))
+            self.assertEqual(
+                {row["campaign_id"] for row in condition_rows},
+                {"iclr2027-minimal-factorial-v3"},
+            )
             self.assertEqual(
                 {
                     path.relative_to(first).as_posix(): path.read_bytes()

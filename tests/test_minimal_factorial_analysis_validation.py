@@ -23,6 +23,10 @@ class MinimalFactorialAnalysisValidationTests(unittest.TestCase):
     def test_exact_registered_denominators_validate(self) -> None:
         result = validate_joined_rows(self.claim, self.episodes, self.baselines)
 
+        self.assertEqual(
+            self.claim["manifest"]["campaign_id"],
+            "iclr2027-minimal-factorial-v3",
+        )
         self.assertEqual(result.status, "complete")
         self.assertEqual(result.errors, ())
         self.assertTrue(result.contrast_artifacts_written)
@@ -81,6 +85,15 @@ class MinimalFactorialAnalysisValidationTests(unittest.TestCase):
     def test_unregistered_campaign_id_is_blocked(self) -> None:
         claim = copy.deepcopy(self.claim)
         claim["manifest"]["campaign_id"] = "development-one-shot"
+
+        result = validate_joined_rows(claim, self.episodes, self.baselines)
+
+        self.assertEqual(result.status, "blocked")
+        self.assertTrue(any("campaign ID" in error for error in result.errors))
+
+    def test_v2_campaign_is_not_registered_for_analysis(self) -> None:
+        claim = copy.deepcopy(self.claim)
+        claim["manifest"]["campaign_id"] = "iclr2027-minimal-factorial-v2"
 
         result = validate_joined_rows(claim, self.episodes, self.baselines)
 
