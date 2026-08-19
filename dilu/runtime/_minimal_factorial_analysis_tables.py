@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from ._minimal_factorial_analysis_artifacts import AnalysisTables
 from ._minimal_factorial_analysis_bootstrap import (
@@ -137,6 +138,23 @@ def _factor_rows(
                     )
                 )
     return output
+
+
+def compute_stage1_factor_rows(
+    episodes: Sequence[Mapping[str, Any]],
+    models: Sequence[str],
+    outcome_readers: Mapping[str, tuple[OutcomeReader, str]],
+    provenance: Mapping[str, str],
+    manifest_sha256: str,
+) -> list[dict[str, Any]]:
+    """Compute the registered Stage-1 contrasts for a validated fixed subset."""
+    return _factor_rows(
+        episodes,
+        models,
+        outcome_readers,
+        provenance,
+        manifest_sha256,
+    )
 
 
 def _endpoint_rows(
@@ -381,4 +399,4 @@ def _text(row: Mapping[str, Any], key: str) -> str:
     return value
 
 
-__all__ = ["compute_registered_tables"]
+__all__ = ["compute_registered_tables", "compute_stage1_factor_rows"]
