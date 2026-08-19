@@ -25,7 +25,7 @@ class MinimalFactorialAnalysisValidationTests(unittest.TestCase):
 
         self.assertEqual(
             self.claim["manifest"]["campaign_id"],
-            "iclr2027-minimal-factorial-v3",
+            "iclr2027-minimal-factorial-v4",
         )
         self.assertEqual(result.status, "complete")
         self.assertEqual(result.errors, ())
@@ -91,14 +91,22 @@ class MinimalFactorialAnalysisValidationTests(unittest.TestCase):
         self.assertEqual(result.status, "blocked")
         self.assertTrue(any("campaign ID" in error for error in result.errors))
 
-    def test_v2_campaign_is_not_registered_for_analysis(self) -> None:
-        claim = copy.deepcopy(self.claim)
-        claim["manifest"]["campaign_id"] = "iclr2027-minimal-factorial-v2"
+    def test_v2_and_v3_campaigns_are_not_registered_for_analysis(self) -> None:
+        for campaign_id in (
+            "iclr2027-minimal-factorial-v2",
+            "iclr2027-minimal-factorial-v3",
+        ):
+            with self.subTest(campaign_id=campaign_id):
+                claim = copy.deepcopy(self.claim)
+                claim["manifest"]["campaign_id"] = campaign_id
 
-        result = validate_joined_rows(claim, self.episodes, self.baselines)
+                result = validate_joined_rows(claim, self.episodes, self.baselines)
 
-        self.assertEqual(result.status, "blocked")
-        self.assertTrue(any("campaign ID" in error for error in result.errors))
+                self.assertEqual(result.status, "blocked")
+                self.assertIn(
+                    "claim manifest invalid: claim campaign ID is not registered",
+                    result.errors,
+                )
 
     def test_joined_unregistered_stage_label_is_blocked(self) -> None:
         claim = copy.deepcopy(self.claim)

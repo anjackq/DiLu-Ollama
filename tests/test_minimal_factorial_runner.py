@@ -31,7 +31,7 @@ class MinimalFactorialPublicApiTests(unittest.TestCase):
         claim_signature = inspect.signature(runner.run_claim_stage)
         self.assertEqual(
             tuple(claim_signature.parameters),
-            ("manifest_path", "stage", "resume"),
+            ("manifest_path", "stage", "resume", "max_episodes"),
         )
         self.assertEqual(
             get_type_hints(runner.run_claim_stage)["stage"],
@@ -137,6 +137,7 @@ class MinimalFactorialSchedulingTests(unittest.TestCase):
                 Path("manifest.yaml"),
                 stage="stage2",
                 resume=True,
+                max_episodes=20,
             )
 
         self.assertIs(result, mock.sentinel.summary)
@@ -145,6 +146,7 @@ class MinimalFactorialSchedulingTests(unittest.TestCase):
         self.assertEqual(call.kwargs["denominator_rows"], stage1 + additional)
         self.assertTrue(call.kwargs["resume"])
         self.assertEqual(call.kwargs["stage"], "stage2")
+        self.assertEqual(call.kwargs["max_episodes"], 20)
 
     def test_completed_schedule_has_zero_pending_on_second_resume(self) -> None:
         rows = _rows("smoke", 16)

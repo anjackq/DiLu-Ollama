@@ -38,6 +38,7 @@ class RunSummary:
     errors: tuple[str, ...] = ()
     campaign_provenance_sha256: str | None = None
     summary_root_sha256: str | None = None
+    selected_this_invocation: int = 0
 
 
 def build_model_clients(
@@ -69,7 +70,9 @@ def execute_campaign(
     summary_appender: Callable[..., None],
     failure_recorder: Callable[..., None],
     completion_checker: Callable[..., tuple[str, ...]],
+    max_episodes: int | None = None,
 ) -> RunSummary:
+    _validate_max_episodes(max_episodes)
     output_root = prepared.output_root
     ledger_path = output_root / "campaign_attempts.jsonl"
     trace_path = output_root / "traces" / "decision_traces.jsonl"
@@ -107,12 +110,13 @@ def execute_campaign(
     statuses = ledger.attempt_statuses()
     pending = pending_selector(scheduled_rows, statuses, resume=artifact_resume)
     pending = _ledger_approved_rows(pending, statuses, ledger)
+    selected = pending if max_episodes is None else pending[:max_episodes]
     clients: Mapping[str, Any] = {}
-    if pending:
-        retry_policy = pending[0].condition.retry_policy
+    if selected:
+        retry_policy = selected[0].condition.retry_policy
         clients = client_builder(prepared.capabilities, retry_policy)
 
-    for row in pending:
+    for row in selected:
         try:
             client = clients[row.model_slot]
             capability = prepared.capabilities[row.model_slot]
@@ -172,20 +176,30 @@ def execute_campaign(
         statuses.get(row.episode_attempt_id) is None for row in scheduled_rows
     )
     return RunSummary(
-        stage,
-        output_root,
-        len(scheduled_rows),
-        counts[AttemptStatus.COMPLETED],
-        counts[AttemptStatus.BLOCKED],
-        counts[AttemptStatus.FAILED],
-        counts[AttemptStatus.WRITE_AMBIGUOUS] + interrupted,
-        resumable,
-        pending_count,
-        not errors,
-        errors,
-        campaign_provenance,
-        _summary_root_sha256(summaries),
+        stage=stage,
+        output_root=output_root,
+        scheduled=len(scheduled_rows),
+        completed=counts[AttemptStatus.COMPLETED],
+        blocked=counts[AttemptStatus.BLOCKED],
+        failed=counts[AttemptStatus.FAILED],
+        ambiguous=counts[AttemptStatus.WRITE_AMBIGUOUS] + interrupted,
+        resumable=resumable,
+        pending=pending_count,
+        promotion_allowed=not errors,
+        errors=errors,
+        campaign_provenance_sha256=campaign_provenance,
+        summary_root_sha256=_summary_root_sha256(summaries),
+        selected_this_invocation=len(selected),
     )
+
+
+def _validate_max_episodes(max_episodes: int | None) -> None:
+    if max_episodes is None:
+        return
+    if isinstance(max_episodes, bool) or not isinstance(max_episodes, int):
+        raise ValueError("max_episodes must be a positive integer or None.")
+    if max_episodes < 1:
+        raise ValueError("max_episodes must be a positive integer or None.")
 
 
 def _campaign_id(rows: Sequence[Any]) -> str:

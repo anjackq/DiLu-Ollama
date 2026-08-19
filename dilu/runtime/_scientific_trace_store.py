@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Iterator, Mapping
+from typing import Any
 
 from ._append_intent_io import (
     AppendCommitAmbiguousError,
     AppendIntentWriteError,
-    append_intent_path_for,
     durable_append_with_intent,
 )
-from ._campaign_attempt_io import exclusive_append_lock, lock_path_for, poison_path_for
-from ._scientific_trace_execution import append_trace_before_step
-from ._scientific_trace_records import DecisionTraceRecord
+from ._campaign_attempt_io import exclusive_append_lock
 from ._scientific_trace_artifacts import (
     ScientificSimulatorAbort,
     ScientificTraceCommitAmbiguousError,
@@ -23,6 +21,8 @@ from ._scientific_trace_artifacts import (
     ScientificTraceWriteError,
     TraceReference,
 )
+from ._scientific_trace_execution import append_trace_before_step
+from ._scientific_trace_records import DecisionTraceRecord
 from ._scientific_trace_serialization import (
     TRACE_SCHEMA_VERSION,
     canonical_json_bytes,
@@ -30,6 +30,13 @@ from ._scientific_trace_serialization import (
     serialize_trace_record,
     trace_schema_sha256,
     validate_trace_payload,
+)
+from ._scientific_trace_state import (
+    ScientificTraceSnapshot,
+    initialize_scientific_trace_state,
+)
+from ._scientific_trace_state import (
+    read_validated_trace_snapshot as _read_validated_trace_snapshot,
 )
 
 
@@ -41,22 +48,7 @@ class ScientificTraceWriter:
         artifact_root: Path,
         resume: bool = False,
     ) -> None:
-        self.path = Path(path).resolve()
-        self.artifact_root = Path(artifact_root).resolve()
-        self.relative_path = self._resolve_relative_path()
-        self._lock_path = lock_path_for(self.path)
-        self._poison_path = poison_path_for(self.path)
-        self._pending_path = append_intent_path_for(self.path)
-        self._keys: set[tuple[object, ...]] = set()
-        self._last_by_episode: dict[tuple[str, str], tuple[int, int]] = {}
-        self._signature_by_episode: dict[tuple[str, str], tuple[object, ...]] = {}
-        self._terminal_episodes: set[tuple[str, str]] = set()
-        self._request_owners: dict[str, tuple[str, str]] = {}
-        self._references_by_episode: dict[tuple[str, str], list[TraceReference]] = {}
-        self._reference_index: set[TraceReference] = set()
-        self._line_count = 0
-        self._byte_offset = 0
-        self._poisoned = False
+        initialize_scientific_trace_state(self, path, artifact_root)
         if self._poison_path.exists() or self._pending_path.exists():
             raise ScientificTraceCommitAmbiguousError(
                 "Scientific trace is poisoned by an ambiguous durable append."
@@ -211,17 +203,6 @@ class ScientificTraceWriter:
             raise ScientificTraceWriteError(
                 "Another process owns the scientific trace append lock."
             ) from exc
-
-    def _resolve_relative_path(self) -> str:
-        try:
-            relative = self.path.relative_to(self.artifact_root)
-        except ValueError as exc:
-            raise ValueError(
-                "Scientific trace path must be inside artifact_root."
-            ) from exc
-        if not relative.parts:
-            raise ValueError("Scientific trace path must name a file.")
-        return relative.as_posix()
 
     def _storage_poisoned(self) -> bool:
         return (
@@ -378,12 +359,26 @@ class ScientificTraceWriter:
         )
 
 
+def read_validated_trace_snapshot(
+    path: Path,
+    *,
+    artifact_root: Path,
+) -> ScientificTraceSnapshot:
+    return _read_validated_trace_snapshot(
+        ScientificTraceWriter,
+        path,
+        artifact_root=artifact_root,
+    )
+
+
 __all__ = [
     "ScientificSimulatorAbort",
     "ScientificTraceCommitAmbiguousError",
+    "ScientificTraceSnapshot",
     "ScientificTraceValidationError",
     "ScientificTraceWriteError",
     "ScientificTraceWriter",
     "TraceReference",
     "append_trace_before_step",
+    "read_validated_trace_snapshot",
 ]

@@ -11,6 +11,10 @@ from dilu.runtime import _minimal_factorial_runner_status as runner_status
 from dilu.runtime import _minimal_factorial_runner_execution as execution
 from dilu.runtime import minimal_factorial_runner as runner
 from dilu.runtime._append_intent_io import append_intent_path_for
+from dilu.runtime._campaign_attempt_state import (
+    AttemptLedgerSnapshot,
+    read_validated_attempt_snapshot,
+)
 from dilu.runtime.campaign_attempts import (
     ScientificAttemptLedger,
     ScientificAttemptWriteError,
@@ -80,6 +84,132 @@ class MinimalFactorialResumeApprovalTests(unittest.TestCase):
 
 
 class MinimalFactorialStatusEvidenceTests(unittest.TestCase):
+    def test_status_rejects_attempt_ledger_ids_outside_frozen_schedule(
+        self,
+    ) -> None:
+        cases = (
+            ("started", None),
+            ("failed", runner.AttemptStatus.FAILED),
+            ("blocked", runner.AttemptStatus.BLOCKED),
+        )
+        for name, terminal_status in cases:
+            with self.subTest(status=name), tempfile.TemporaryDirectory() as tmp:
+                prepared, row = self._prepared(Path(tmp))
+                ledger = ScientificAttemptLedger(
+                    prepared.output_root / "campaign_attempts.jsonl",
+                    campaign_id=row.campaign_id,
+                )
+                ledger.append_started("unexpected-episode")
+                if terminal_status is not None:
+                    ledger.append_terminal(
+                        "unexpected-episode",
+                        status=terminal_status,
+                        decision_count=0,
+                        failure_class="runtime_protocol_error",
+                        failure_message="unexpected scheduled identity",
+                        trace_absence_reason="aborted_before_first_decision",
+                    )
+
+                report = runner_status.campaign_status((prepared,))
+
+            validation = report["artifact_validation"]
+            self.assertFalse(validation["valid"])
+            self.assertFalse(validation["claim_promotion_allowed"])
+            self.assertTrue(
+                any(
+                    "unexpected attempt ledger IDs" in error
+                    for error in validation["errors"]
+                ),
+                validation["errors"],
+            )
+
+    def test_attempt_snapshot_includes_terminal_records_with_default_compatibility(
+        self,
+    ) -> None:
+        self.assertEqual(
+            AttemptLedgerSnapshot({}, frozenset()).terminal_records,
+            (),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "campaign_attempts.jsonl"
+            ledger = ScientificAttemptLedger(
+                ledger_path,
+                campaign_id="campaign-001",
+            )
+            ledger.append_started("episode-001")
+            ledger.append_terminal(
+                "episode-001",
+                status=runner.AttemptStatus.FAILED,
+                decision_count=0,
+                failure_class="infrastructure_exception",
+                failure_message="offline failure",
+                trace_absence_reason="aborted_before_first_decision",
+            )
+
+            snapshot = read_validated_attempt_snapshot(
+                ledger_path,
+                campaign_id="campaign-001",
+            )
+
+        self.assertEqual(len(snapshot.terminal_records), 1)
+        self.assertEqual(snapshot.terminal_records[0].episode_attempt_id, "episode-001")
+
+    def test_status_rejects_orphan_trace_episode_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared, row = self._prepared(Path(tmp))
+            reference = ({"line_number": 1},)
+            cases = (
+                (
+                    {
+                        row.episode_attempt_id: runner.AttemptStatus.STARTED,
+                        "orphan": runner.AttemptStatus.STARTED,
+                    },
+                    (row.campaign_id, "orphan"),
+                ),
+                ({}, (row.campaign_id, row.episode_attempt_id)),
+            )
+            for statuses, trace_key in cases:
+                with (
+                    self.subTest(trace_key=trace_key),
+                    mock.patch.object(
+                        runner_status,
+                        "_read_attempt_snapshot",
+                        return_value=AttemptLedgerSnapshot(statuses, frozenset()),
+                    ),
+                    mock.patch.object(
+                        runner_status,
+                        "_read_validated_trace_references",
+                        return_value={trace_key: reference},
+                    ),
+                ):
+                    report = runner_status.campaign_status((prepared,))
+
+                validation = report["artifact_validation"]
+                self.assertFalse(validation["valid"])
+                self.assertFalse(validation["claim_promotion_allowed"])
+                self.assertTrue(
+                    any("orphan trace episode" in error for error in validation["errors"]),
+                    validation["errors"],
+                )
+
+    def test_status_reports_attempt_ledger_oserror(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared, _ = self._prepared(Path(tmp))
+            with mock.patch.object(
+                runner_status,
+                "_read_attempt_snapshot",
+                side_effect=OSError("ledger unavailable"),
+            ):
+                report = runner_status.campaign_status((prepared,))
+
+        validation = report["artifact_validation"]
+        self.assertFalse(validation["valid"])
+        self.assertFalse(validation["claim_promotion_allowed"])
+        self.assertTrue(
+            any("ledger unavailable" in error for error in validation["errors"]),
+            validation["errors"],
+        )
+
     def test_status_reader_rejects_tampered_ledger_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = Path(tmp) / "campaign_attempts.jsonl"
@@ -179,6 +309,29 @@ class MinimalFactorialStatusEvidenceTests(unittest.TestCase):
             validate.assert_called_once_with(Path("manifest.yaml"))
             open_frozen.assert_called_once_with(validated, "smoke")
             status_impl.assert_called_once_with((smoke,))
+
+    @staticmethod
+    def _prepared(root: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
+        row = SimpleNamespace(
+            stage="stage1",
+            campaign_id="campaign-claim",
+            episode_attempt_id="episode-001",
+            model_slot="qwen",
+            condition_id="c000",
+            to_payload=lambda: {
+                "stage": "stage1",
+                "campaign_id": "campaign-claim",
+                "episode_attempt_id": "episode-001",
+                "model_slot": "qwen",
+                "condition_id": "c000",
+            },
+        )
+        prepared = SimpleNamespace(
+            schedule=(row,),
+            output_root=root,
+            snapshot=SimpleNamespace(sha256="a" * 64),
+        )
+        return prepared, row
 
 
 if __name__ == "__main__":

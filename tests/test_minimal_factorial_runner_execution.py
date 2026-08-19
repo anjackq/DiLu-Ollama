@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from dilu.runtime import minimal_factorial_runner as runner
 from dilu.runtime import _minimal_factorial_runner_execution as execution
+from dilu.runtime import minimal_factorial_runner as runner
 
 
 class _FakeLedger:
@@ -301,6 +301,99 @@ class MinimalFactorialExecutionTests(unittest.TestCase):
 
         self.assertEqual(approved, (unseen,))
         ledger.can_resume.assert_called_once_with(started.episode_attempt_id)
+
+    def test_max_episodes_rejects_bool_zero_and_negative_values(self) -> None:
+        for invalid in (True, False, 0, -1):
+            with (
+                self.subTest(max_episodes=invalid),
+                self.assertRaisesRegex(ValueError, "positive integer"),
+            ):
+                execution._validate_max_episodes(invalid)
+        for valid in (None, 1):
+            with self.subTest(max_episodes=valid):
+                execution._validate_max_episodes(valid)
+
+    def test_limit_is_applied_after_exact_once_ledger_approval(self) -> None:
+        rows = tuple(_row(index) for index in range(5))
+        completed, request_owned, resumable, unseen_a, unseen_b = rows
+        initial_statuses = {
+            completed.episode_attempt_id: runner.AttemptStatus.COMPLETED,
+            request_owned.episode_attempt_id: runner.AttemptStatus.STARTED,
+            resumable.episode_attempt_id: runner.AttemptStatus.STARTED,
+        }
+        completion_checker = mock.Mock(return_value=())
+        executed_ids: list[str] = []
+
+        def execute_episode(
+            _prepared: object,
+            row: SimpleNamespace,
+            *,
+            ledger: _FakeLedger,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            executed_ids.append(row.episode_attempt_id)
+            ledger.statuses[row.episode_attempt_id] = runner.AttemptStatus.COMPLETED
+            return {"task_completed": True}
+
+        for max_episodes, expected in (
+            (1, (resumable,)),
+            (2, (resumable, unseen_a)),
+            (None, (resumable, unseen_a, unseen_b)),
+        ):
+            executed_ids.clear()
+
+            class BatchLedger(_FakeLedger):
+                def __init__(
+                    self, path: Path, *, campaign_id: str, resume: bool
+                ) -> None:
+                    super().__init__(path, campaign_id=campaign_id, resume=resume)
+                    self.statuses.update(initial_statuses)
+
+                def can_resume(self, attempt_id: str) -> bool:
+                    return attempt_id != request_owned.episode_attempt_id
+
+            with (
+                self.subTest(max_episodes=max_episodes),
+                tempfile.TemporaryDirectory() as tmp,
+                mock.patch.object(execution, "reconcile_published_summaries"),
+            ):
+                prepared = self._prepared(Path(tmp), rows)
+                result = execution.execute_campaign(
+                    prepared,
+                    scheduled_rows=rows,
+                    denominator_rows=rows,
+                    resume=True,
+                    stage="stage2",
+                    max_episodes=max_episodes,
+                    ledger_type=BatchLedger,
+                    trace_type=_FakeTraceWriter,
+                    client_builder=lambda *_args: {
+                        row.model_slot: mock.sentinel.client for row in rows
+                    },
+                    episode_runner=execute_episode,
+                    pending_selector=runner._select_pending_rows,
+                    summary_appender=mock.Mock(),
+                    failure_recorder=mock.Mock(),
+                    completion_checker=completion_checker,
+                )
+
+            self.assertEqual(
+                executed_ids,
+                [row.episode_attempt_id for row in expected],
+            )
+            self.assertNotIn(request_owned.episode_attempt_id, executed_ids)
+            self.assertEqual(result.selected_this_invocation, len(expected))
+            self.assertEqual(result.scheduled, len(rows))
+            self.assertEqual(completion_checker.call_args.args[0], rows)
+
+    @staticmethod
+    def _prepared(output_root: Path, rows: tuple[SimpleNamespace, ...]) -> object:
+        return SimpleNamespace(
+            output_root=output_root,
+            schedule=rows,
+            capabilities={row.model_slot: row for row in rows},
+            snapshot=SimpleNamespace(sha256="a" * 64),
+        )
 
 
 if __name__ == "__main__":

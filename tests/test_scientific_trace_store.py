@@ -9,6 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from dilu.runtime import _scientific_trace_state as trace_state
+from dilu.runtime import _scientific_trace_store as trace_store
+from dilu.runtime._campaign_attempt_io import lock_path_for
 from dilu.runtime.scientific_trace import (
     DecisionTraceRecord,
     ScientificTraceWriteError,
@@ -30,6 +33,69 @@ class _TamperedRecord(DecisionTraceRecord):
 
 
 class ScientificTraceStoreTests(unittest.TestCase):
+    def test_read_validated_snapshot_rejects_marker_after_final_file_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "decision_traces.jsonl"
+            ScientificTraceWriter(path, artifact_root=root).append(_record())
+            original_file_state = trace_state._file_state
+            file_state_calls = 0
+
+            def create_marker_after_final_state(target: Path) -> object:
+                nonlocal file_state_calls
+                file_state_calls += 1
+                state = original_file_state(target)
+                if file_state_calls == 3:
+                    lock_path_for(path).write_text("late owner", encoding="utf-8")
+                return state
+
+            with (
+                mock.patch.object(
+                    trace_state,
+                    "_file_state",
+                    side_effect=create_marker_after_final_state,
+                ),
+                self.assertRaisesRegex(
+                    ScientificTraceWriteError,
+                    "busy or has ambiguous",
+                ),
+            ):
+                trace_store.read_validated_trace_snapshot(
+                    path,
+                    artifact_root=root,
+                )
+
+    def test_read_validated_snapshot_is_read_only_and_preserves_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "decision_traces.jsonl"
+            record = _record()
+            reference = ScientificTraceWriter(path, artifact_root=root).append(record)
+            before = (
+                tuple(item.relative_to(root) for item in root.rglob("*")),
+                path.read_bytes(),
+                path.stat().st_mtime_ns,
+            )
+
+            snapshot = trace_store.read_validated_trace_snapshot(
+                path,
+                artifact_root=root,
+            )
+
+            after = (
+                tuple(item.relative_to(root) for item in root.rglob("*")),
+                path.read_bytes(),
+                path.stat().st_mtime_ns,
+            )
+        episode = (
+            record.context.key.campaign_id,
+            record.context.key.episode_attempt_id,
+        )
+        self.assertEqual(snapshot.references_by_attempt[episode], (reference,))
+        self.assertEqual(before, after)
+
     def test_writer_rejects_polymorphic_record_serialization(self) -> None:
         record = _record()
         tampered = _TamperedRecord(

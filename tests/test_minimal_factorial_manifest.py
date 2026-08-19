@@ -7,18 +7,19 @@ from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import patch
 
+import yaml
+
 from dilu.runtime.ollama_transport import OllamaModelIdentity
 
 ROOT = Path(__file__).resolve().parents[1]
+MANIFEST = ROOT / "configs" / "iclr2027" / "minimal_factorial.yaml"
 
 
 class MinimalFactorialManifestTests(unittest.TestCase):
     def setUp(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import load_experiment_manifest
 
-        self.manifest = load_experiment_manifest(
-            ROOT / "configs/iclr2027/minimal_factorial.yaml"
-        )
+        self.manifest = load_experiment_manifest(MANIFEST)
         self.cases = json.loads((ROOT / self.manifest.case_path).read_text())
         self.digests = {
             "qwen_06b": "sha256:" + "a" * 64,
@@ -97,8 +98,8 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             },
             {
                 "schema_version": "iclr2027_minimal_factorial_manifest_v1",
-                "campaign_id": "iclr2027-minimal-factorial-v3",
-                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v3",
+                "campaign_id": "iclr2027-minimal-factorial-v4",
+                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v4",
                 "case_path": ("benchmarks/dilu_highway_reactive_stress_v2/cases.json"),
                 "models": (
                     ("qwen_06b", "qwen3:0.6b"),
@@ -118,7 +119,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             {"draws": 20000, "version": "bootstrap-v1"},
         )
         outputs = {
-            "root": "results/iclr2027_minimal_factorial_v3",
+            "root": "results/iclr2027_minimal_factorial_v4",
             "s1": "s1",
             "smoke": "smoke",
             "llm_campaign": "llm_campaign",
@@ -149,6 +150,35 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             saved["manifest"]["bootstrap"], self.manifest.bootstrap.to_dict()
         )
         self.assertEqual(saved["manifest"]["outputs"], outputs)
+
+    def test_v4_changes_only_the_three_registered_identity_fields(self) -> None:
+        from dilu.runtime._minimal_factorial_schedule_support import canonical_sha256
+
+        raw_manifest = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (
+                raw_manifest["campaign_id"],
+                raw_manifest["smoke_campaign_id"],
+                raw_manifest["outputs"]["root"],
+            ),
+            (
+                "iclr2027-minimal-factorial-v4",
+                "iclr2027-minimal-factorial-smoke-v4",
+                "results/iclr2027_minimal_factorial_v4",
+            ),
+        )
+        v3_comparison = json.loads(json.dumps(raw_manifest))
+        v3_comparison["campaign_id"] = "iclr2027-minimal-factorial-v3"
+        v3_comparison["smoke_campaign_id"] = (
+            "iclr2027-minimal-factorial-smoke-v3"
+        )
+        v3_comparison["outputs"]["root"] = (
+            "results/iclr2027_minimal_factorial_v3"
+        )
+        self.assertEqual(
+            canonical_sha256(v3_comparison),
+            "5f4d8edbb369e9967b45987449962515b1961c92472fe79d0c164de7ad8e2e89",
+        )
 
     def test_git_drift_and_atomic_write_once(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import (

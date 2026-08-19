@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from dilu.runtime.ollama_transport import OllamaModelIdentity
@@ -51,6 +53,18 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         )
         payload = json.dumps(selection, separators=(",", ":")).encode()
         return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _request_id(row: Any, decision_index: int = 0) -> str:
+        payload = "|".join(
+            (
+                row.campaign_id,
+                row.episode_attempt_id,
+                row.case_id,
+                str(decision_index),
+            )
+        ).encode("utf-8")
+        return "req-" + hashlib.sha256(payload).hexdigest()
 
     def test_selection_and_condition_factorial_are_deterministic(self) -> None:
         from dilu.runtime.minimal_factorial_schedule import (
@@ -147,64 +161,129 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             ).hexdigest(),
         )
 
-    def test_v3_preserves_v2_case_seed_schedule_but_versions_evidence_ids(
+    def test_v4_preserves_v3_scientific_schedule_but_versions_evidence_ids(
         self,
     ) -> None:
         from dilu.runtime.minimal_factorial_schedule import (
             build_smoke_schedule,
             build_union_schedule,
         )
+        from dilu.runtime._minimal_factorial_schedule_support import OutputSpec
+        from tests.runtime_factorization_support import runtime
 
         snapshot = self._snapshot()
-        v2_manifest = replace(
+        v3_outputs = self.manifest.outputs.to_dict()
+        v3_outputs["root"] = "results/iclr2027_minimal_factorial_v3"
+        v3_manifest = replace(
             self.manifest,
-            campaign_id="iclr2027-minimal-factorial-v2",
-            smoke_campaign_id="iclr2027-minimal-factorial-smoke-v2",
-        )
-        v2_smoke = build_smoke_schedule(
-            v2_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+            campaign_id="iclr2027-minimal-factorial-v3",
+            smoke_campaign_id="iclr2027-minimal-factorial-smoke-v3",
+            outputs=OutputSpec(v3_outputs),
         )
         v3_smoke = build_smoke_schedule(
+            v3_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+        v4_smoke = build_smoke_schedule(
             self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
-        v2_union = build_union_schedule(
-            v2_manifest, self.cases, self.digests, runtime_snapshot=snapshot
-        )
         v3_union = build_union_schedule(
+            v3_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+        v4_union = build_union_schedule(
             self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
 
         self.assertEqual(
-            [(row.case_id, row.simulator_seed) for row in v2_smoke],
-            [(row.case_id, row.simulator_seed) for row in v3_smoke],
+            [
+                (
+                    row.stage,
+                    row.case_id,
+                    row.simulator_seed,
+                    row.condition.to_canonical_dict(),
+                )
+                for row in v3_smoke
+            ],
+            [
+                (
+                    row.stage,
+                    row.case_id,
+                    row.simulator_seed,
+                    row.condition.to_canonical_dict(),
+                )
+                for row in v4_smoke
+            ],
         )
         self.assertEqual(
-            [(row.stage, row.case_id, row.simulator_seed) for row in v2_union],
-            [(row.stage, row.case_id, row.simulator_seed) for row in v3_union],
+            [
+                (
+                    row.stage,
+                    row.case_id,
+                    row.simulator_seed,
+                    row.condition.to_canonical_dict(),
+                )
+                for row in v3_union
+            ],
+            [
+                (
+                    row.stage,
+                    row.case_id,
+                    row.simulator_seed,
+                    row.condition.to_canonical_dict(),
+                )
+                for row in v4_union
+            ],
         )
+        self.assertEqual(self.manifest.transport.generation_seed_master, 20270728)
         self.assertEqual(
-            self._selection_sha(v3_smoke),
+            self._selection_sha(v4_smoke),
             "ec5f202c2f05cee83d5df0527ab818d724aee4ed773491dd91fc28efaf018883",
         )
         self.assertEqual(
-            self._selection_sha(v3_union),
+            self._selection_sha(v4_union),
             "237cbe106386cde5acfbe1531353a3e0b7afade59900a2b4827761ddfb6673b1",
         )
-        self.assertTrue(
-            {row.pair_id for row in v2_union}.isdisjoint(
-                {row.pair_id for row in v3_union}
+        for v3_rows, v4_rows in ((v3_smoke, v4_smoke), (v3_union, v4_union)):
+            self.assertTrue(
+                {row.pair_id for row in v3_rows}.isdisjoint(
+                    {row.pair_id for row in v4_rows}
+                )
             )
-        )
-        self.assertTrue(
-            {row.episode_attempt_id for row in v2_union}.isdisjoint(
-                {row.episode_attempt_id for row in v3_union}
+            self.assertTrue(
+                {row.episode_attempt_id for row in v3_rows}.isdisjoint(
+                    {row.episode_attempt_id for row in v4_rows}
+                )
             )
-        )
-        self.assertNotEqual(v2_smoke[0].pair_id, v3_smoke[0].pair_id)
-        self.assertNotEqual(
-            v2_smoke[0].episode_attempt_id, v3_smoke[0].episode_attempt_id
-        )
-        self.assertEqual(v3_smoke[0].case_id, "mandatory_overtake_slow_lead_002")
+            self.assertTrue(
+                {self._request_id(row) for row in v3_rows}.isdisjoint(
+                    {self._request_id(row) for row in v4_rows}
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request_ids: dict[str, str] = {}
+            for label, row in (
+                ("v3-smoke", v3_smoke[0]),
+                ("v3-union", v3_union[0]),
+                ("v4-smoke", v4_smoke[0]),
+                ("v4-union", v4_union[0]),
+            ):
+                scientific_runtime = runtime(
+                    root / label,
+                    config=row.condition,
+                    episode_identity=row.identity(),
+                )
+                scientific_runtime.begin_attempt()
+                request_ids[label] = (
+                    scientific_runtime.generation_context(0).request_id
+                )
+                self.assertEqual(request_ids[label], self._request_id(row))
+            self.assertTrue(
+                {request_ids["v3-smoke"], request_ids["v3-union"]}.isdisjoint(
+                    {request_ids["v4-smoke"], request_ids["v4-union"]}
+                )
+            )
+        self.assertEqual(v4_smoke[0].case_id, "mandatory_overtake_slow_lead_002")
 
 
 if __name__ == "__main__":

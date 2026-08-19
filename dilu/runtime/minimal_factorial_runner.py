@@ -75,6 +75,7 @@ def run_claim_stage(
     *,
     stage: Literal["stage1", "stage2"],
     resume: bool,
+    max_episodes: int | None = None,
 ) -> RunSummary:
     if stage not in {"stage1", "stage2"}:
         raise ValueError("stage must be 'stage1' or 'stage2'.")
@@ -88,6 +89,7 @@ def run_claim_stage(
         denominator_rows=denominator,
         resume=resume,
         stage=stage,
+        max_episodes=max_episodes,
     )
 
 
@@ -142,6 +144,7 @@ def _execute_campaign(
     denominator_rows: Sequence[Any],
     resume: bool,
     stage: str,
+    max_episodes: int | None = None,
 ) -> RunSummary:
     _require_unique_scheduled_ids(scheduled_rows)
     _require_unique_scheduled_ids(denominator_rows)
@@ -159,6 +162,7 @@ def _execute_campaign(
         summary_appender=_append_episode_summary,
         failure_recorder=_record_infrastructure_failure,
         completion_checker=_completion_errors,
+        max_episodes=max_episodes,
     )
 
 

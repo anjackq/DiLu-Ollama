@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from ._append_intent_io import append_intent_path_for
 from ._campaign_attempt_io import lock_path_for, poison_path_for
 from .campaign_attempts import (
     AttemptStatus,
+    ScientificAttemptRecord,
     ScientificAttemptWriteError,
     _require_text,
 )
@@ -19,6 +21,7 @@ from .campaign_attempts import (
 class AttemptLedgerSnapshot:
     statuses: Mapping[str, AttemptStatus]
     resumable_attempt_ids: frozenset[str]
+    terminal_records: tuple[ScientificAttemptRecord, ...] = ()
 
 
 def initialize_attempt_ledger_state(
@@ -78,7 +81,11 @@ def read_validated_attempt_snapshot(
         for attempt_id in statuses
         if attempt_is_resumable(ledger, attempt_id)
     )
-    return AttemptLedgerSnapshot(statuses, resumable)
+    return AttemptLedgerSnapshot(
+        statuses,
+        resumable,
+        tuple(ledger._terminal_records),
+    )
 
 
 def _require_quiescent(ledger: Any) -> None:

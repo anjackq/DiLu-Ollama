@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import faulthandler
 import json
 import sys
 from pathlib import Path
@@ -23,6 +24,16 @@ from dilu.runtime.minimal_factorial_runner import (  # noqa: E402
 DEFAULT_MANIFEST = Path("configs/iclr2027/minimal_factorial.yaml")
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
@@ -33,12 +44,15 @@ def build_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run")
     run.add_argument("--stage", choices=("stage1", "stage2"), required=True)
     run.add_argument("--resume", action="store_true")
+    run.add_argument("--max-episodes", type=_positive_int)
     commands.add_parser("baselines")
     commands.add_parser("status")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if not faulthandler.is_enabled():
+        faulthandler.enable()
     args = build_parser().parse_args(argv)
     manifest = args.manifest
     if args.command == "probe-lock":
@@ -50,6 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest,
             stage=args.stage,
             resume=args.resume,
+            max_episodes=args.max_episodes,
         )
     elif args.command == "baselines":
         result = _run_baselines(manifest)

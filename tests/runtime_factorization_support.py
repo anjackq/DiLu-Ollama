@@ -66,26 +66,27 @@ def runtime(
     root: Path,
     *,
     attempt: int = 0,
+    episode_identity: ScientificEpisodeIdentity | None = None,
     config: HarnessConfig | None = None,
     ledger: ScientificAttemptLedger | None = None,
     transport_client: OllamaScientificClient | None = None,
     writer: ScientificTraceWriter | None = None,
 ) -> ScientificEpisodeRuntime:
     config = config or _scientific_config()
-    episode_identity = identity(attempt)
+    resolved_identity = episode_identity or identity(attempt)
     capabilities = make_capabilities()
     resolved_client = transport_client or client(
         schema=config.condition.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
     )
     captured_lock = RuntimeLockBinding.from_runtime(
         harness_config=config,
-        identity=episode_identity,
+        identity=resolved_identity,
         capabilities=capabilities,
     )
     external_lock = verified_runtime_lock(root, captured_lock.to_dict())
     return build_scientific_episode_runtime(
         harness_config=config,
-        identity=episode_identity,
+        identity=resolved_identity,
         runtime_lock=external_lock,
         transport_client=resolved_client,
         trace_writer=writer
@@ -95,7 +96,7 @@ def runtime(
         attempt_ledger=ledger
         or ScientificAttemptLedger(
             root / "campaign_attempts.jsonl",
-            campaign_id=episode_identity.campaign_id,
+            campaign_id=resolved_identity.campaign_id,
             resume=attempt > 0,
         ),
     )
