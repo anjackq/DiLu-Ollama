@@ -32,10 +32,11 @@ BENCHMARK_OVERALL_WEIGHTS = {
     "speed_variance": 0.3,
     "time_efficiency": 0.2,
 }
-BENCHMARK_SCORING_POLICY_VERSION = "v2_behavior_aware"
+BENCHMARK_SCORING_POLICY_VERSION = "v2_behavior_aware_completion_v2"
 BENCHMARK_RECOMMENDED_HEADLINE_METRIC = "driving_score_v2"
 BENCHMARK_BOOTSTRAP_ITERATIONS = 2000
 BENCHMARK_BOOTSTRAP_SEED = 20260326
+BENCHMARK_SPEED_TOLERANCE_MPS = 1e-6
 BENCHMARK_V2_ASSERTIVE_CATEGORIES = (
     "follow_gap_decrease",
     "lane_change_left",
@@ -539,14 +540,29 @@ def _optional_float(criteria: Dict[str, Any], key: str) -> Optional[float]:
     return float(value)
 
 
+def _minimum_speed_satisfied(speed: float, minimum: float) -> bool:
+    return float(speed) + BENCHMARK_SPEED_TOLERANCE_MPS >= float(minimum)
+
+
+def _maximum_speed_satisfied(speed: float, maximum: float) -> bool:
+    return float(speed) - BENCHMARK_SPEED_TOLERANCE_MPS <= float(maximum)
+
+
 def _speed_within_optional_band(speed: float, criteria: Dict[str, Any]) -> bool:
     min_speed = _optional_float(criteria, "min_speed_mps")
     max_speed = _optional_float(criteria, "max_speed_mps")
-    if min_speed is not None and float(speed) < min_speed:
+    if min_speed is not None and not _minimum_speed_satisfied(speed, min_speed):
         return False
-    if max_speed is not None and float(speed) > max_speed:
+    if max_speed is not None and not _maximum_speed_satisfied(speed, max_speed):
         return False
     return True
+
+
+def _last_scheduled_event_step(case: Dict[str, Any]) -> Optional[int]:
+    scenario_spec = case.get("scenario_spec") or {}
+    events = scenario_spec.get("events") or []
+    steps = [int(event["step"]) for event in events if event.get("step") is not None]
+    return max(steps) if steps else None
 
 
 def inspect_benchmark_initial_state(env) -> Dict[str, Any]:
@@ -598,7 +614,10 @@ def validate_benchmark_case(case: Dict[str, Any], initial_state: Dict[str, Any])
         max_speed = float(criteria.get("max_speed_mps", 999.0))
         if speed is None:
             reasons.append("missing_initial_speed")
-        elif min_speed <= float(speed) <= max_speed:
+        elif _minimum_speed_satisfied(
+            float(speed),
+            min_speed,
+        ) and _maximum_speed_satisfied(float(speed), max_speed):
             reasons.append("initial_speed_inside_target_band")
 
     elif criteria_type == "front_gap_band":
@@ -1277,6 +1296,7 @@ class BenchmarkEpisodeEvaluator:
         self.overtake_latency_steps = None
         self.recovery_clear_step = None
         self.recovery_time_steps = None
+        self.recovery_eligible_step = _last_scheduled_event_step(self.case)
         self.unsafe_lane_change_attempts = 0
         self.benchmark_lane_change_count = 0
         self.flap_accel_decel_count = 0
@@ -1291,6 +1311,7 @@ class BenchmarkEpisodeEvaluator:
         self.applied_benchmark_event_ids: List[str] = []
         self.applied_benchmark_event_types: List[str] = []
         self.first_benchmark_event_step = None
+        self.latest_benchmark_event_step = None
         self.first_event_step_by_type: Dict[str, int] = {}
         self.valid_opportunity_step = None
         self.first_maneuver_step = None
@@ -1421,7 +1442,10 @@ class BenchmarkEpisodeEvaluator:
         if criteria_type == "speed_band":
             min_speed = float(self.success_criteria.get("min_speed_mps", 0.0))
             max_speed = float(self.success_criteria.get("max_speed_mps", 999.0))
-            speed_in_band = min_speed <= current_speed <= max_speed
+            speed_in_band = _minimum_speed_satisfied(
+                current_speed,
+                min_speed,
+            ) and _maximum_speed_satisfied(current_speed, max_speed)
             status.update({"speed_in_band": bool(speed_in_band), "task_predicate_satisfied": bool(speed_in_band)})
             return status
 
@@ -1559,7 +1583,7 @@ class BenchmarkEpisodeEvaluator:
             pass_margin_m = float(self.success_criteria.get("pass_margin_m", 8.0))
             min_final_speed = float(self.success_criteria.get("min_final_speed_mps", 0.0) or 0.0)
             pass_margin_satisfied = target_x <= (ego_x - pass_margin_m)
-            speed_satisfied = current_speed >= min_final_speed
+            speed_satisfied = _minimum_speed_satisfied(current_speed, min_final_speed)
             shield_satisfied = self.unsafe_lane_change_attempts == 0
             task_satisfied = bool(used_required_lane and pass_margin_satisfied and speed_satisfied and shield_satisfied)
             status.update(
@@ -1578,7 +1602,7 @@ class BenchmarkEpisodeEvaluator:
             min_speed = float(self.success_criteria.get("min_speed_mps", 0.0) or 0.0)
             max_unsafe = int(self.success_criteria.get("max_unsafe_lane_change_attempts", 0) or 0)
             survival_satisfied = len(self.speed_history) >= min_steps
-            speed_satisfied = current_speed >= min_speed
+            speed_satisfied = _minimum_speed_satisfied(current_speed, min_speed)
             unsafe_satisfied = self.unsafe_lane_change_attempts <= max_unsafe
             task_satisfied = bool(survival_satisfied and speed_satisfied and unsafe_satisfied)
             status.update(
@@ -1593,12 +1617,18 @@ class BenchmarkEpisodeEvaluator:
 
         if criteria_type == "post_brake_recovery":
             min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 22.0) or 22.0)
-            recovery_satisfied = self.recovery_clear_step is not None and current_speed >= min_recovery_speed
+            recovery_satisfied = (
+                self.recovery_clear_step is not None
+                and _minimum_speed_satisfied(current_speed, min_recovery_speed)
+            )
             task_satisfied = bool(recovery_satisfied and self.unsafe_lane_change_attempts == 0)
             status.update(
                 {
                     "recovery_clear_observed": bool(self.recovery_clear_step is not None),
-                    "recovery_speed_satisfied": bool(current_speed >= min_recovery_speed),
+                    "recovery_speed_satisfied": _minimum_speed_satisfied(
+                        current_speed,
+                        min_recovery_speed,
+                    ),
                     "unsafe_attempt_satisfied": bool(self.unsafe_lane_change_attempts == 0),
                     "task_predicate_satisfied": task_satisfied,
                 }
@@ -1617,7 +1647,7 @@ class BenchmarkEpisodeEvaluator:
             headway_rate = float(self.headway_violation_steps) / steps
             task_satisfied = bool(
                 len(self.speed_history) >= min_steps
-                and avg_speed >= min_avg_speed
+                and _minimum_speed_satisfied(avg_speed, min_avg_speed)
                 and self.flap_accel_decel_count <= max_flaps
                 and ttc_rate <= max_ttc_rate
                 and headway_rate <= max_headway_rate
@@ -1625,7 +1655,7 @@ class BenchmarkEpisodeEvaluator:
             status.update(
                 {
                     "survival_satisfied": bool(len(self.speed_history) >= min_steps),
-                    "avg_speed_satisfied": bool(avg_speed >= min_avg_speed),
+                    "avg_speed_satisfied": _minimum_speed_satisfied(avg_speed, min_avg_speed),
                     "flap_satisfied": bool(self.flap_accel_decel_count <= max_flaps),
                     "ttc_rate_satisfied": bool(ttc_rate <= max_ttc_rate),
                     "headway_rate_satisfied": bool(headway_rate <= max_headway_rate),
@@ -1645,7 +1675,7 @@ class BenchmarkEpisodeEvaluator:
             target_lane_reached = lane_rank == (self.initial_lane_rank + target_offset)
             lane_satisfied = target_lane_reached if expect_move else lane_rank == self.initial_lane_rank
             unsafe_satisfied = self.unsafe_lane_change_attempts <= max_unsafe
-            speed_satisfied = current_speed >= min_speed
+            speed_satisfied = _minimum_speed_satisfied(current_speed, min_speed)
             task_satisfied = bool(lane_satisfied and unsafe_satisfied and speed_satisfied)
             status.update(
                 {
@@ -1674,14 +1704,13 @@ class BenchmarkEpisodeEvaluator:
                 self.success_criteria.get("requires_event", True)
             )
             survival_satisfied = len(self.speed_history) >= min_steps
+            unsafe_attempt_satisfied = self.unsafe_lane_change_attempts <= max_unsafe
             safety_satisfied = (
-                self.unsafe_lane_change_attempts <= max_unsafe
-                and ttc_rate <= max_ttc_rate
-                and headway_rate <= max_headway_rate
+                ttc_rate <= max_ttc_rate and headway_rate <= max_headway_rate
             )
             smooth_satisfied = self.flap_accel_decel_count <= max_flaps
             lane_change_satisfied = self.benchmark_lane_change_count <= max_lane_changes
-            avg_speed_satisfied = avg_speed >= min_avg_speed
+            avg_speed_satisfied = _minimum_speed_satisfied(avg_speed, min_avg_speed)
             speed_band_satisfied = _speed_within_optional_band(current_speed, self.success_criteria)
             task_satisfied = bool(
                 event_satisfied
@@ -1696,7 +1725,10 @@ class BenchmarkEpisodeEvaluator:
             if criteria_type == "cut_in_brake_response":
                 max_current_speed = _optional_float(self.success_criteria, "max_post_event_speed_mps")
                 if max_current_speed is not None and self.applied_benchmark_event_ids:
-                    speed_band_satisfied = current_speed <= max_current_speed
+                    speed_band_satisfied = _maximum_speed_satisfied(
+                        current_speed,
+                        max_current_speed,
+                    )
                     task_satisfied = bool(task_satisfied and speed_band_satisfied)
             elif criteria_type == "delayed_overtake_gap":
                 target_offset = _resolve_direction_offset(self.success_criteria)
@@ -1709,7 +1741,10 @@ class BenchmarkEpisodeEvaluator:
                     target_x is not None and ego_x is not None and target_x <= (ego_x - pass_margin_m)
                 )
                 min_final_speed = float(self.success_criteria.get("min_final_speed_mps", 20.0) or 20.0)
-                final_speed_satisfied = current_speed >= min_final_speed
+                final_speed_satisfied = _minimum_speed_satisfied(
+                    current_speed,
+                    min_final_speed,
+                )
                 task_satisfied = bool(
                     event_satisfied
                     and used_required_lane
@@ -1728,12 +1763,18 @@ class BenchmarkEpisodeEvaluator:
                 task_satisfied = bool(task_satisfied and self.benchmark_lane_change_count <= max_lane_changes)
             elif criteria_type == "multi_hazard_recovery":
                 min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 20.0) or 20.0)
-                recovery_satisfied = self.recovery_clear_step is not None and current_speed >= min_recovery_speed
+                recovery_satisfied = (
+                    self.recovery_clear_step is not None
+                    and _minimum_speed_satisfied(current_speed, min_recovery_speed)
+                )
                 task_satisfied = bool(task_satisfied and recovery_satisfied)
                 status.update(
                     {
                         "recovery_clear_observed": bool(self.recovery_clear_step is not None),
-                        "recovery_speed_satisfied": bool(current_speed >= min_recovery_speed),
+                        "recovery_speed_satisfied": _minimum_speed_satisfied(
+                            current_speed,
+                            min_recovery_speed,
+                        ),
                     }
                 )
             elif criteria_type == "right_lane_opening_discipline":
@@ -1753,7 +1794,10 @@ class BenchmarkEpisodeEvaluator:
                 min_progress_m = float(self.success_criteria.get("min_progress_m", 80.0) or 80.0)
                 required_lane_used = self._required_lane_used()
                 pass_margin_satisfied = self._initial_front_passed(ego, road, pass_margin_m)
-                final_speed_satisfied = current_speed >= min_final_speed
+                final_speed_satisfied = _minimum_speed_satisfied(
+                    current_speed,
+                    min_final_speed,
+                )
                 progress_satisfied = float(self.max_progress_m) >= min_progress_m
                 window_satisfied = (
                     bool(self.maneuver_in_window)
@@ -1782,7 +1826,10 @@ class BenchmarkEpisodeEvaluator:
                 min_final_speed = float(self.success_criteria.get("min_final_speed_mps", 18.0) or 18.0)
                 min_progress_m = float(self.success_criteria.get("min_progress_m", 65.0) or 65.0)
                 jam_exit_satisfied = self.jam_exit_step is not None
-                final_speed_satisfied = current_speed >= min_final_speed
+                final_speed_satisfied = _minimum_speed_satisfied(
+                    current_speed,
+                    min_final_speed,
+                )
                 progress_satisfied = float(self.max_progress_m) >= min_progress_m
                 task_satisfied = bool(
                     event_satisfied
@@ -1860,13 +1907,24 @@ class BenchmarkEpisodeEvaluator:
                 min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 20.0) or 20.0)
                 requires_brake_action = bool(self.success_criteria.get("requires_brake_action", True))
                 brake_satisfied = (not requires_brake_action) or self.first_brake_action_step is not None
-                recovery_satisfied = self.recovery_clear_step is not None and current_speed >= min_recovery_speed
-                task_satisfied = bool(event_satisfied and safety_satisfied and brake_satisfied and recovery_satisfied)
+                recovery_satisfied = (
+                    self.recovery_clear_step is not None
+                    and _minimum_speed_satisfied(current_speed, min_recovery_speed)
+                )
+                task_satisfied = bool(
+                    event_satisfied
+                    and safety_satisfied
+                    and brake_satisfied
+                    and recovery_satisfied
+                )
                 status.update(
                     {
                         "brake_action_satisfied": bool(brake_satisfied),
                         "recovery_clear_observed": bool(self.recovery_clear_step is not None),
-                        "recovery_speed_satisfied": bool(current_speed >= min_recovery_speed),
+                        "recovery_speed_satisfied": _minimum_speed_satisfied(
+                            current_speed,
+                            min_recovery_speed,
+                        ),
                     }
                 )
             elif criteria_type == "false_opening_stability":
@@ -1889,7 +1947,10 @@ class BenchmarkEpisodeEvaluator:
             elif criteria_type == "stop_go_wave_response":
                 min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 18.0) or 18.0)
                 min_progress_m = float(self.success_criteria.get("min_progress_m", 45.0) or 45.0)
-                recovery_satisfied = self.recovery_clear_step is not None and current_speed >= min_recovery_speed
+                recovery_satisfied = (
+                    self.recovery_clear_step is not None
+                    and _minimum_speed_satisfied(current_speed, min_recovery_speed)
+                )
                 progress_satisfied = float(self.max_progress_m) >= min_progress_m
                 task_satisfied = bool(
                     event_satisfied
@@ -1901,7 +1962,10 @@ class BenchmarkEpisodeEvaluator:
                 status.update(
                     {
                         "recovery_clear_observed": bool(self.recovery_clear_step is not None),
-                        "recovery_speed_satisfied": bool(current_speed >= min_recovery_speed),
+                        "recovery_speed_satisfied": _minimum_speed_satisfied(
+                            current_speed,
+                            min_recovery_speed,
+                        ),
                         "progress_satisfied": bool(progress_satisfied),
                     }
                 )
@@ -1909,6 +1973,7 @@ class BenchmarkEpisodeEvaluator:
             status.update(
                 {
                     "event_satisfied": bool(event_satisfied),
+                    "unsafe_attempt_satisfied": bool(unsafe_attempt_satisfied),
                     "survival_satisfied": bool(survival_satisfied),
                     "safety_satisfied": bool(safety_satisfied),
                     "smooth_satisfied": bool(smooth_satisfied),
@@ -1943,17 +2008,23 @@ class BenchmarkEpisodeEvaluator:
         if bool(action_context.get("benchmark_events_applied", False)):
             event_ids = [str(item) for item in (action_context.get("benchmark_event_ids") or [])]
             event_types = [str(item) for item in (action_context.get("benchmark_event_types") or [])]
+            event_step = int(action_context.get("benchmark_event_step") or step_idx)
             for event_id in event_ids:
                 if event_id not in self.applied_benchmark_event_ids:
                     self.applied_benchmark_event_ids.append(event_id)
             self.applied_benchmark_event_types.extend(event_types)
             if self.first_benchmark_event_step is None:
-                self.first_benchmark_event_step = int(action_context.get("benchmark_event_step") or step_idx)
+                self.first_benchmark_event_step = event_step
+            if self.latest_benchmark_event_step is None:
+                self.latest_benchmark_event_step = event_step
+            else:
+                self.latest_benchmark_event_step = max(
+                    self.latest_benchmark_event_step,
+                    event_step,
+                )
             for event_type in event_types:
                 if event_type not in self.first_event_step_by_type:
-                    self.first_event_step_by_type[event_type] = int(
-                        action_context.get("benchmark_event_step") or step_idx
-                    )
+                    self.first_event_step_by_type[event_type] = event_step
         lane_rank = _lane_rank(ego)
         if lane_rank is not None and self.initial_lane_rank is not None:
             if lane_rank < self.initial_lane_rank:
@@ -2041,7 +2112,7 @@ class BenchmarkEpisodeEvaluator:
             self.bottleneck_avoidance_step = int(step_idx)
         if bool(self.success_criteria.get("requires_yield", False)):
             yield_speed_mps = float(self.success_criteria.get("yield_speed_mps", 2.0) or 2.0)
-            if current_speed <= yield_speed_mps:
+            if _maximum_speed_satisfied(current_speed, yield_speed_mps):
                 self.yield_observed_steps += 1
         front_gap_m = step_metrics.get("front_gap_m")
         if front_gap_m is not None:
@@ -2071,13 +2142,30 @@ class BenchmarkEpisodeEvaluator:
             clear_ttc = float(self.success_criteria.get("clear_front_ttc_sec", 4.0) or 4.0)
             front_clear = front_gap_m is None or float(front_gap_m) >= clear_gap
             ttc_clear = ttc_sec is None or float(ttc_sec) >= clear_ttc
-            if self.recovery_clear_step is None and front_clear and ttc_clear:
+            requires_event = bool(self.success_criteria.get("requires_event", False))
+            recovery_eligible_step = self.recovery_eligible_step
+            if recovery_eligible_step is None and requires_event:
+                recovery_eligible_step = self.first_benchmark_event_step
+            recovery_window_open = (
+                not requires_event
+                or (
+                    recovery_eligible_step is not None
+                    and self.latest_benchmark_event_step is not None
+                    and self.latest_benchmark_event_step >= recovery_eligible_step
+                )
+            )
+            if (
+                self.recovery_clear_step is None
+                and recovery_window_open
+                and front_clear
+                and ttc_clear
+            ):
                 self.recovery_clear_step = int(step_idx)
             min_recovery_speed = float(self.success_criteria.get("min_recovery_speed_mps", 22.0) or 22.0)
             if (
                 self.recovery_clear_step is not None
                 and self.recovery_time_steps is None
-                and current_speed >= min_recovery_speed
+                and _minimum_speed_satisfied(current_speed, min_recovery_speed)
             ):
                 self.recovery_time_steps = int(step_idx - self.recovery_clear_step)
                 self.recovery_after_wave = True
@@ -2099,8 +2187,9 @@ class BenchmarkEpisodeEvaluator:
             self.hold_streak = 0
 
     def finalize(self, crashed: bool, episode_stop_reason: str) -> Dict[str, Any]:
+        task_completed = bool(self.task_completed and not crashed)
         score_metrics = compute_benchmark_case_scores(
-            task_completed=bool(self.task_completed),
+            task_completed=task_completed,
             crashed=bool(crashed),
             min_positive_ttc_sec=self.min_positive_ttc_sec,
             speed_history=self.speed_history,
@@ -2108,7 +2197,7 @@ class BenchmarkEpisodeEvaluator:
             time_limit_sec=self.time_limit_sec,
         )
 
-        if self.failure_reason is None and not self.task_completed:
+        if self.failure_reason is None and not task_completed:
             if episode_stop_reason == "crash":
                 self.failure_reason = "crash"
             elif episode_stop_reason == "episode_timeout_cap":
@@ -2122,7 +2211,7 @@ class BenchmarkEpisodeEvaluator:
                 self.failure_reason = "task_not_completed"
 
         criteria_type = str(self.success_criteria.get("type") or "").strip().lower()
-        if bool(self.success_criteria.get("passive_trap", False)) and not self.task_completed:
+        if bool(self.success_criteria.get("passive_trap", False)) and not task_completed:
             maneuver_required = criteria_type in {
                 "mandatory_overtake_slow_lead",
                 "timed_gap_overtake",
@@ -2198,7 +2287,7 @@ class BenchmarkEpisodeEvaluator:
             ),
             "benchmark_flap_accel_decel_count": int(self.flap_accel_decel_count),
             "benchmark_low_speed_blocking_steps": int(self.low_speed_blocking_steps),
-            "task_completed": bool(self.task_completed),
+            "task_completed": task_completed,
             "completion_rate": score_metrics["completion_rate"],
             "ttc_score": score_metrics["ttc_score"],
             "speed_variance_score": score_metrics["speed_variance_score"],

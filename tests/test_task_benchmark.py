@@ -1314,7 +1314,7 @@ class TaskBenchmarkTests(unittest.TestCase):
         self.assertFalse(result["benchmark_criteria_status"]["lane_change_satisfied"])
         self.assertEqual(result["benchmark_event_count_applied"], 1)
 
-    def test_delayed_overtake_requires_safe_pass_after_event(self):
+    def test_delayed_overtake_reports_shield_without_failing_safe_pass(self):
         ego = _DummyVehicle(lane_rank=1, speed=24.0, x=0.0)
         front = _DummyVehicle(lane_rank=1, speed=18.0, x=35.0)
         env = _DummyEnv(ego, front, available_actions=[0, 1, 2, 3, 4])
@@ -1356,9 +1356,12 @@ class TaskBenchmarkTests(unittest.TestCase):
         )
         result = evaluator.finalize(crashed=False, episode_stop_reason="completed")
 
-        self.assertFalse(result["task_completed"])
+        self.assertTrue(result["task_completed"])
         self.assertEqual(result["benchmark_unsafe_lane_change_attempts"], 1)
-        self.assertFalse(result["benchmark_criteria_status"]["safety_satisfied"])
+        self.assertFalse(
+            result["benchmark_criteria_status"]["unsafe_attempt_satisfied"]
+        )
+        self.assertTrue(result["benchmark_criteria_status"]["safety_satisfied"])
 
     def test_stress_v2_timed_gap_overtake_requires_in_window_safe_pass(self):
         ego = _DummyVehicle(lane_rank=1, speed=24.0, x=0.0)
@@ -1413,7 +1416,7 @@ class TaskBenchmarkTests(unittest.TestCase):
             6,
             {"front_gap_m": None, "ttc_sec": None, "ttc_danger": False, "headway_violation": False},
             crashed=False,
-            action_context={"final_action_id": 0},
+            action_context={"final_action_id": 1},
         )
         early_result = early_eval.finalize(False, "completed")
         self.assertFalse(early_result["task_completed"])
