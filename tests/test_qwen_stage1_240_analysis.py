@@ -9,11 +9,13 @@ import unittest
 from pathlib import Path
 
 from dilu.runtime._qwen_stage1_240_analysis import (
+    CAMPAIGN_ID,
     CLAIM_ELIGIBLE,
     EXPECTED_ROWS,
     build_qwen_stage1_tables,
     publish_qwen_stage1_bundle,
 )
+from scripts.analyze_iclr2027_qwen_stage1_240 import build_parser
 
 
 def _episodes() -> tuple[dict[str, object], ...]:
@@ -22,7 +24,7 @@ def _episodes() -> tuple[dict[str, object], ...]:
         for case_index in range(30):
             rows.append(
                 {
-                    "campaign_id": "iclr2027-minimal-factorial-v4",
+                    "campaign_id": "iclr2027-minimal-factorial-v5",
                     "model_slot": "qwen_06b",
                     "model_digest": "sha256:" + "a" * 64,
                     "stage": "stage1",
@@ -44,12 +46,18 @@ def _episodes() -> tuple[dict[str, object], ...]:
 
 
 class QwenStage1240AnalysisTests(unittest.TestCase):
+    def test_cli_default_output_root_is_versioned_for_v5(self) -> None:
+        args = build_parser().parse_args([])
+
+        self.assertIn("iclr2027_minimal_factorial_v5", args.output_root.parts)
+
     def test_fixed_tables_have_only_registered_fast_outcomes(self) -> None:
         episodes = _episodes()
+        self.assertEqual(CAMPAIGN_ID, "iclr2027-minimal-factorial-v5")
         tables = build_qwen_stage1_tables(
             episodes,
             provenance={
-                "campaign_id": "iclr2027-minimal-factorial-v4",
+                "campaign_id": "iclr2027-minimal-factorial-v5",
                 "analysis_scope": "qwen_stage1_240",
                 "claim_eligible": "false",
             },
@@ -75,7 +83,7 @@ class QwenStage1240AnalysisTests(unittest.TestCase):
         reversed_tables = build_qwen_stage1_tables(
             tuple(reversed(episodes)),
             provenance={
-                "campaign_id": "iclr2027-minimal-factorial-v4",
+                "campaign_id": "iclr2027-minimal-factorial-v5",
                 "analysis_scope": "qwen_stage1_240",
                 "claim_eligible": "false",
             },

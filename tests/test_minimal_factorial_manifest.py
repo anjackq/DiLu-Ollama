@@ -98,8 +98,8 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             },
             {
                 "schema_version": "iclr2027_minimal_factorial_manifest_v1",
-                "campaign_id": "iclr2027-minimal-factorial-v4",
-                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v4",
+                "campaign_id": "iclr2027-minimal-factorial-v5",
+                "smoke_campaign_id": "iclr2027-minimal-factorial-smoke-v5",
                 "case_path": ("benchmarks/dilu_highway_reactive_stress_v2/cases.json"),
                 "models": (
                     ("qwen_06b", "qwen3:0.6b"),
@@ -119,7 +119,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
             {"draws": 20000, "version": "bootstrap-v1"},
         )
         outputs = {
-            "root": "results/iclr2027_minimal_factorial_v4",
+            "root": "results/iclr2027_minimal_factorial_v5",
             "s1": "s1",
             "smoke": "smoke",
             "llm_campaign": "llm_campaign",
@@ -151,7 +151,7 @@ class MinimalFactorialManifestTests(unittest.TestCase):
         )
         self.assertEqual(saved["manifest"]["outputs"], outputs)
 
-    def test_v4_changes_only_the_three_registered_identity_fields(self) -> None:
+    def test_v5_changes_only_the_three_registered_identity_fields(self) -> None:
         from dilu.runtime._minimal_factorial_schedule_support import canonical_sha256
 
         raw_manifest = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
@@ -162,22 +162,22 @@ class MinimalFactorialManifestTests(unittest.TestCase):
                 raw_manifest["outputs"]["root"],
             ),
             (
-                "iclr2027-minimal-factorial-v4",
-                "iclr2027-minimal-factorial-smoke-v4",
-                "results/iclr2027_minimal_factorial_v4",
+                "iclr2027-minimal-factorial-v5",
+                "iclr2027-minimal-factorial-smoke-v5",
+                "results/iclr2027_minimal_factorial_v5",
             ),
         )
-        v3_comparison = json.loads(json.dumps(raw_manifest))
-        v3_comparison["campaign_id"] = "iclr2027-minimal-factorial-v3"
-        v3_comparison["smoke_campaign_id"] = (
-            "iclr2027-minimal-factorial-smoke-v3"
+        v4_comparison = json.loads(json.dumps(raw_manifest))
+        v4_comparison["campaign_id"] = "iclr2027-minimal-factorial-v4"
+        v4_comparison["smoke_campaign_id"] = (
+            "iclr2027-minimal-factorial-smoke-v4"
         )
-        v3_comparison["outputs"]["root"] = (
-            "results/iclr2027_minimal_factorial_v3"
+        v4_comparison["outputs"]["root"] = (
+            "results/iclr2027_minimal_factorial_v4"
         )
         self.assertEqual(
-            canonical_sha256(v3_comparison),
-            "5f4d8edbb369e9967b45987449962515b1961c92472fe79d0c164de7ad8e2e89",
+            canonical_sha256(v4_comparison),
+            "a19f35bb4ad8c4cb245fd59046ae58628d8d2074ca4c0bfaafba6312d623f8b3",
         )
 
     def test_git_drift_and_atomic_write_once(self) -> None:

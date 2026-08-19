@@ -161,7 +161,7 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             ).hexdigest(),
         )
 
-    def test_v4_preserves_v3_scientific_schedule_but_versions_evidence_ids(
+    def test_v5_preserves_v4_scientific_schedule_but_versions_evidence_ids(
         self,
     ) -> None:
         from dilu.runtime.minimal_factorial_schedule import (
@@ -172,37 +172,28 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
         from tests.runtime_factorization_support import runtime
 
         snapshot = self._snapshot()
-        v3_outputs = self.manifest.outputs.to_dict()
-        v3_outputs["root"] = "results/iclr2027_minimal_factorial_v3"
-        v3_manifest = replace(
+        v4_outputs = self.manifest.outputs.to_dict()
+        v4_outputs["root"] = "results/iclr2027_minimal_factorial_v4"
+        v4_manifest = replace(
             self.manifest,
-            campaign_id="iclr2027-minimal-factorial-v3",
-            smoke_campaign_id="iclr2027-minimal-factorial-smoke-v3",
-            outputs=OutputSpec(v3_outputs),
-        )
-        v3_smoke = build_smoke_schedule(
-            v3_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+            campaign_id="iclr2027-minimal-factorial-v4",
+            smoke_campaign_id="iclr2027-minimal-factorial-smoke-v4",
+            outputs=OutputSpec(v4_outputs),
         )
         v4_smoke = build_smoke_schedule(
+            v4_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+        v5_smoke = build_smoke_schedule(
             self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
-        v3_union = build_union_schedule(
-            v3_manifest, self.cases, self.digests, runtime_snapshot=snapshot
-        )
         v4_union = build_union_schedule(
+            v4_manifest, self.cases, self.digests, runtime_snapshot=snapshot
+        )
+        v5_union = build_union_schedule(
             self.manifest, self.cases, self.digests, runtime_snapshot=snapshot
         )
 
         self.assertEqual(
-            [
-                (
-                    row.stage,
-                    row.case_id,
-                    row.simulator_seed,
-                    row.condition.to_canonical_dict(),
-                )
-                for row in v3_smoke
-            ],
             [
                 (
                     row.stage,
@@ -212,8 +203,6 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
                 )
                 for row in v4_smoke
             ],
-        )
-        self.assertEqual(
             [
                 (
                     row.stage,
@@ -221,8 +210,10 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
                     row.simulator_seed,
                     row.condition.to_canonical_dict(),
                 )
-                for row in v3_union
+                for row in v5_smoke
             ],
+        )
+        self.assertEqual(
             [
                 (
                     row.stage,
@@ -232,30 +223,39 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
                 )
                 for row in v4_union
             ],
+            [
+                (
+                    row.stage,
+                    row.case_id,
+                    row.simulator_seed,
+                    row.condition.to_canonical_dict(),
+                )
+                for row in v5_union
+            ],
         )
         self.assertEqual(self.manifest.transport.generation_seed_master, 20270728)
         self.assertEqual(
-            self._selection_sha(v4_smoke),
+            self._selection_sha(v5_smoke),
             "ec5f202c2f05cee83d5df0527ab818d724aee4ed773491dd91fc28efaf018883",
         )
         self.assertEqual(
-            self._selection_sha(v4_union),
+            self._selection_sha(v5_union),
             "237cbe106386cde5acfbe1531353a3e0b7afade59900a2b4827761ddfb6673b1",
         )
-        for v3_rows, v4_rows in ((v3_smoke, v4_smoke), (v3_union, v4_union)):
+        for v4_rows, v5_rows in ((v4_smoke, v5_smoke), (v4_union, v5_union)):
             self.assertTrue(
-                {row.pair_id for row in v3_rows}.isdisjoint(
-                    {row.pair_id for row in v4_rows}
+                {row.pair_id for row in v4_rows}.isdisjoint(
+                    {row.pair_id for row in v5_rows}
                 )
             )
             self.assertTrue(
-                {row.episode_attempt_id for row in v3_rows}.isdisjoint(
-                    {row.episode_attempt_id for row in v4_rows}
+                {row.episode_attempt_id for row in v4_rows}.isdisjoint(
+                    {row.episode_attempt_id for row in v5_rows}
                 )
             )
             self.assertTrue(
-                {self._request_id(row) for row in v3_rows}.isdisjoint(
-                    {self._request_id(row) for row in v4_rows}
+                {self._request_id(row) for row in v4_rows}.isdisjoint(
+                    {self._request_id(row) for row in v5_rows}
                 )
             )
 
@@ -263,10 +263,10 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
             root = Path(directory)
             request_ids: dict[str, str] = {}
             for label, row in (
-                ("v3-smoke", v3_smoke[0]),
-                ("v3-union", v3_union[0]),
                 ("v4-smoke", v4_smoke[0]),
                 ("v4-union", v4_union[0]),
+                ("v5-smoke", v5_smoke[0]),
+                ("v5-union", v5_union[0]),
             ):
                 scientific_runtime = runtime(
                     root / label,
@@ -279,11 +279,11 @@ class MinimalFactorialScheduleTests(unittest.TestCase):
                 )
                 self.assertEqual(request_ids[label], self._request_id(row))
             self.assertTrue(
-                {request_ids["v3-smoke"], request_ids["v3-union"]}.isdisjoint(
-                    {request_ids["v4-smoke"], request_ids["v4-union"]}
+                {request_ids["v4-smoke"], request_ids["v4-union"]}.isdisjoint(
+                    {request_ids["v5-smoke"], request_ids["v5-union"]}
                 )
             )
-        self.assertEqual(v4_smoke[0].case_id, "mandatory_overtake_slow_lead_002")
+        self.assertEqual(v5_smoke[0].case_id, "mandatory_overtake_slow_lead_002")
 
 
 if __name__ == "__main__":

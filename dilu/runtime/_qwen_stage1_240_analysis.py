@@ -28,7 +28,7 @@ from ._scientific_trace_store import read_validated_trace_snapshot
 from .campaign_attempts import AttemptStatus
 
 SCOPE = "qwen_stage1_240"
-CAMPAIGN_ID = "iclr2027-minimal-factorial-v4"
+CAMPAIGN_ID = "iclr2027-minimal-factorial-v5"
 MODEL_SLOT = "qwen_06b"
 STAGE = "stage1"
 CONDITIONS = tuple(f"c{index:03b}" for index in range(8))
@@ -89,7 +89,7 @@ def run_qwen_stage1_analysis(repo_root: Path, *, output_root: Path) -> Path:
             raise ValueError("Frozen campaign manifest drifted from registration.")
         schedule = _rows(claim.get("schedule"), "campaign schedule")
         if len(schedule) != 840:
-            raise ValueError("Frozen V4 campaign schedule must contain 840 rows.")
+            raise ValueError("Frozen V5 campaign schedule must contain 840 rows.")
         schedule_by_id = _unique_index(schedule, "episode_attempt_id", "schedule")
         selected_schedule = tuple(
             row

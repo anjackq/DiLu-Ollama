@@ -22,7 +22,7 @@ from dilu.runtime.minimal_factorial_analysis import (
 
 
 def _tables() -> AnalysisTables:
-    provenance = {"campaign_id": "iclr2027-minimal-factorial-v4"}
+    provenance = {"campaign_id": "iclr2027-minimal-factorial-v5"}
     contrast = {
         **provenance,
         "contrast_id": "P_MAIN",
@@ -119,7 +119,7 @@ class MinimalFactorialAnalysisArtifactTests(unittest.TestCase):
                 condition_rows = tuple(csv.DictReader(handle))
             self.assertEqual(
                 {row["campaign_id"] for row in condition_rows},
-                {"iclr2027-minimal-factorial-v4"},
+                {"iclr2027-minimal-factorial-v5"},
             )
             self.assertEqual(
                 {

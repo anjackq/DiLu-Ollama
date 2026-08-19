@@ -25,7 +25,7 @@ class MinimalFactorialAnalysisValidationTests(unittest.TestCase):
 
         self.assertEqual(
             self.claim["manifest"]["campaign_id"],
-            "iclr2027-minimal-factorial-v4",
+            "iclr2027-minimal-factorial-v5",
         )
         self.assertEqual(result.status, "complete")
         self.assertEqual(result.errors, ())
@@ -91,10 +91,11 @@ class MinimalFactorialAnalysisValidationTests(unittest.TestCase):
         self.assertEqual(result.status, "blocked")
         self.assertTrue(any("campaign ID" in error for error in result.errors))
 
-    def test_v2_and_v3_campaigns_are_not_registered_for_analysis(self) -> None:
+    def test_v2_v3_and_v4_campaigns_are_not_registered_for_analysis(self) -> None:
         for campaign_id in (
             "iclr2027-minimal-factorial-v2",
             "iclr2027-minimal-factorial-v3",
+            "iclr2027-minimal-factorial-v4",
         ):
             with self.subTest(campaign_id=campaign_id):
                 claim = copy.deepcopy(self.claim)

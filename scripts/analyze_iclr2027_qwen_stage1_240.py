@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=(
             REPO_ROOT
             / "results"
-            / "iclr2027_minimal_factorial_v4"
+            / "iclr2027_minimal_factorial_v5"
             / "diagnostics"
             / "qwen_stage1_240"
         ),
