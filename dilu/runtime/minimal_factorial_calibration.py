@@ -29,6 +29,7 @@ from .harness_config import ShieldConfig
 from .highway_env_config import resolve_simulation_env_bundle
 from .non_llm_baselines import BaselinePolicy
 from .path_utils import write_json_atomic
+from .scientific_reporting import build_primary_metric_spec
 
 CALIBRATION_POLICIES = ("always_left", "speed_hold_25", "idm_mobil")
 _SHA256_RE = re.compile(r"\A(?:sha256:)?([0-9a-f]{64})\Z")
@@ -191,7 +192,21 @@ def run_baseline_campaign(
     case_by_id = {str(case["case_id"]): dict(case) for case in cases}
     episodes: list[dict[str, Any]] = []
     aggregates: list[dict[str, Any]] = []
-    primary_spec = snapshot.get("primary_metric_spec")
+    primary_identity = _mapping(
+        snapshot.get("primary_metric_spec"),
+        "primary metric",
+    )
+    primary_spec = build_primary_metric_spec(
+        {
+            **runtime,
+            "scientific_min_response_strict_format_rate": 0.0,
+        }
+    )
+    if (
+        primary_spec["split_headline_metrics"]["primary_driving_metric"]
+        != _text(primary_identity, "metric")
+    ):
+        raise ValueError("Baseline reporting metric drifted from the claim campaign.")
     for policy_name in contract.policies:
         policy = BaselinePolicy(policy_name, runtime)
         if not policy.spec.safety_shield_compatible:

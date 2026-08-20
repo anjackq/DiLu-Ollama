@@ -328,7 +328,7 @@ class MinimalFactorialCalibrationRunnerTests(unittest.TestCase):
                         "baseline_policy": name,
                         "episode_count": len(rows),
                     },
-                ),
+                ) as aggregate,
             ):
                 validation_path = run_baseline_campaign(
                     claim_path,
@@ -346,6 +346,27 @@ class MinimalFactorialCalibrationRunnerTests(unittest.TestCase):
                 all(
                     call.kwargs["safety_shields_enabled"]
                     for call in run_episode.call_args_list
+                )
+            )
+            reporting_specs = [
+                call.kwargs["primary_metric_spec"]
+                for call in aggregate.call_args_list
+            ]
+            self.assertTrue(
+                all("headline_metric_order" in spec for spec in reporting_specs)
+            )
+            self.assertTrue(
+                all(
+                    spec["split_headline_metrics"]["primary_driving_metric"]
+                    == claim["runtime_snapshot"]["primary_metric_spec"]["metric"]
+                    for spec in reporting_specs
+                )
+            )
+            self.assertTrue(
+                all(
+                    spec["runtime_gates"]["min_response_strict_format_rate"]
+                    == 0.0
+                    for spec in reporting_specs
                 )
             )
             self.assertEqual(validation_path, output / "calibration_validation.json")
