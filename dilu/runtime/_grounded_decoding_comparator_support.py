@@ -3,10 +3,10 @@
 Pairs every V8 grounded-decoding (P1 O2) row against the matching frozen
 "O1 in place of O2" row already recorded in the frozen V5 or V7
 ``episodes.jsonl`` (the same model, case, and simulator seed, on the O1
-output-enforcement level). All four registered failure modes fail closed
+output-enforcement level). All five registered failure modes fail closed
 with a dedicated exception type: a missing frozen row, a live/frozen model
-digest mismatch, case-set fingerprint drift, and scoring-policy-version
-drift.
+digest mismatch, case-set fingerprint drift, scoring-policy-version drift,
+and simulator-version drift.
 """
 
 from __future__ import annotations
@@ -19,9 +19,10 @@ from typing import Any, Mapping, Sequence
 
 from ._harness_config_support import OutputEnforcement
 from ._minimal_factorial_manifest import CASE_FINGERPRINT, ExperimentManifest, case_fingerprint
+from ._minimal_factorial_schedule_support import canonical_sha256
 from ._grounded_decoding_manifest_support import GroundedDecodingManifest
 from .dilu_scoring import BALANCED_DRIVING_SCORE_POLICY_VERSION, SPLIT_SCORING_POLICY_VERSION
-from .minimal_factorial_schedule import ScheduledEpisode
+from .minimal_factorial_schedule import RuntimeSnapshot, ScheduledEpisode
 
 _REQUIRED_FIELDS = (
     "campaign_id",
@@ -54,6 +55,10 @@ class CaseSetFingerprintDriftError(ComparatorContractError):
 
 class ScoringVersionDriftError(ComparatorContractError):
     """A frozen comparator row's scoring policy version has drifted."""
+
+
+class SimulatorVersionDriftError(ComparatorContractError):
+    """The live V8 simulator stack does not match a frozen campaign's."""
 
 
 @dataclass(frozen=True)
@@ -155,17 +160,41 @@ def build_comparator_contract(
     case_set: Mapping[str, Any],
     v5_manifest: ExperimentManifest,
     v7_manifest: ExperimentManifest,
+    *,
+    runtime_snapshot: RuntimeSnapshot,
 ) -> ComparatorContract:
-    """Load and validate the frozen V5+V7 comparator rows V8 will pair against."""
+    """Load and validate the frozen V5+V7 comparator rows V8 will pair against.
+
+    Beyond the per-row gates (digest, case-set fingerprint, scoring
+    version), this also gates on the *simulator stack* the frozen
+    comparators actually ran on: ``runtime_snapshot.simulator_versions``
+    (gymnasium/highway-env/numpy) recorded in each frozen campaign's own
+    ``campaign_manifest.json`` must match V8's live snapshot. Every other
+    gate here compares V8 against V8's own snapshot, so a drifted simulator
+    dependency (e.g. a different numpy) is otherwise internally consistent
+    and invisible -- it would silently confound the grounded-decoding
+    effect with an environment change instead of failing closed.
+    """
+    if canonical_sha256(runtime_snapshot.payload) != runtime_snapshot.sha256:
+        raise ComparatorContractError("V8 runtime snapshot hash drifted.")
+    live_simulator_versions = runtime_snapshot.payload.get("simulator_versions")
+    if not isinstance(live_simulator_versions, Mapping) or not live_simulator_versions:
+        raise ComparatorContractError("V8 runtime snapshot is missing simulator_versions.")
+
     fingerprint = case_fingerprint(case_set)
     if fingerprint != CASE_FINGERPRINT:
         raise CaseSetFingerprintDriftError("V8 case set fingerprint drifted from the frozen value.")
     root = manifest.repo_root()
     rows: list[ComparatorRow] = []
-    for source_manifest, episodes_relpath in (
-        (v5_manifest, manifest.comparators.v5_episodes),
-        (v7_manifest, manifest.comparators.v7_episodes),
+    for source_manifest, episodes_relpath, manifest_relpath in (
+        (v5_manifest, manifest.comparators.v5_episodes, manifest.comparators.v5_manifest),
+        (v7_manifest, manifest.comparators.v7_episodes, manifest.comparators.v7_manifest),
     ):
+        _check_simulator_versions(
+            root / manifest_relpath,
+            expected_campaign_id=source_manifest.campaign_id,
+            live_simulator_versions=live_simulator_versions,
+        )
         rows.extend(
             _load_comparator_rows(
                 root / episodes_relpath,
@@ -174,6 +203,45 @@ def build_comparator_contract(
             )
         )
     return ComparatorContract(rows)
+
+
+def _check_simulator_versions(
+    path: Path,
+    *,
+    expected_campaign_id: str,
+    live_simulator_versions: Mapping[str, Any],
+) -> None:
+    """Compare a frozen campaign's recorded simulator stack to V8's live one."""
+    try:
+        decoded = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ComparatorContractError(
+            f"{path} could not be read as the frozen campaign manifest."
+        ) from exc
+    if not isinstance(decoded, Mapping) or not {"manifest", "runtime_snapshot"} <= set(decoded):
+        raise ComparatorContractError(f"{path} is not a valid frozen campaign manifest.")
+    frozen_manifest = decoded["manifest"]
+    if (
+        not isinstance(frozen_manifest, Mapping)
+        or frozen_manifest.get("campaign_id") != expected_campaign_id
+    ):
+        raise ComparatorContractError(
+            f"{path} campaign_id does not match the trusted frozen manifest."
+        )
+    runtime_snapshot = decoded["runtime_snapshot"]
+    frozen_simulator_versions = (
+        runtime_snapshot.get("simulator_versions")
+        if isinstance(runtime_snapshot, Mapping)
+        else None
+    )
+    if not isinstance(frozen_simulator_versions, Mapping) or not frozen_simulator_versions:
+        raise ComparatorContractError(f"{path} is missing runtime_snapshot.simulator_versions.")
+    if dict(frozen_simulator_versions) != dict(live_simulator_versions):
+        raise SimulatorVersionDriftError(
+            f"{path} simulator_versions {dict(frozen_simulator_versions)!r} does not match "
+            f"V8's live simulator_versions {dict(live_simulator_versions)!r}; the grounded-"
+            "decoding contrast would be confounded with a simulator-stack change."
+        )
 
 
 def _load_comparator_rows(
@@ -237,6 +305,7 @@ __all__ = [
     "ComparatorRow",
     "MissingComparatorRowError",
     "ScoringVersionDriftError",
+    "SimulatorVersionDriftError",
     "build_comparator_contract",
     "pair_v8_row",
 ]

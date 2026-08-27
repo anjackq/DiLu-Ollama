@@ -25,6 +25,7 @@ from ._grounded_decoding_comparator_support import (
     ComparatorRow,
     MissingComparatorRowError,
     ScoringVersionDriftError,
+    SimulatorVersionDriftError,
     build_comparator_contract,
     pair_v8_row,
 )
@@ -255,6 +256,7 @@ __all__ = [
     "GroundedSelectionSpec",
     "MissingComparatorRowError",
     "ScoringVersionDriftError",
+    "SimulatorVersionDriftError",
     "V8Schedule",
     "build_comparator_contract",
     "build_runtime_snapshot",

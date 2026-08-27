@@ -28,6 +28,24 @@ V7_EPISODES_PATH = (
     / "llm_campaign"
     / "episodes.jsonl"
 )
+V5_CAMPAIGN_MANIFEST_PATH = (
+    ROOT / "results" / "iclr2027_minimal_factorial_v5" / "llm_campaign" / "campaign_manifest.json"
+)
+V7_CAMPAIGN_MANIFEST_PATH = (
+    ROOT
+    / "results"
+    / "iclr2027_model_breadth_factorial_v7"
+    / "llm_campaign"
+    / "campaign_manifest.json"
+)
+
+# Measured 2026-08-27 from campaign_manifest.json's runtime_snapshot.simulator_versions
+# in both frozen campaigns (identical in V5 and V7).
+FROZEN_SIMULATOR_VERSIONS = {
+    "gymnasium": "0.29.1",
+    "highway-env": "1.8.2",
+    "numpy": "1.26.4",
+}
 
 # Measured 2026-08-27 from the real frozen artifacts; comparator anchors
 # (one model digest per model per campaign, no intra-campaign drift).
@@ -59,6 +77,35 @@ def frozen_bindings() -> dict[str, OllamaModelIdentity]:
     }
 
 
+def matching_snapshot(snapshot):
+    """Return ``snapshot`` with simulator_versions forced to the frozen pin.
+
+    The live conda env on this machine does not necessarily match the
+    pinned ``gymnasium==0.29.1``/``highway-env==1.8.2``/``numpy==1.26.4``
+    recorded in the frozen V5/V7 manifests, so tests that need the
+    comparator contract's simulator-version gate to *pass* build a snapshot
+    with that field overridden rather than asserting anything about what
+    happens to be installed locally. Everything else in the payload (case
+    set fingerprint, code revision, ...) is left exactly as built.
+    """
+    from dilu.runtime.minimal_factorial_schedule import RuntimeSnapshot
+
+    return RuntimeSnapshot.create(
+        {**snapshot.payload, "simulator_versions": dict(FROZEN_SIMULATOR_VERSIONS)}
+    )
+
+
+def write_fake_campaign_manifest(path: Path, *, campaign_id: str, simulator_versions: dict) -> None:
+    """Write a minimal but shape-valid campaign_manifest.json test fixture."""
+    payload = {
+        "manifest": {"campaign_id": campaign_id},
+        "runtime_snapshot": {"simulator_versions": simulator_versions},
+        "runtime_snapshot_sha256": "sha256:" + "0" * 64,
+        "schedule": [],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def fake_git(command, **_kwargs):
     """A subprocess.run stand-in: clean tree, tracked sources, fixed HEAD."""
     action = command[1]
@@ -74,14 +121,19 @@ def fake_git(command, **_kwargs):
 
 __all__ = [
     "FROZEN_DIGESTS",
+    "FROZEN_SIMULATOR_VERSIONS",
     "MANIFEST_PATH",
     "MODEL_TAGS",
     "ROOT",
+    "V5_CAMPAIGN_MANIFEST_PATH",
     "V5_EPISODES_PATH",
     "V5_MANIFEST_PATH",
+    "V7_CAMPAIGN_MANIFEST_PATH",
     "V7_EPISODES_PATH",
     "V7_MANIFEST_PATH",
     "fake_git",
     "frozen_bindings",
+    "matching_snapshot",
     "read_jsonl",
+    "write_fake_campaign_manifest",
 ]

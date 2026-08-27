@@ -10,15 +10,20 @@ from unittest.mock import patch
 
 from tests.grounded_decoding_schedule_support import (
     FROZEN_DIGESTS,
+    FROZEN_SIMULATOR_VERSIONS,
     MANIFEST_PATH,
     ROOT,
+    V5_CAMPAIGN_MANIFEST_PATH,
     V5_EPISODES_PATH,
     V5_MANIFEST_PATH,
+    V7_CAMPAIGN_MANIFEST_PATH,
     V7_EPISODES_PATH,
     V7_MANIFEST_PATH,
     fake_git,
     frozen_bindings,
+    matching_snapshot,
     read_jsonl,
+    write_fake_campaign_manifest,
 )
 
 
@@ -38,7 +43,13 @@ class GroundedDecodingScheduleTests(unittest.TestCase):
         self.v7_manifest = load_experiment_manifest(V7_MANIFEST_PATH)
         self.bindings = frozen_bindings()
         with patch("dilu.runtime._minimal_factorial_manifest.subprocess.run", fake_git):
-            self.snapshot = build_runtime_snapshot(self.manifest, self.cases)
+            raw_snapshot = build_runtime_snapshot(self.manifest, self.cases)
+        # The live conda env's installed gymnasium/highway-env/numpy need not
+        # match the frozen V5/V7 pin; force it to match so the rest of this
+        # class exercises the comparator contract's *logic*, not this
+        # machine's happenstance package versions (see
+        # test_simulator_version_drift_fails_closed for the drift path).
+        self.snapshot = matching_snapshot(raw_snapshot)
 
     def _schedule(self, **kwargs):
         from dilu.runtime.grounded_decoding_schedule import build_v8_schedule
@@ -55,7 +66,11 @@ class GroundedDecodingScheduleTests(unittest.TestCase):
         from dilu.runtime.grounded_decoding_schedule import build_comparator_contract
 
         return build_comparator_contract(
-            self.manifest, self.cases, self.v5_manifest, self.v7_manifest
+            self.manifest,
+            self.cases,
+            self.v5_manifest,
+            self.v7_manifest,
+            runtime_snapshot=self.snapshot,
         )
 
     # -- Requirement 1: exactly the two P1 O2 cells, c120/c121 -------------
@@ -212,23 +227,33 @@ class GroundedDecodingScheduleTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "fake_v5.jsonl"
+            episodes_path = Path(directory) / "fake_v5.jsonl"
+            manifest_path = Path(directory) / "fake_v5_manifest.json"
             row = self._fake_row(benchmark_fingerprint="sha256:" + "1" * 64)
-            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            episodes_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            write_fake_campaign_manifest(
+                manifest_path,
+                campaign_id=self.v5_manifest.campaign_id,
+                simulator_versions=FROZEN_SIMULATOR_VERSIONS,
+            )
             drifted_manifest = replace(
                 self.manifest,
                 comparators=ComparatorPaths(
                     {
-                        "v5_manifest": str(path),
-                        "v5_episodes": str(path),
-                        "v7_manifest": str(path),
-                        "v7_episodes": str(path),
+                        "v5_manifest": str(manifest_path),
+                        "v5_episodes": str(episodes_path),
+                        "v7_manifest": str(manifest_path),
+                        "v7_episodes": str(episodes_path),
                     }
                 ),
             )
             with self.assertRaises(CaseSetFingerprintDriftError):
                 build_comparator_contract(
-                    drifted_manifest, self.cases, self.v5_manifest, self.v7_manifest
+                    drifted_manifest,
+                    self.cases,
+                    self.v5_manifest,
+                    self.v7_manifest,
+                    runtime_snapshot=self.snapshot,
                 )
 
     def test_scoring_version_drift_fails_closed(self) -> None:
@@ -239,24 +264,85 @@ class GroundedDecodingScheduleTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "fake_v5.jsonl"
+            episodes_path = Path(directory) / "fake_v5.jsonl"
+            manifest_path = Path(directory) / "fake_v5_manifest.json"
             row = self._fake_row(split_scoring_policy_version="dilu_split_score_v9.9")
-            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            episodes_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            write_fake_campaign_manifest(
+                manifest_path,
+                campaign_id=self.v5_manifest.campaign_id,
+                simulator_versions=FROZEN_SIMULATOR_VERSIONS,
+            )
             drifted_manifest = replace(
                 self.manifest,
                 comparators=ComparatorPaths(
                     {
-                        "v5_manifest": str(path),
-                        "v5_episodes": str(path),
-                        "v7_manifest": str(path),
-                        "v7_episodes": str(path),
+                        "v5_manifest": str(manifest_path),
+                        "v5_episodes": str(episodes_path),
+                        "v7_manifest": str(manifest_path),
+                        "v7_episodes": str(episodes_path),
                     }
                 ),
             )
             with self.assertRaises(ScoringVersionDriftError):
                 build_comparator_contract(
-                    drifted_manifest, self.cases, self.v5_manifest, self.v7_manifest
+                    drifted_manifest,
+                    self.cases,
+                    self.v5_manifest,
+                    self.v7_manifest,
+                    runtime_snapshot=self.snapshot,
                 )
+
+    def test_simulator_version_drift_fails_closed(self) -> None:
+        from dilu.runtime.grounded_decoding_schedule import (
+            ComparatorPaths,
+            SimulatorVersionDriftError,
+            build_comparator_contract,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            episodes_path = Path(directory) / "fake_v5.jsonl"
+            manifest_path = Path(directory) / "fake_v5_manifest.json"
+            episodes_path.write_text(json.dumps(self._fake_row()) + "\n", encoding="utf-8")
+            write_fake_campaign_manifest(
+                manifest_path,
+                campaign_id=self.v5_manifest.campaign_id,
+                simulator_versions={**FROZEN_SIMULATOR_VERSIONS, "numpy": "1.99.0"},
+            )
+            drifted_manifest = replace(
+                self.manifest,
+                comparators=ComparatorPaths(
+                    {
+                        "v5_manifest": str(manifest_path),
+                        "v5_episodes": str(episodes_path),
+                        "v7_manifest": str(manifest_path),
+                        "v7_episodes": str(episodes_path),
+                    }
+                ),
+            )
+            with self.assertRaises(SimulatorVersionDriftError):
+                build_comparator_contract(
+                    drifted_manifest,
+                    self.cases,
+                    self.v5_manifest,
+                    self.v7_manifest,
+                    runtime_snapshot=self.snapshot,
+                )
+
+    def test_real_frozen_manifests_pass_simulator_version_gate_when_matching(self) -> None:
+        # self.snapshot was forced (in setUp) to carry exactly the frozen
+        # simulator_versions; reading the *real* V5/V7 campaign_manifest.json
+        # files against it must succeed, proving the gate isn't vacuous.
+        self._contract()  # must not raise
+
+    def test_real_frozen_manifests_carry_the_expected_simulator_versions(self) -> None:
+        # Independent of the gate's logic: confirm the pinned constant this
+        # whole test class relies on actually matches what is recorded on
+        # disk today, for both frozen campaigns.
+        for path in (V5_CAMPAIGN_MANIFEST_PATH, V7_CAMPAIGN_MANIFEST_PATH):
+            with path.open("r", encoding="utf-8") as handle:
+                recorded = json.load(handle)["runtime_snapshot"]["simulator_versions"]
+            self.assertEqual(recorded, FROZEN_SIMULATOR_VERSIONS)
 
     def _fake_row(self, **overrides) -> dict:
         row = {
