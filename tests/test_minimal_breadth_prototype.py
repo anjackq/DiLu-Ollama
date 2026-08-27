@@ -5,11 +5,12 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest import mock
 
 from dilu.runtime._minimal_factorial_manifest import ModelSpec, RuntimeSnapshot
 from dilu.runtime._minimal_factorial_schedule_support import OutputSpec, SelectionSpec
+from dilu.runtime.ollama_transport import OllamaModelIdentity
 
 ROOT = Path(__file__).resolve().parents[1]
 V5_MANIFEST = ROOT / "configs" / "iclr2027" / "minimal_factorial.yaml"
@@ -104,6 +105,98 @@ class MinimalBreadthPrototypeTests(unittest.TestCase):
 
         self.assertEqual(result, authored.preflight_path)
         author.assert_called_once_with(root, manifest_path=manifest_path.resolve())
+
+    def test_capability_authoring_scales_with_registered_models(self) -> None:
+        from dilu.runtime._runtime_lock_authoring_workflow import probe_models
+        from dilu.runtime.minimal_factorial_schedule import load_experiment_manifest
+
+        manifest = load_experiment_manifest(V6_MANIFEST)
+
+        def fake_probe(*, model_tag: str, **_kwargs: object):
+            return OllamaModelIdentity(model_tag, "sha256:" + "d" * 64), [
+                {"probe": index} for index in range(3)
+            ]
+
+        with mock.patch(
+            "dilu.runtime._runtime_lock_authoring_workflow.probe_model",
+            side_effect=fake_probe,
+        ):
+            bindings, records = probe_models(
+                manifest,
+                canonical_schema_bytes=b"{}",
+                get=mock.Mock(),
+                post=mock.Mock(),
+            )
+
+        self.assertEqual(set(bindings), {"llama_3b", "gemma_4b", "qwen_8b"})
+        self.assertEqual(len(records), 9)
+
+    def test_v6_authors_twelve_condition_locks(self) -> None:
+        from dilu.runtime._runtime_lock_authoring_workflow import (
+            CampaignPlan,
+            build_capabilities,
+            build_lock_plans,
+            publish_staged_campaign,
+        )
+        from dilu.runtime.minimal_factorial_schedule import (
+            build_smoke_schedule,
+            build_union_schedule,
+            load_experiment_manifest,
+        )
+
+        manifest = load_experiment_manifest(V6_MANIFEST)
+        cases = json.loads((ROOT / manifest.case_path).read_text(encoding="utf-8"))
+        snapshot = RuntimeSnapshot.create(
+            {
+                "case_set_fingerprint": (
+                    "sha256:bd6d65d694a1452e0770e9854e478bb463be8302168e8c17396e86786401fd33"
+                ),
+                "code_revision": "a" * 40,
+            }
+        )
+        bindings = {
+            model.slot: OllamaModelIdentity(
+                model.tag, "sha256:" + character * 64
+            )
+            for model, character in zip(manifest.models, "abc", strict=True)
+        }
+        digests = {slot: binding.model_digest for slot, binding in bindings.items()}
+        smoke = build_smoke_schedule(
+            manifest, cases, digests, runtime_snapshot=snapshot
+        )
+        claim = build_union_schedule(
+            manifest, cases, digests, runtime_snapshot=snapshot
+        )
+        capabilities = build_capabilities(
+            manifest, bindings, "sha256:" + "e" * 64
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp)
+            locks = build_lock_plans(destination, manifest, smoke, capabilities)
+            boundaries: list[int] = []
+            plan = CampaignPlan(
+                b"{}\n",
+                "sha256:" + "f" * 64,
+                MappingProxyType(bindings),
+                MappingProxyType(capabilities),
+                smoke,
+                claim,
+                locks,
+            )
+            artifacts = publish_staged_campaign(
+                destination=destination,
+                manifest=manifest,
+                case_set=cases,
+                snapshot=snapshot,
+                plan=plan,
+                boundary_hook=lambda index, _path: boundaries.append(index),
+                boundary_guard=lambda: None,
+            )
+
+        self.assertEqual(len(locks), 12)
+        self.assertEqual(len(artifacts), 12)
+        self.assertEqual(boundaries, list(range(28)))
 
 
 if __name__ == "__main__":

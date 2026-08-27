@@ -138,8 +138,11 @@ def probe_models(
         )
         bindings[model.slot] = identity
         records.extend({"model_slot": model.slot, **record} for record in model_records)
-    if len(records) != 6:
-        raise ValueError("Capability preflight must contain exactly six direct calls.")
+    expected_records = 3 * len(manifest.models)
+    if len(records) != expected_records:
+        raise ValueError(
+            "Capability preflight must contain exactly three direct calls per model."
+        )
     return bindings, records
 
 
@@ -184,16 +187,19 @@ def build_lock_plans(
     capabilities: Mapping[str, ScientificTransportCapabilities],
 ) -> tuple[LockPlan, ...]:
     rows = {(row.model_slot, row.condition_id): row for row in smoke}
+    condition_ids = {row.condition_id for row in smoke}
     expected = {
-        (model.slot, f"c{index:03b}") for model in manifest.models for index in range(8)
+        (model.slot, condition_id)
+        for model in manifest.models
+        for condition_id in condition_ids
     }
-    if set(rows) != expected or len(smoke) != 16:
-        raise ValueError("Smoke schedule does not provide exactly 16 lock identities.")
+    if set(rows) != expected or len(smoke) != len(expected):
+        raise ValueError("Smoke schedule does not provide exact lock identities.")
     plans: list[LockPlan] = []
     for model in manifest.models:
-        for index in range(8):
+        for condition_id in sorted(condition_ids):
+            index = int(condition_id[1:], 2)
             condition = build_harness_config(manifest, index)
-            condition_id = condition.condition_id()
             row = rows[(model.slot, condition_id)]
             if condition.to_canonical_dict() != row.condition.to_canonical_dict():
                 raise ValueError(
@@ -297,7 +303,7 @@ def publish_staged_campaign(
         boundary(lock.authorization_path)
         publish_once(lock.authorization_path, lock.authorization_bytes)
         artifacts.append(verify_lock_plan(lock))
-    if boundary_index != 36:
+    if boundary_index != 4 + 2 * len(plan.locks):
         raise ValueError("Staged campaign publication boundary count drifted.")
     return tuple(artifacts)
 
