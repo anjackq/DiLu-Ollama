@@ -58,6 +58,7 @@ def make_request(
     endpoint: str = "http://127.0.0.1:11434/api/chat",
     think_mode: ThinkMode = ThinkMode.NO_THINK,
     digest: str = MODEL_DIGEST,
+    available_action_ids: tuple[int, ...] | None = None,
 ) -> GenerationRequest:
     return GenerationRequest(
         model_tag="qwen3:0.6b",
@@ -74,6 +75,7 @@ def make_request(
         output_enforcement=output_enforcement,
         think_mode=think_mode,
         timeout_sec=60.0,
+        available_action_ids=available_action_ids,
     )
 
 

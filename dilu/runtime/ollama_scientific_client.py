@@ -20,10 +20,14 @@ from ._scientific_transport_response import (
     parse_native_response_attempt,
     result_from_attempts,
 )
-from .harness_config import OutputEnforcement, RetryPolicy
+from .harness_config import RetryPolicy
 from .ollama_transport import OllamaModelIdentity
 from .runtime_failures import RuntimeFailureClass
-from .scientific_transport_records import GenerationAttempt, GenerationResult
+from .scientific_transport_records import (
+    SCHEMA_OUTPUT_ENFORCEMENTS,
+    GenerationAttempt,
+    GenerationResult,
+)
 from .scientific_transport_evidence import ModelIdentityCheck
 from .scientific_transport_types import (
     GenerationRequest,
@@ -304,12 +308,8 @@ class OllamaScientificClient:
                 error = ValueError(f"non_success_http_status:{status_code}")
             failure = RuntimeFailureClass.TRANSPORT_DRIFT
             if (
-                request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
-                and status_code
-                in {
-                    400,
-                    422,
-                }
+                request.output_enforcement in SCHEMA_OUTPUT_ENFORCEMENTS
+                and status_code in {400, 422}
                 and _is_verified_schema_rejection(transport_error_body)
             ):
                 failure = RuntimeFailureClass.SCHEMA_REJECTION

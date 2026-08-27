@@ -23,6 +23,10 @@ from .scientific_transport_types import (
 
 
 SCIENTIFIC_RETRY_COOLDOWN_MS = 10000.0
+SCHEMA_OUTPUT_ENFORCEMENTS = (
+    OutputEnforcement.BACKEND_SCHEMA,
+    OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+)
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,7 @@ class GenerationResult:
             not capabilities_bind_request
             or not self.capabilities.seed_verified
             or (
-                self.request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
+                self.request.output_enforcement in SCHEMA_OUTPUT_ENFORCEMENTS
                 and not self.capabilities.schema_verified
             )
         )
@@ -76,7 +80,7 @@ class GenerationResult:
         if self.attempts and (
             not self.capabilities.seed_verified
             or (
-                self.request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
+                self.request.output_enforcement in SCHEMA_OUTPUT_ENFORCEMENTS
                 and not self.capabilities.schema_verified
             )
         ):
@@ -387,5 +391,6 @@ __all__ = [
     "GenerationAttempt",
     "GenerationResult",
     "ModelIdentityCheck",
+    "SCHEMA_OUTPUT_ENFORCEMENTS",
     "SCIENTIFIC_RETRY_COOLDOWN_MS",
 ]

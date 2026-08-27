@@ -29,9 +29,21 @@ def validate_output_contract_semantics(
         if error_class != _TRANSPORT_DRIFT and contract_text != raw_output:
             raise ValueError("Prompt-only contract text must preserve raw output.")
         return
-    if output_enforcement != "backend_schema":
+    if output_enforcement not in ("backend_schema", "backend_schema_grounded"):
         raise ValueError("Unknown output-enforcement mode.")
     if error_class is not None:
+        return
+    if output_enforcement == "backend_schema_grounded":
+        # The native response parser does not JSON-decode grounded-schema
+        # content (only plain `backend_schema` is decoded); contract text is
+        # the raw output verbatim, so the invariant mirrors that directly.
+        if (
+            contract_text != raw_output
+            or contract_text not in CANONICAL_ACTION_TEXT_VALUES
+        ):
+            raise ValueError(
+                "Grounded backend-schema output must be a canonical raw response."
+            )
         return
     try:
         decoded = json.loads(raw_output or "")

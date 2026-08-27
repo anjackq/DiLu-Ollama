@@ -24,7 +24,7 @@ from dilu.runtime.action_resolution import (
     resolve_action,
 )
 from dilu.runtime.energy_monitor import estimate_generated_tokens
-from dilu.runtime.harness_config import HarnessConfig
+from dilu.runtime.harness_config import HarnessConfig, OutputEnforcement
 from dilu.runtime.runtime_failures import (
     ProtocolInvariantCode,
     ProtocolInvariantViolation,
@@ -1438,6 +1438,7 @@ class DriverAgent:
             (item["role"], item["content"])
             for item in self._to_ollama_messages(messages)
         )
+        available_action_ids = self._scientific_grounded_available_action_ids(config)
         return GenerationRequest(
             model_tag=self.ollama_model_name,
             model_digest=context.model_digest,
@@ -1453,7 +1454,29 @@ class DriverAgent:
             output_enforcement=config.condition.output_enforcement,
             think_mode=config.transport.think_mode,
             timeout_sec=config.transport.timeout_sec,
+            available_action_ids=available_action_ids,
         )
+
+    def _scientific_grounded_available_action_ids(
+        self,
+        config: HarnessConfig,
+    ) -> tuple[int, ...] | None:
+        """Thread the current decision's availability into O2 requests only.
+
+        Every other condition (O0/O1) must receive `None` here so the
+        canonical, static enum keeps building exactly as before.
+        """
+        grounded = OutputEnforcement.BACKEND_SCHEMA_GROUNDED
+        if config.condition.output_enforcement is not grounded:
+            return None
+        available = getattr(self, "last_scientific_available_action_ids", None)
+        if not isinstance(available, tuple) or not available:
+            violation = ProtocolInvariantViolation.from_mapping(
+                ProtocolInvariantCode.ACTION_AVAILABILITY_UNRESOLVED,
+                "Grounded generation requires resolved action availability.",
+            )
+            raise RuntimeProtocolError(violation)
+        return tuple(int(action_id) for action_id in available)
 
     def _invoke_scientific_response(
         self,

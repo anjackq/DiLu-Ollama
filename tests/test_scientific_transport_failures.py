@@ -104,7 +104,18 @@ class RetryAndFailureTests(unittest.TestCase):
                 ),
                 RuntimeFailureClass.SCHEMA_REJECTION,
             ),
+            (
+                "schema_grounded",
+                lambda *args, **kwargs: _FakeResponse(
+                    {"error": "invalid format schema"}, status_code=400
+                ),
+                RuntimeFailureClass.SCHEMA_REJECTION,
+            ),
         )
+        request_enforcement = {
+            "schema": OutputEnforcement.BACKEND_SCHEMA,
+            "schema_grounded": OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+        }
         for name, post, expected_failure in cases:
             with self.subTest(name=name):
                 client = _scientific_client(
@@ -114,9 +125,10 @@ class RetryAndFailureTests(unittest.TestCase):
                     sleep=lambda _: self.fail("Non-retryable failure slept."),
                 )
                 request = _request(
-                    OutputEnforcement.BACKEND_SCHEMA
-                    if name == "schema"
-                    else OutputEnforcement.PROMPT_ONLY
+                    request_enforcement.get(name, OutputEnforcement.PROMPT_ONLY),
+                    available_action_ids=(
+                        (0, 1, 2, 3, 4) if name == "schema_grounded" else None
+                    ),
                 )
                 result = client.generate(request)
                 self.assertEqual(len(result.attempts), 1)
@@ -127,7 +139,7 @@ class RetryAndFailureTests(unittest.TestCase):
                 if name == "empty":
                     self.assertTrue(result.transport_succeeded)
                     self.assertTrue(result.operational_fallback_allowed)
-                if name == "schema":
+                if name in ("schema", "schema_grounded"):
                     self.assertFalse(result.operational_fallback_allowed)
                     self.assertIn("format schema", result.transport_error_body)
 
@@ -320,6 +332,13 @@ class RetryAndFailureTests(unittest.TestCase):
             (_request(), _capabilities(seed_verified=False)),
             (
                 _request(OutputEnforcement.BACKEND_SCHEMA),
+                _capabilities(schema_verified=False),
+            ),
+            (
+                _request(
+                    OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+                    available_action_ids=(0, 1, 2, 3, 4),
+                ),
                 _capabilities(schema_verified=False),
             ),
         )
