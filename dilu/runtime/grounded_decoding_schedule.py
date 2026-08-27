@@ -50,6 +50,7 @@ from .minimal_factorial_schedule import (
     _episodes,
     _trusted_model_digests,
     build_runtime_snapshot,
+    select_smoke_case,
     select_stage1_cases,
 )
 from .ollama_transport import OllamaModelIdentity
@@ -80,6 +81,52 @@ class V8Schedule:
     all_claim_bearing: tuple[ScheduledEpisode, ...]
 
 
+def _grounded_specs(manifest: GroundedDecodingManifest) -> tuple[ConditionSpec, ...]:
+    """The two frozen P1 O2 condition specs (E0, E1), validated against the manifest."""
+    policy = manifest.conditions.policy()
+    grounded_output = manifest.conditions.output()
+    if grounded_output is not OutputEnforcement.BACKEND_SCHEMA_GROUNDED:
+        raise ValueError("V8 conditions.output_enforcement must be backend_schema_grounded.")
+    grounded_executions = manifest.conditions.executions()
+    if set(grounded_executions) != _REQUIRED_EXECUTION_MODES:
+        raise ValueError("V8 conditions.execution_modes must be exactly E0 and E1.")
+    return tuple(ConditionSpec(policy, grounded_output, mode) for mode in grounded_executions)
+
+
+def build_v8_smoke_schedule(
+    manifest: GroundedDecodingManifest,
+    case_set: Mapping[str, Any],
+    model_bindings: Mapping[str, OllamaModelIdentity],
+    *,
+    runtime_snapshot: RuntimeSnapshot,
+) -> tuple[ScheduledEpisode, ...]:
+    """The deterministic 10-row V8 smoke schedule: 5 models x {c120, c121} x 1 case.
+
+    Mirrors ``minimal_factorial_schedule.build_smoke_schedule`` for V5/V7 --
+    composed from the same ``select_smoke_case``/``_episodes`` machinery
+    rather than forking it -- so the smoke case's deterministic-identity
+    recipe is identical in spirit. V8's manifest has no dedicated
+    ``smoke_hash_prefix`` selection field (unlike V5/V7), so the single
+    smoke case is chosen with the same ``stage1_hash_prefix`` already used
+    for Stage-1 case selection; this is a schedule-authoring convention,
+    not a change to any frozen V5/V7 manifest or behavior.
+    """
+    digests = _trusted_model_digests(manifest, model_bindings)
+    fingerprint, revision = _binding(runtime_snapshot, case_set)
+    grounded_specs = _grounded_specs(manifest)
+    smoke_case = (select_smoke_case(case_set, manifest.selection.stage1_hash_prefix),)
+    return _episodes(
+        "smoke",
+        manifest.smoke_campaign_id,
+        manifest,
+        smoke_case,
+        grounded_specs,
+        digests,
+        revision,
+        fingerprint,
+    )
+
+
 def build_v8_schedule(
     manifest: GroundedDecodingManifest,
     case_set: Mapping[str, Any],
@@ -93,14 +140,7 @@ def build_v8_schedule(
 
     policy = manifest.conditions.policy()
     grounded_output = manifest.conditions.output()
-    if grounded_output is not OutputEnforcement.BACKEND_SCHEMA_GROUNDED:
-        raise ValueError("V8 conditions.output_enforcement must be backend_schema_grounded.")
-    grounded_executions = manifest.conditions.executions()
-    if set(grounded_executions) != _REQUIRED_EXECUTION_MODES:
-        raise ValueError("V8 conditions.execution_modes must be exactly E0 and E1.")
-    grounded_specs = tuple(
-        ConditionSpec(policy, grounded_output, mode) for mode in grounded_executions
-    )
+    grounded_specs = _grounded_specs(manifest)
 
     stage2_mode = manifest.selection.stage2_mode()
     if stage2_mode is not ExecutionMode.SHIELDED:
@@ -261,6 +301,7 @@ __all__ = [
     "build_comparator_contract",
     "build_runtime_snapshot",
     "build_v8_schedule",
+    "build_v8_smoke_schedule",
     "load_grounded_decoding_manifest",
     "pair_v8_row",
     "validate_comparator_pairing",

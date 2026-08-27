@@ -83,21 +83,61 @@ class ConditionSpec:
     def condition_id(self) -> str:
         self.validate()
         bits = (
-            {
-                PolicyContent.HISTORICAL_DILU_2024: "0",
-                PolicyContent.MODULAR_HARNESS: "1",
-            }[self.policy_content],
-            {
-                OutputEnforcement.PROMPT_ONLY: "0",
-                OutputEnforcement.BACKEND_SCHEMA: "1",
-                OutputEnforcement.BACKEND_SCHEMA_GROUNDED: "2",
-            }[self.output_enforcement],
-            {
-                ExecutionMode.UNSHIELDED_OPERATIONAL: "0",
-                ExecutionMode.SHIELDED: "1",
-            }[self.execution_mode],
+            _POLICY_DIGITS[self.policy_content],
+            _OUTPUT_DIGITS[self.output_enforcement],
+            _EXECUTION_DIGITS[self.execution_mode],
         )
         return f"c{''.join(bits)}"
+
+    @classmethod
+    def from_condition_id(cls, condition_id: str) -> "ConditionSpec":
+        """Invert :meth:`condition_id`: parse ``"c" + 3 digits`` back to a spec.
+
+        This is a general-purpose inverse, not special-cased per campaign:
+        any digit combination registered in the digit maps round-trips,
+        which is what lets V8's ``c120``/``c121`` (grounded, digit ``"2"``)
+        resolve exactly like the V5/V7 binary grid (digits ``"0"``/``"1"``)
+        without separate parsing logic.
+        """
+        if (
+            not isinstance(condition_id, str)
+            or len(condition_id) != 4
+            or condition_id[0] != "c"
+        ):
+            raise ValueError(f"Invalid condition_id: {condition_id!r}.")
+        policy_digit, output_digit, execution_digit = condition_id[1], condition_id[2], condition_id[3]
+        if (
+            policy_digit not in _POLICY_BY_DIGIT
+            or output_digit not in _OUTPUT_BY_DIGIT
+            or execution_digit not in _EXECUTION_BY_DIGIT
+        ):
+            raise ValueError(f"Invalid condition_id: {condition_id!r}.")
+        spec = cls(
+            _POLICY_BY_DIGIT[policy_digit],
+            _OUTPUT_BY_DIGIT[output_digit],
+            _EXECUTION_BY_DIGIT[execution_digit],
+        )
+        if spec.condition_id() != condition_id:
+            raise ValueError(f"condition_id round-trip drifted for {condition_id!r}.")
+        return spec
+
+
+_POLICY_DIGITS = {
+    PolicyContent.HISTORICAL_DILU_2024: "0",
+    PolicyContent.MODULAR_HARNESS: "1",
+}
+_OUTPUT_DIGITS = {
+    OutputEnforcement.PROMPT_ONLY: "0",
+    OutputEnforcement.BACKEND_SCHEMA: "1",
+    OutputEnforcement.BACKEND_SCHEMA_GROUNDED: "2",
+}
+_EXECUTION_DIGITS = {
+    ExecutionMode.UNSHIELDED_OPERATIONAL: "0",
+    ExecutionMode.SHIELDED: "1",
+}
+_POLICY_BY_DIGIT = {digit: value for value, digit in _POLICY_DIGITS.items()}
+_OUTPUT_BY_DIGIT = {digit: value for value, digit in _OUTPUT_DIGITS.items()}
+_EXECUTION_BY_DIGIT = {digit: value for value, digit in _EXECUTION_DIGITS.items()}
 
 
 EnumType = TypeVar("EnumType", bound=Enum)

@@ -22,7 +22,7 @@ from ._scientific_runtime_binding import (
     VerifiedRuntimeLockBinding,
     load_verified_runtime_lock_binding,
 )
-from .harness_config import ThinkMode
+from .harness_config import ConditionSpec, ThinkMode
 from .minimal_factorial_schedule import (
     ExperimentManifest,
     RuntimeSnapshot,
@@ -198,8 +198,9 @@ def build_lock_plans(
     plans: list[LockPlan] = []
     for model in manifest.models:
         for condition_id in sorted(condition_ids):
-            index = int(condition_id[1:], 2)
-            condition = build_harness_config(manifest, index)
+            condition = build_harness_config(
+                manifest, ConditionSpec.from_condition_id(condition_id)
+            )
             row = rows[(model.slot, condition_id)]
             if condition.to_canonical_dict() != row.condition.to_canonical_dict():
                 raise ValueError(

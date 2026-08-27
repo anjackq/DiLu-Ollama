@@ -92,6 +92,49 @@ class HarnessConfigTests(unittest.TestCase):
         )
         self.assertEqual(len({item.config_hash() for item in conditions}), 8)
 
+    def test_from_condition_id_matches_resolve_main_conditions_for_all_binary_ids(
+        self,
+    ) -> None:
+        # ConditionSpec.from_condition_id is a general-purpose inverse of
+        # condition_id(), added so _runtime_lock_authoring_workflow.py's
+        # build_lock_plans() can resolve V8's non-binary c120/c121 ids
+        # without special-casing. This proves it reconstructs *exactly* the
+        # same HarnessConfig as the old int(condition_id[1:], 2) + index-into-
+        # resolve_main_conditions() path for every V5/V7 binary id, which is
+        # the regression guarantee that V5/V7 lock authoring is unchanged.
+        base = _scientific_config()
+        conditions = resolve_main_conditions(base)
+        for index, condition in enumerate(conditions):
+            with self.subTest(index=index, condition_id=condition.condition_id()):
+                old_path = conditions[int(condition.condition_id()[1:], 2)]
+                new_spec = ConditionSpec.from_condition_id(condition.condition_id())
+                new_path = dataclasses.replace(base, condition=new_spec)
+                new_path.validate_scientific()
+                self.assertEqual(new_path, old_path)
+                self.assertEqual(new_path.config_hash(), old_path.config_hash())
+
+    def test_from_condition_id_round_trips_and_covers_grounded_digit(self) -> None:
+        for condition_id in ("c000", "c001", "c010", "c011", "c100", "c101", "c110", "c111"):
+            self.assertEqual(
+                ConditionSpec.from_condition_id(condition_id).condition_id(), condition_id
+            )
+        grounded = ConditionSpec.from_condition_id("c120")
+        self.assertEqual(grounded.policy_content, PolicyContent.MODULAR_HARNESS)
+        self.assertEqual(
+            grounded.output_enforcement, OutputEnforcement.BACKEND_SCHEMA_GROUNDED
+        )
+        self.assertEqual(grounded.execution_mode, ExecutionMode.UNSHIELDED_OPERATIONAL)
+        self.assertEqual(grounded.condition_id(), "c120")
+        self.assertEqual(
+            ConditionSpec.from_condition_id("c121").condition_id(), "c121"
+        )
+
+    def test_from_condition_id_rejects_malformed_ids(self) -> None:
+        for bad in ("x000", "c00", "c0000", "c00x", "", "c999"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    ConditionSpec.from_condition_id(bad)
+
     def test_harness_factors_resolve_independently(self) -> None:
         conditions = {
             (

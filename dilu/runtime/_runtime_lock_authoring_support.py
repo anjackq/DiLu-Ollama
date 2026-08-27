@@ -97,7 +97,16 @@ def probe_model(
     canonical_schema_bytes: bytes,
     get: GetCallable,
     post: PostCallable,
+    extra_requests: Callable[[OllamaModelIdentity], tuple[GenerationRequest, ...]]
+    | None = None,
 ) -> tuple[OllamaModelIdentity, tuple[dict[str, Any], ...]]:
+    """Send the trusted prompt/repeat/schema probe sequence and return evidence.
+
+    ``extra_requests``, when given, is called with the resolved pre-probe
+    identity and its returned requests are appended after the trusted
+    three (e.g. the ICLR 2027 grounded-decoding (O2) probe); ``None``
+    (the default) reproduces the exact V5/V7 three-call sequence.
+    """
     before = _inspect_direct_identity(
         native_endpoint,
         model_tag,
@@ -118,6 +127,8 @@ def probe_model(
         timeout_sec=timeout_sec,
         think_mode=think_mode,
     )
+    if extra_requests is not None:
+        requests = requests + extra_requests(before)
     for request in requests:
         payload = build_native_chat_payload(request)
         if (
@@ -354,16 +365,27 @@ def derive_response_evidence(
         or attempt.completion_tokens is None
     ):
         raise ValueError("Native capability probe omitted required evidence.")
+    # V5/V7 probes never set available_action_ids (None), so this falls back
+    # to the full canonical set exactly as before; only the grounded (O2)
+    # probe request narrows it (e.g. to the restricted enum under test).
+    effective_action_ids = (
+        request.available_action_ids
+        if request.available_action_ids is not None
+        else CANONICAL_ACTION_IDS
+    )
     resolution = resolve_action(
         attempt.contract_text,
-        available_action_ids=CANONICAL_ACTION_IDS,
+        available_action_ids=effective_action_ids,
         parser_mode=ParserMode.STRICT_ONLY,
         resolver_mode=ResolverMode.DISABLED,
         fallback_policy=FallbackPolicy.FIXED_IDLE,
     )
-    if request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA and (
+    if request.output_enforcement in (
+        OutputEnforcement.BACKEND_SCHEMA,
+        OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+    ) and (
         resolution.syntax_status is not ActionSyntaxStatus.STRICT_VALID
-        or resolution.strict_action not in CANONICAL_ACTION_IDS
+        or resolution.strict_action not in effective_action_ids
         or resolution.used_fallback
     ):
         raise ValueError(

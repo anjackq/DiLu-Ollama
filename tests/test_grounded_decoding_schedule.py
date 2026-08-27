@@ -62,6 +62,54 @@ class GroundedDecodingScheduleTests(unittest.TestCase):
             **kwargs,
         )
 
+    def _smoke_schedule(self):
+        from dilu.runtime.grounded_decoding_schedule import build_v8_smoke_schedule
+
+        return build_v8_smoke_schedule(
+            self.manifest, self.cases, self.bindings, runtime_snapshot=self.snapshot
+        )
+
+    # -- Task 5 item 2: the V8 smoke schedule build_lock_plans() needs -----
+
+    def test_v8_smoke_schedule_is_five_models_by_two_cells_by_one_case(self) -> None:
+        smoke = self._smoke_schedule()
+        self.assertEqual(len(smoke), 10)
+        self.assertTrue(all(row.stage == "smoke" for row in smoke))
+        self.assertTrue(
+            all(row.campaign_id == self.manifest.smoke_campaign_id for row in smoke)
+        )
+        self.assertEqual({row.condition_id for row in smoke}, {"c120", "c121"})
+        self.assertEqual(
+            {row.model_slot for row in smoke},
+            {"qwen_06b", "llama_1b", "llama_3b", "gemma_4b", "qwen_8b"},
+        )
+        self.assertEqual(len({row.case_id for row in smoke}), 1)
+        pairs = {(row.model_slot, row.condition_id) for row in smoke}
+        expected_pairs = {
+            (model.slot, condition_id)
+            for model in self.manifest.models
+            for condition_id in ("c120", "c121")
+        }
+        self.assertEqual(pairs, expected_pairs)
+        self.assertEqual(len({row.episode_attempt_id for row in smoke}), 10)
+
+    def test_v8_smoke_schedule_case_is_deterministic_by_stage1_hash_prefix(self) -> None:
+        from dilu.runtime.minimal_factorial_schedule import select_smoke_case
+
+        smoke = self._smoke_schedule()
+        expected_case_id = select_smoke_case(
+            self.cases, self.manifest.selection.stage1_hash_prefix
+        )["case_id"]
+        self.assertTrue(all(row.case_id == expected_case_id for row in smoke))
+
+    def test_v8_smoke_schedule_rows_validate_through_the_shared_provenance_validator(
+        self,
+    ) -> None:
+        from dilu.runtime._minimal_factorial_provenance import validate_schedule_rows
+
+        smoke = self._smoke_schedule()
+        validate_schedule_rows(self.manifest, self.snapshot, smoke, self.cases)  # must not raise
+
     def _contract(self):
         from dilu.runtime.grounded_decoding_schedule import build_comparator_contract
 

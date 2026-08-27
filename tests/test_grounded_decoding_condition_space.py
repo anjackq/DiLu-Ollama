@@ -34,6 +34,50 @@ class ProvenanceConditionIdExtensionTests(unittest.TestCase):
         self.assertTrue(binary.issubset(_FROZEN_CONDITION_IDS))
         self.assertEqual(_FROZEN_CONDITION_IDS - binary, {"c120", "c121"})
 
+    def test_frozen_stages_extend_to_recognize_comparator_rerun_labels(self) -> None:
+        # Task 4 introduced the "comparator_rerun_stage1"/"comparator_rerun_stage2"
+        # stage labels (used by the registered digest-drift contingency) but
+        # never taught this module's stage vocabulary about them, since Task 4
+        # authored no frozen manifests. Task 5 does author frozen artifacts, so
+        # the vocabulary must recognize them too -- as a strict superset that
+        # leaves the original V5/V7 stage labels untouched.
+        from dilu.runtime._minimal_factorial_provenance import _FROZEN_STAGES
+
+        original = {"smoke", "stage1", "stage2_additional"}
+        self.assertTrue(original.issubset(_FROZEN_STAGES))
+        self.assertEqual(
+            _FROZEN_STAGES - original,
+            {"comparator_rerun_stage1", "comparator_rerun_stage2"},
+        )
+
+    def test_comparator_rerun_stage_row_validates_through_the_shared_validator(self) -> None:
+        from dilu.runtime._minimal_factorial_provenance import validate_episode
+        from dilu.runtime.grounded_decoding_schedule import (
+            build_runtime_snapshot,
+            build_v8_schedule,
+            load_grounded_decoding_manifest,
+        )
+
+        manifest = load_grounded_decoding_manifest(MANIFEST_PATH)
+        cases = json.loads((ROOT / manifest.case_path).read_text())
+        with patch("dilu.runtime._minimal_factorial_manifest.subprocess.run", fake_git):
+            snapshot = build_runtime_snapshot(manifest, cases)
+        schedule = build_v8_schedule(
+            manifest,
+            cases,
+            frozen_bindings(),
+            runtime_snapshot=snapshot,
+            rerun_comparators_for=frozenset({"qwen_06b"}),
+        )
+        self.assertTrue(schedule.rerun_rows)
+        models = {model.slot: model.tag for model in manifest.models}
+        case_index = {case["case_id"]: case for case in cases["cases"]}
+        fingerprint = snapshot.payload["case_set_fingerprint"]
+        revision = snapshot.payload["code_revision"]
+        for row in schedule.rerun_rows:
+            self.assertIn(row.stage, {"comparator_rerun_stage1", "comparator_rerun_stage2"})
+            validate_episode(row, manifest, models, fingerprint, revision, case_index)  # ok
+
     def test_v5_frozen_schedule_still_validates_unchanged(self) -> None:
         from dilu.runtime._minimal_factorial_manifest import validate_schedule
         from dilu.runtime.minimal_factorial_schedule import (

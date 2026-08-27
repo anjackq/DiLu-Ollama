@@ -17,6 +17,14 @@ _BINARY_CONDITION_IDS = frozenset(f"c{index:03b}" for index in range(8))
 # are accepted for V5/V7 rows -- it only widens the set for V8.
 _GROUNDED_DECODING_CONDITION_IDS = frozenset({"c120", "c121"})
 _FROZEN_CONDITION_IDS = _BINARY_CONDITION_IDS | _GROUNDED_DECODING_CONDITION_IDS
+# The V5/V7 stage vocabulary, plus the two ICLR 2027 grounded-decoding V8
+# registered-contingency stage labels (Task 4's comparator_rerun_stage1/2),
+# which record the within-V8 O1 re-pairing episodes scheduled only when a
+# model's live digest drifts from the frozen V5/V7 comparator. This is a
+# strict superset -- V5/V7's own stage labels are unaffected.
+_FROZEN_STAGES = frozenset(
+    {"smoke", "stage1", "stage2_additional", "comparator_rerun_stage1", "comparator_rerun_stage2"}
+)
 
 
 def validate_schedule_rows(
@@ -45,7 +53,7 @@ def validate_episode(
     revision: str,
     cases: Mapping[str, Mapping[str, Any]],
 ) -> None:
-    if episode.stage not in {"smoke", "stage1", "stage2_additional"}:
+    if episode.stage not in _FROZEN_STAGES:
         raise ValueError("Scheduled episode stage is not frozen.")
     expected_campaign = (
         manifest.smoke_campaign_id if episode.stage == "smoke" else manifest.campaign_id
