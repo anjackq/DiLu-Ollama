@@ -55,7 +55,7 @@ class MinimalFactorialPublicApiTests(unittest.TestCase):
                 result = runner.run_probe_lock(manifest_path)
 
         self.assertEqual(result, authored.preflight_path)
-        author.assert_called_once_with(root)
+        author.assert_called_once_with(root, manifest_path=manifest_path.resolve())
 
 
 class MinimalFactorialSchedulingTests(unittest.TestCase):

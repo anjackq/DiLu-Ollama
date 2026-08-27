@@ -59,6 +59,12 @@ CASE_FINGERPRINT = (
     "sha256:bd6d65d694a1452e0770e9854e478bb463be8302168e8c17396e86786401fd33"
 )
 MANIFEST_SHA = "682912c90d4fc19346ef00a187a950592aa85ae9008638c1dc79e6bacfa415c8"
+REGISTERED_MANIFEST_SHAS = frozenset(
+    {
+        MANIFEST_SHA,
+        "a70cc45c4e1fa0bf1f5a1b49b743c7a8fcd851133ff0d192465fa45abcdff5d9",
+    }
+)
 REVISION_RE = re.compile(r"\A[0-9a-fA-F]{40}\Z")
 SOURCE_SHA = {
     "configs/iclr2027/minimal_factorial_runtime.yaml": (
@@ -106,9 +112,12 @@ class ExperimentManifest:
     def from_mapping(
         cls, value: Mapping[str, Any], source_path: Path = Path(".")
     ) -> "ExperimentManifest":
-        if not isinstance(value, Mapping) or canonical_sha256(value) != MANIFEST_SHA:
+        if (
+            not isinstance(value, Mapping)
+            or canonical_sha256(value) not in REGISTERED_MANIFEST_SHAS
+        ):
             raise ValueError("Frozen manifest constants drifted.")
-        models = tuple(ModelSpec(**item) for item in _items(value["models"], 2))
+        models = tuple(ModelSpec(**item) for item in _items(value["models"]))
         specs = (
             _spec(value["transport"], TransportSpec),
             _spec(value["runtime_sources"], RuntimeSources),
@@ -327,8 +336,8 @@ def _spec(value: Any, spec_type: type[FrozenSpec]) -> FrozenSpec:
     return spec_type(value)
 
 
-def _items(value: Any, size: int) -> tuple[dict[str, Any], ...]:
-    if not isinstance(value, list) or len(value) != size:
+def _items(value: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list) or not value:
         raise ValueError("Model list drifted.")
     if not all(
         isinstance(item, Mapping) and set(item) == {"slot", "tag"} for item in value

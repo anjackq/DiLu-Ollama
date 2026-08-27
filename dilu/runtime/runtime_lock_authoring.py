@@ -60,6 +60,7 @@ class S1AuthoringResult:
 def author_verified_runtime_locks(
     repo_root: Path,
     *,
+    manifest_path: Path | None = None,
     output_root: Path | None = None,
     get: GetCallable | None = None,
     post: PostCallable | None = None,
@@ -68,9 +69,12 @@ def author_verified_runtime_locks(
 ) -> S1AuthoringResult:
     """Load an exact frozen destination or transactionally author a fresh one."""
     root = _require_repo_root(repo_root)
-    manifest = load_experiment_manifest(
+    source = (
         root / "configs" / "iclr2027" / "minimal_factorial.yaml"
+        if manifest_path is None
+        else Path(manifest_path).resolve(strict=True)
     )
+    manifest = load_experiment_manifest(source)
     case_set = _load_checked_case_set(root, manifest)
     destination = (
         root / manifest.outputs.root if output_root is None else Path(output_root)

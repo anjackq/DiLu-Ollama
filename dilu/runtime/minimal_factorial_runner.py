@@ -55,7 +55,9 @@ from .task_benchmark import (
 
 
 def run_probe_lock(manifest_path: Path) -> Path:
-    result = author_verified_runtime_locks(_repo_root(manifest_path))
+    result = author_verified_runtime_locks(
+        _repo_root(manifest_path), manifest_path=manifest_path.resolve()
+    )
     return result.preflight_path
 
 
@@ -318,8 +320,8 @@ def _repo_root(manifest_path: Path) -> Path:
     if not isinstance(manifest_path, Path):
         raise TypeError("manifest_path must be a pathlib.Path.")
     resolved = manifest_path.resolve(strict=True)
-    expected_suffix = Path("configs") / "iclr2027" / "minimal_factorial.yaml"
-    if Path(*resolved.parts[-3:]) != expected_suffix:
+    expected_parent = Path("configs") / "iclr2027"
+    if Path(*resolved.parts[-3:-1]) != expected_parent or resolved.suffix != ".yaml":
         raise ValueError("manifest_path must identify the registered manifest.")
     return resolved.parents[2]
 

@@ -104,7 +104,7 @@ def build_smoke_schedule(
         manifest.smoke_campaign_id,
         manifest,
         (select_smoke_case(case_set, manifest.selection.smoke_hash_prefix),),
-        range(8),
+        _condition_indexes(manifest),
         model_digests,
         revision,
         fingerprint,
@@ -124,16 +124,19 @@ def build_union_schedule(
     remaining = tuple(
         case for case in case_set["cases"] if case["case_id"] not in selected
     )
-    return _episodes(
+    stage1_rows = _episodes(
         "stage1",
         manifest.campaign_id,
         manifest,
         stage1,
-        range(8),
+        _condition_indexes(manifest),
         model_digests,
         revision,
         fingerprint,
-    ) + _episodes(
+    )
+    if not _include_stage2(manifest):
+        return stage1_rows
+    return stage1_rows + _episodes(
         "stage2_additional",
         manifest.campaign_id,
         manifest,
@@ -164,7 +167,7 @@ def write_frozen_campaign_manifest(
             digests,
             runtime_snapshot=snapshot,
         )
-    elif stages == {"stage1", "stage2_additional"}:
+    elif stages in ({"stage1"}, {"stage1", "stage2_additional"}):
         expected = build_union_schedule(
             manifest,
             case_set,
@@ -209,6 +212,25 @@ def _trusted_model_digests(
         )
         digests[slot] = binding.model_digest
     return digests
+
+
+def _condition_indexes(manifest: ExperimentManifest) -> tuple[int, ...]:
+    raw = manifest.selection.values.get("condition_indexes", tuple(range(8)))
+    indexes = tuple(raw)
+    if not indexes or len(indexes) != len(set(indexes)):
+        raise ValueError("Condition indexes must be unique and non-empty.")
+    if any(isinstance(index, bool) or not isinstance(index, int) for index in indexes):
+        raise ValueError("Condition indexes must be integers.")
+    if any(index not in range(8) for index in indexes):
+        raise ValueError("Condition indexes must be in [0, 7].")
+    return indexes
+
+
+def _include_stage2(manifest: ExperimentManifest) -> bool:
+    value = manifest.selection.values.get("include_stage2", True)
+    if not isinstance(value, bool):
+        raise TypeError("include_stage2 must be boolean.")
+    return value
 
 
 def _binding(snapshot: RuntimeSnapshot, case_set: Mapping[str, Any]) -> tuple[str, str]:
