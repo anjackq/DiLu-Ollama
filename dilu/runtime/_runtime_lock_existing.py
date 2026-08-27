@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Sequence
 
 from ._minimal_factorial_manifest import serialize_frozen_campaign
 from ._runtime_lock_authoring_support import (
@@ -148,10 +148,27 @@ def load_existing_campaign(
 
 
 def _expected_relative_paths(manifest: ExperimentManifest) -> tuple[Path, ...]:
+    # V5/V7 campaigns select conditions by integer index into the 8-cell
+    # binary grid; this formats identically to before (f"c{index:03b}").
+    condition_ids = tuple(f"c{index:03b}" for index in _condition_indexes(manifest))
+    return _lock_relative_paths(manifest, condition_ids)
+
+
+def _lock_relative_paths(
+    manifest: ExperimentManifest, condition_ids: Sequence[str]
+) -> tuple[Path, ...]:
+    """Build the exact completed-lock-tree paths for explicit condition ids.
+
+    Extracted from ``_expected_relative_paths`` so that a campaign whose
+    condition ids are not expressible as a 3-bit binary index (for example
+    the ICLR 2027 grounded-decoding V8 campaign's ``c120``/``c121``) can
+    reuse this path layout by passing condition-id strings directly,
+    without changing the paths produced for the existing binary grid.
+    """
     locks = tuple(
-        Path("s1") / "locks" / model.slot / f"c{index:03b}" / artifact
+        Path("s1") / "locks" / model.slot / condition_id / artifact
         for model in manifest.models
-        for index in _condition_indexes(manifest)
+        for condition_id in condition_ids
         for artifact in ("RUNTIME_PROTOCOL_LOCK.json", "PROTOCOL_FROZEN.json")
     )
     return (

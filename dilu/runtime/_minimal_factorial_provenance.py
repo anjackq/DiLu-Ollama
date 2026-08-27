@@ -9,6 +9,14 @@ from typing import Any, Mapping, Sequence
 from ._scientific_transport_validation import require_model_digest
 
 _REVISION_RE = re.compile(r"\A[0-9a-fA-F]{40}\Z")
+# The historical V5/V7 8-cell binary condition grid (P{0,1} x O{0,1} x E{0,1}).
+_BINARY_CONDITION_IDS = frozenset(f"c{index:03b}" for index in range(8))
+# The ICLR 2027 grounded-decoding V8 campaign adds exactly one new
+# output-enforcement level (O2, "backend_schema_grounded") at P1, both
+# execution modes: c120 (E0) and c121 (E1). This does not change which ids
+# are accepted for V5/V7 rows -- it only widens the set for V8.
+_GROUNDED_DECODING_CONDITION_IDS = frozenset({"c120", "c121"})
+_FROZEN_CONDITION_IDS = _BINARY_CONDITION_IDS | _GROUNDED_DECODING_CONDITION_IDS
 
 
 def validate_schedule_rows(
@@ -49,7 +57,7 @@ def validate_episode(
     require_model_digest("scheduled model_digest", episode.model_digest)
     if episode.condition_id != episode.condition.condition_id():
         raise ValueError("Scheduled episode condition id drifted.")
-    if episode.condition_id not in {f"c{index:03b}" for index in range(8)}:
+    if episode.condition_id not in _FROZEN_CONDITION_IDS:
         raise ValueError("Scheduled episode condition is not frozen.")
     case = cases.get(episode.case_id)
     if case is None:
