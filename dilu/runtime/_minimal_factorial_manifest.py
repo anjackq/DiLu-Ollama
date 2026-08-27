@@ -63,6 +63,7 @@ REGISTERED_MANIFEST_SHAS = frozenset(
     {
         MANIFEST_SHA,
         "a70cc45c4e1fa0bf1f5a1b49b743c7a8fcd851133ff0d192465fa45abcdff5d9",
+        "e4b73aa7466d74d669378a1e4ba880b200b8091c86f3ce14fa1e5b610f8f2b0d",
     }
 )
 REVISION_RE = re.compile(r"\A[0-9a-fA-F]{40}\Z")

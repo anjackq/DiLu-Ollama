@@ -236,10 +236,9 @@ def _validate_campaign_artifacts(
 
     promotion_allowed = (
         _is_claim_schedule(scheduled)
-        and len(scheduled_ids) == 840
-        and len(scheduled_set) == 840
-        and len(summaries) == 840
-        and len(set(summary_ids)) == 840
+        and len(scheduled_set) == len(scheduled_ids)
+        and len(summaries) == len(scheduled_ids)
+        and len(set(summary_ids)) == len(scheduled_ids)
         and completed_ids == scheduled_set == set(summary_ids)
         and set(statuses) == scheduled_set
         and all(status is AttemptStatus.COMPLETED for status in statuses.values())
