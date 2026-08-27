@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,7 @@ CANONICAL_ACTION_TEXT_VALUES = tuple(
     f"Response to user:#### {action_id}" for action_id in range(5)
 )
 SCHEMA_MECHANISM = "ollama_api_chat_json_string_enum_v1"
+SCHEMA_MECHANISM_GROUNDED = "ollama_api_chat_json_string_enum_grounded_v1"
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,7 @@ class ScientificTransportCapabilities:
         _require_bool("schema_verified", self.schema_verified)
         _require_canonical_text("capability_probe_id", self.capability_probe_id)
         _require_model_digest("capability_artifact_hash", self.capability_artifact_hash)
-        if self.schema_mechanism != SCHEMA_MECHANISM:
+        if self.schema_mechanism not in (SCHEMA_MECHANISM, SCHEMA_MECHANISM_GROUNDED):
             raise ValueError("Unknown backend schema mechanism.")
 
 
@@ -93,6 +95,7 @@ class GenerationRequest:
     output_enforcement: OutputEnforcement
     think_mode: ThinkMode
     timeout_sec: float
+    available_action_ids: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         _require_canonical_text("model_tag", self.model_tag)
@@ -126,6 +129,14 @@ class GenerationRequest:
                 raise ValueError(
                     "Each message must be a canonical (role, content) tuple."
                 )
+        if self.available_action_ids is not None:
+            if not isinstance(self.available_action_ids, tuple) or not all(
+                isinstance(action_id, int) and not isinstance(action_id, bool)
+                for action_id in self.available_action_ids
+            ):
+                raise ValueError(
+                    "available_action_ids must be a tuple of ints or None."
+                )
 
 
 @dataclass(frozen=True)
@@ -144,6 +155,21 @@ def canonical_action_text_schema() -> dict[str, Any]:
     return {"type": "string", "enum": list(CANONICAL_ACTION_TEXT_VALUES)}
 
 
+def grounded_action_text_schema(
+    available_action_ids: Sequence[int],
+) -> dict[str, Any]:
+    ids = sorted({int(action_id) for action_id in available_action_ids})
+    if not ids:
+        raise ValueError("grounded schema requires at least one available action")
+    unknown = [action_id for action_id in ids if action_id not in range(5)]
+    if unknown:
+        raise ValueError(f"unknown action ids for grounded schema: {unknown}")
+    return {
+        "type": "string",
+        "enum": [f"Response to user:#### {action_id}" for action_id in ids],
+    }
+
+
 def build_native_chat_payload(request: GenerationRequest) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": request.model_tag,
@@ -156,6 +182,14 @@ def build_native_chat_payload(request: GenerationRequest) -> dict[str, Any]:
     }
     if request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA:
         payload["format"] = canonical_action_text_schema()
+    elif request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA_GROUNDED:
+        if request.available_action_ids is None:
+            raise ValueError(
+                "backend_schema_grounded requires available_action_ids"
+            )
+        payload["format"] = grounded_action_text_schema(
+            request.available_action_ids
+        )
     return payload
 
 
@@ -166,6 +200,8 @@ __all__ = [
     "ScientificGenerationContext",
     "ScientificTransportCapabilities",
     "SCHEMA_MECHANISM",
+    "SCHEMA_MECHANISM_GROUNDED",
     "build_native_chat_payload",
     "canonical_action_text_schema",
+    "grounded_action_text_schema",
 ]

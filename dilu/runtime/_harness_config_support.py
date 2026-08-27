@@ -16,6 +16,7 @@ class PolicyContent(str, Enum):
 class OutputEnforcement(str, Enum):
     PROMPT_ONLY = "prompt_only"
     BACKEND_SCHEMA = "backend_schema"
+    BACKEND_SCHEMA_GROUNDED = "backend_schema_grounded"
 
 
 class ExecutionMode(str, Enum):
@@ -89,6 +90,7 @@ class ConditionSpec:
             {
                 OutputEnforcement.PROMPT_ONLY: "0",
                 OutputEnforcement.BACKEND_SCHEMA: "1",
+                OutputEnforcement.BACKEND_SCHEMA_GROUNDED: "2",
             }[self.output_enforcement],
             {
                 ExecutionMode.UNSHIELDED_OPERATIONAL: "0",

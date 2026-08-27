@@ -61,7 +61,10 @@ class ScientificFactorMatrixTests(unittest.TestCase):
         expected = set(
             product(
                 (item.value for item in PolicyContent),
-                (item.value for item in OutputEnforcement),
+                (
+                    OutputEnforcement.PROMPT_ONLY.value,
+                    OutputEnforcement.BACKEND_SCHEMA.value,
+                ),
                 (item.value for item in ExecutionMode),
             )
         )

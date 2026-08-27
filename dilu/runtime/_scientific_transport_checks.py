@@ -9,6 +9,7 @@ import requests
 from .harness_config import OutputEnforcement
 from .scientific_transport_types import (
     SCHEMA_MECHANISM,
+    SCHEMA_MECHANISM_GROUNDED,
     GenerationRequest,
     ScientificTransportCapabilities,
 )
@@ -56,10 +57,11 @@ def transport_preflight_error(
         return "think_mode_not_verified"
     if not capabilities.seed_verified:
         return "generation_seed_not_verified"
-    if capabilities.schema_mechanism != SCHEMA_MECHANISM:
+    if capabilities.schema_mechanism not in (SCHEMA_MECHANISM, SCHEMA_MECHANISM_GROUNDED):
         return "schema_mechanism_drift"
     if (
-        request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
+        request.output_enforcement
+        in (OutputEnforcement.BACKEND_SCHEMA, OutputEnforcement.BACKEND_SCHEMA_GROUNDED)
         and not capabilities.schema_verified
     ):
         return "backend_schema_not_verified"
