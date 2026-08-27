@@ -155,9 +155,7 @@ class MinimalBreadthPrototypeTests(unittest.TestCase):
             }
         )
         bindings = {
-            model.slot: OllamaModelIdentity(
-                model.tag, "sha256:" + character * 64
-            )
+            model.slot: OllamaModelIdentity(model.tag, "sha256:" + character * 64)
             for model, character in zip(manifest.models, "abc", strict=True)
         }
         digests = {slot: binding.model_digest for slot, binding in bindings.items()}
@@ -167,9 +165,7 @@ class MinimalBreadthPrototypeTests(unittest.TestCase):
         claim = build_union_schedule(
             manifest, cases, digests, runtime_snapshot=snapshot
         )
-        capabilities = build_capabilities(
-            manifest, bindings, "sha256:" + "e" * 64
-        )
+        capabilities = build_capabilities(manifest, bindings, "sha256:" + "e" * 64)
 
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp)
@@ -197,6 +193,24 @@ class MinimalBreadthPrototypeTests(unittest.TestCase):
         self.assertEqual(len(locks), 12)
         self.assertEqual(len(artifacts), 12)
         self.assertEqual(boundaries, list(range(28)))
+
+    def test_existing_v6_tree_expects_only_registered_condition_locks(self) -> None:
+        from dilu.runtime._runtime_lock_existing import _expected_relative_paths
+        from dilu.runtime.minimal_factorial_schedule import load_experiment_manifest
+
+        manifest = load_experiment_manifest(V6_MANIFEST)
+        paths = _expected_relative_paths(manifest)
+
+        self.assertEqual(len(paths), 28)
+        lock_paths = [path.as_posix() for path in paths if "locks" in path.parts]
+        self.assertEqual(len(lock_paths), 24)
+        self.assertFalse(any("/c000/" in path for path in lock_paths))
+        self.assertTrue(
+            all(
+                any(f"/{cell}/" in path for cell in ("c100", "c101", "c110", "c111"))
+                for path in lock_paths
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -32,7 +32,11 @@ from ._runtime_lock_tree_validation import (
     validate_unredirected_artifact_paths,
 )
 from .harness_config import ThinkMode
-from .minimal_factorial_schedule import ExperimentManifest, RuntimeSnapshot
+from .minimal_factorial_schedule import (
+    ExperimentManifest,
+    RuntimeSnapshot,
+    _condition_indexes,
+)
 from .ollama_transport import OllamaModelIdentity
 from .scientific_transport_types import (
     GenerationRequest,
@@ -106,8 +110,8 @@ def load_existing_campaign(
     if preflight["runtime_snapshot_sha256"] != "sha256:" + snapshot.sha256:
         raise ValueError("Completed preflight runtime snapshot drifted.")
     records = preflight["records"]
-    if not isinstance(records, list) or len(records) != 6:
-        raise ValueError("Completed preflight must contain six records.")
+    if not isinstance(records, list) or len(records) != 3 * len(manifest.models):
+        raise ValueError("Completed preflight must contain three records per model.")
     bindings = _load_bindings(
         manifest,
         records,
@@ -147,7 +151,7 @@ def _expected_relative_paths(manifest: ExperimentManifest) -> tuple[Path, ...]:
     locks = tuple(
         Path("s1") / "locks" / model.slot / f"c{index:03b}" / artifact
         for model in manifest.models
-        for index in range(8)
+        for index in _condition_indexes(manifest)
         for artifact in ("RUNTIME_PROTOCOL_LOCK.json", "PROTOCOL_FROZEN.json")
     )
     return (
