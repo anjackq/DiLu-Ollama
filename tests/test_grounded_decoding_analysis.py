@@ -1,11 +1,17 @@
 """Registered V8 grounded-decoding analysis: validation gate and contrasts.
 
 Covers task-6-brief.md steps 1-2: the blocked-output contract (missing
-rows, duplicate ids, digest mismatch, fingerprint drift, and the new Family
-M manipulation-check gate), the Family A/B/C/D paired contrasts against
+rows, duplicate ids, digest mismatch, fingerprint drift, and the Family M
+manipulation-check gate), the Family A/B/C/D paired contrasts against
 constructed constant offsets, Holm correction within a family, bootstrap
 determinism, and a direct byte-for-byte comparison of the sign-flip/Holm
 implementation against the registered V7 reference script.
+
+Fix-verification tests from the Task 6 review round (real-episode-schema
+guard, fail-closed trace join, action-distribution shift, Family M's
+condition-id filter) live in the sibling file
+``test_grounded_decoding_analysis_fixes.py`` to keep both files under the
+400-line-per-file limit.
 """
 
 from __future__ import annotations

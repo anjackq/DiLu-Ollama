@@ -187,10 +187,19 @@ def _pairing_errors(
 
 
 def _family_m_errors(v8_rows: Sequence[Mapping[str, Any]]) -> set[str]:
-    """Family M gate: zero ``action_unavailable`` violations under O2, per model."""
+    """Family M gate: zero ``action_unavailable`` violations under O2, per model.
+
+    Filtered to ``condition_id in {"c120", "c121"}`` (O2) rather than
+    relying on "every V8 row is O2": the registered digest-drift
+    contingency (``rerun_comparators_for``) can append within-V8 O1
+    comparator rows (``c110``/``c111``) to the schedule, and this gate must
+    stay scoped to its literal "under O2" spec even then.
+    """
     errors: set[str] = set()
     totals: dict[str, int] = defaultdict(int)
     for row in v8_rows:
+        if row.get("condition_id") not in STAGE1_CONDITIONS:
+            continue
         model = str(row.get("model_slot"))
         count = row.get(_ACTION_UNAVAILABLE_FIELD)
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:

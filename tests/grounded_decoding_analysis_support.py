@@ -83,9 +83,10 @@ def _episode_row(
         "task_completed": True,
         "crashed": False,
         "fallback_action_rate": 0.1,
-        "shield_intervention_rate": 0.05,
+        "decision_calls_total": 30,
         "decision_latency_ms_avg": 200.0,
         "analysis_action_unavailable_count": action_unavailable,
+        "analysis_shield_intervention_rate": 0.05,
     }
 
 

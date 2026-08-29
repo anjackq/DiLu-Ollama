@@ -27,6 +27,7 @@ TABLE_FILES = (
     "family_c_contrasts.csv",
     "family_d_contrasts.csv",
     "descriptive_secondary_outcomes.csv",
+    "action_distribution_shift.csv",
 )
 EXACT_SUCCESS_FILES = frozenset(
     {"analysis_validation.json", "analysis-report.md", "stats-appendix.md", *TABLE_FILES}
@@ -40,6 +41,7 @@ class V8AnalysisTables:
     family_c: tuple[Mapping[str, Any], ...]
     family_d: tuple[Mapping[str, Any], ...]
     descriptive: tuple[Mapping[str, Any], ...]
+    action_distribution: tuple[Mapping[str, Any], ...]
     analysis_report: str
     stats_appendix: str
 
@@ -88,6 +90,7 @@ def _write_tables(root: Path, tables: V8AnalysisTables) -> None:
         "family_c_contrasts.csv": tables.family_c,
         "family_d_contrasts.csv": tables.family_d,
         "descriptive_secondary_outcomes.csv": tables.descriptive,
+        "action_distribution_shift.csv": tables.action_distribution,
     }
     for name, rows in rows_by_name.items():
         _write_csv(root / name, rows)

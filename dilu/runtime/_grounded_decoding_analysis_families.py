@@ -37,11 +37,19 @@ from ._minimal_factorial_analysis_bootstrap import (
 
 PRIMARY_OUTCOME = "driving_score_balanced_v1"
 PRIMARY_DIRECTION = "higher"
+# Field names on the right must exist on the real episode row (see
+# tests/test_grounded_decoding_analysis_fixes.py::RealEpisodeSchemaGuardTests,
+# which guards this table against another invented field). "shield_intervention_rate"
+# is not itself a real episode field -- it is an aggregate the CLI's
+# ``_enrich_v8_rows`` computes from real per-shield-stage trace records
+# (mirroring the ``analysis_any_shield_intervention_count`` convention in
+# ``_minimal_factorial_analysis_io.py``) and writes onto the row under the
+# ``analysis_`` prefix used for every other enrichment field.
 SECONDARY_OUTCOMES: dict[str, tuple[str, str]] = {
     "task_completion": ("task_completed", "higher"),
     "crash": ("crashed", "lower"),
     "fallback_rate": ("fallback_action_rate", "lower"),
-    "shield_intervention_rate": ("shield_intervention_rate", "diagnostic"),
+    "shield_intervention_rate": ("analysis_shield_intervention_rate", "diagnostic"),
     "decision_latency_ms_avg": ("decision_latency_ms_avg", "lower"),
 }
 
