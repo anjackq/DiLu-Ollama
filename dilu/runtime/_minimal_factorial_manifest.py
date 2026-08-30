@@ -348,7 +348,7 @@ def _items(value: Any) -> tuple[dict[str, Any], ...]:
 
 
 def _manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": manifest.schema_version,
         "campaign_id": manifest.campaign_id,
         "smoke_campaign_id": manifest.smoke_campaign_id,
@@ -363,6 +363,13 @@ def _manifest_payload(manifest: ExperimentManifest) -> dict[str, Any]:
         "bootstrap": manifest.bootstrap.to_dict(),
         "outputs": manifest.outputs.to_dict(),
     }
+    conditions = getattr(manifest, "conditions", None)
+    comparators = getattr(manifest, "comparators", None)
+    if conditions is not None:
+        payload["conditions"] = conditions.to_dict()
+    if comparators is not None:
+        payload["comparators"] = comparators.to_dict()
+    return payload
 
 
 def _git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:

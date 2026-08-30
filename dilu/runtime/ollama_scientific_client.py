@@ -385,14 +385,13 @@ class OllamaScientificClient:
 def is_retryable_failure(failure: RuntimeFailureClass) -> bool:
     return failure is RuntimeFailureClass.TRANSPORT_UNAVAILABLE_BEFORE_ACCEPT
 
-
 __all__ = [
     "NativeGenerationOptions",
     "OllamaScientificClient",
     "PreAcceptTransportUnavailable",
     "ScientificGenerationAbort",
-    "ScientificGenerationTimeout",
     "ScientificGenerationContext",
+    "ScientificGenerationTimeout",
     "ScientificTransportCapabilities",
     "build_native_chat_payload",
     "canonical_action_text_schema",
