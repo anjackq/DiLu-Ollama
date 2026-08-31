@@ -106,7 +106,7 @@ def _freeze_from_authored_s1(manifest_path: Path, authored: Any) -> None:
         manifest=manifest,
         case_set=case_set,
         snapshot=snapshot,
-        model_bindings=authored.bindings,
+        model_bindings=authored.model_bindings,
     )
 
 

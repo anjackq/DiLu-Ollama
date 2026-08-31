@@ -87,6 +87,29 @@ class GroundedCampaignArtifactTests(unittest.TestCase):
 
 
 class GroundedRunnerTests(unittest.TestCase):
+    def test_freeze_uses_the_authored_model_bindings_contract(self) -> None:
+        from dilu.runtime import grounded_decoding_runner as runner
+
+        authored = SimpleNamespace(model_bindings=frozen_bindings())
+        manifest = SimpleNamespace(repo_root=lambda: ROOT)
+        case_set = {"cases": []}
+        snapshot = mock.sentinel.snapshot
+        with (
+            mock.patch.object(
+                runner, "load_grounded_decoding_manifest", return_value=manifest
+            ),
+            mock.patch.object(
+                runner, "load_checked_case_set", return_value=case_set
+            ),
+            mock.patch.object(
+                runner, "build_runtime_snapshot", return_value=snapshot
+            ),
+            mock.patch.object(runner, "freeze_v8_campaign_artifacts") as freeze,
+        ):
+            runner._freeze_from_authored_s1(MANIFEST_PATH, authored)
+
+        self.assertEqual(freeze.call_args.kwargs["model_bindings"], authored.model_bindings)
+
     def test_probe_lock_freezes_campaigns_only_when_comparator_digests_match(
         self,
     ) -> None:
