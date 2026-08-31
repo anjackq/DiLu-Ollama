@@ -18,8 +18,21 @@ from dilu.runtime._scientific_contract_validation import (
     validate_output_contract_semantics,
 )
 from dilu.runtime.harness_config import OutputEnforcement
-from dilu.runtime.runtime_failures import ProtocolInvariantCode, RuntimeProtocolError
-from tests.scientific_transport_support import FakeResponse, success_payload
+from dilu.runtime.ollama_scientific_client import OllamaScientificClient
+from dilu.runtime.runtime_failures import (
+    ProtocolInvariantCode,
+    RuntimeFailureClass,
+    RuntimeProtocolError,
+)
+from dilu.runtime.scientific_transport_types import SCHEMA_MECHANISM_GROUNDED
+from tests.scientific_transport_support import (
+    FakeResponse,
+    identity_inspector_for,
+    make_capabilities,
+    make_request,
+    make_retry_policy,
+    success_payload,
+)
 from tests.test_scientific_driver_action_resolution import _forbid_legacy_helpers
 from tests.test_scientific_driver_transport import _transport_agent
 
@@ -33,12 +46,60 @@ def _advance_generation_context(agent, *, request_id: str, seed: int) -> None:
 
 
 class GroundedGenerationPathTests(unittest.TestCase):
+    def test_o2_decodes_the_json_string_returned_by_native_schema(self) -> None:
+        raw_json_string = '"Response to user:#### 1"'
+        capabilities = dataclasses.replace(
+            make_capabilities(), schema_mechanism=SCHEMA_MECHANISM_GROUNDED
+        )
+        client = OllamaScientificClient(
+            capabilities=capabilities,
+            retry_policy=make_retry_policy(),
+            identity_inspector=identity_inspector_for(),
+            post=lambda *args, **kwargs: FakeResponse(
+                success_payload(raw_json_string)
+            ),
+        )
+
+        result = client.generate(
+            make_request(
+                OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+                available_action_ids=(1, 3),
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.raw_response, raw_json_string)
+        self.assertEqual(result.contract_text, "Response to user:#### 1")
+
+    def test_o2_rejects_a_json_string_outside_the_grounded_enum(self) -> None:
+        capabilities = dataclasses.replace(
+            make_capabilities(), schema_mechanism=SCHEMA_MECHANISM_GROUNDED
+        )
+        client = OllamaScientificClient(
+            capabilities=capabilities,
+            retry_policy=make_retry_policy(),
+            identity_inspector=identity_inspector_for(),
+            post=lambda *args, **kwargs: FakeResponse(
+                success_payload('"Response to user:#### 4"')
+            ),
+        )
+
+        result = client.generate(
+            make_request(
+                OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+                available_action_ids=(1, 3),
+            )
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(result.error_class, RuntimeFailureClass.SCHEMA_REJECTION)
+
     def test_o2_enum_follows_current_decision_availability(self) -> None:
         captured_payloads: list[dict] = []
 
         def post(*args, **kwargs):
             captured_payloads.append(kwargs["json"])
-            return FakeResponse(success_payload("Response to user:#### 1"))
+            return FakeResponse(success_payload('"Response to user:#### 1"'))
 
         agent = _transport_agent(
             post, output_enforcement=OutputEnforcement.BACKEND_SCHEMA_GROUNDED
@@ -130,14 +191,12 @@ class GroundedContractValidationTests(unittest.TestCase):
     construction at all.
     """
 
-    def test_grounded_success_requires_contract_text_to_equal_raw_output(self) -> None:
-        # The native parser does not JSON-decode grounded-schema content, so
-        # a successful attempt's contract text is the raw output verbatim.
+    def test_grounded_success_binds_json_decoded_contract_text(self) -> None:
         validate_output_contract_semantics(
             output_enforcement="backend_schema_grounded",
             think_mode="no_think",
             error_class=None,
-            raw_output="Response to user:#### 2",
+            raw_output='"Response to user:#### 2"',
             contract_text="Response to user:#### 2",
             thinking_output="",
         )

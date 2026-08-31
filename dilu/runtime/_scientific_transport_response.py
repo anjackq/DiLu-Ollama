@@ -167,7 +167,10 @@ def parse_native_response_attempt(
         )
 
     contract_text = raw_response
-    if request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA:
+    if request.output_enforcement in (
+        OutputEnforcement.BACKEND_SCHEMA,
+        OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+    ):
         try:
             decoded = json.loads(raw_response)
         except (TypeError, ValueError) as exc:
@@ -187,7 +190,15 @@ def parse_native_response_attempt(
                 clock,
                 exc,
             )
-        if not isinstance(decoded, str) or decoded not in CANONICAL_ACTION_TEXT_VALUES:
+        allowed_values = (
+            CANONICAL_ACTION_TEXT_VALUES
+            if request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
+            else tuple(
+                f"Response to user:#### {action_id}"
+                for action_id in request.available_action_ids or ()
+            )
+        )
+        if not isinstance(decoded, str) or decoded not in allowed_values:
             return _schema_failure(
                 request,
                 attempt_id,

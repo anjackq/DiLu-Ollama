@@ -33,18 +33,6 @@ def validate_output_contract_semantics(
         raise ValueError("Unknown output-enforcement mode.")
     if error_class is not None:
         return
-    if output_enforcement == "backend_schema_grounded":
-        # The native response parser does not JSON-decode grounded-schema
-        # content (only plain `backend_schema` is decoded); contract text is
-        # the raw output verbatim, so the invariant mirrors that directly.
-        if (
-            contract_text != raw_output
-            or contract_text not in CANONICAL_ACTION_TEXT_VALUES
-        ):
-            raise ValueError(
-                "Grounded backend-schema output must be a canonical raw response."
-            )
-        return
     try:
         decoded = json.loads(raw_output or "")
     except (TypeError, ValueError) as exc:

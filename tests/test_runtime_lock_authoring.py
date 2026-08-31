@@ -13,8 +13,10 @@ from dilu.runtime._grounded_decoding_lock_authoring import (
     GROUNDED_PROBE_ACTION_IDS,
 )
 from dilu.runtime._minimal_factorial_manifest import RuntimeSnapshot
+from dilu.runtime._runtime_lock_response_evidence import derive_response_evidence
 from dilu.runtime._scientific_runtime_binding import load_verified_runtime_lock_binding
 from dilu.runtime.action_resolution import FIXED_IDLE_ACTION_ID
+from dilu.runtime.harness_config import OutputEnforcement
 from dilu.runtime.minimal_factorial_schedule import (
     case_fingerprint,
     load_experiment_manifest,
@@ -25,6 +27,7 @@ from dilu.runtime.scientific_transport_types import (
     canonical_action_text_schema,
 )
 from tests.grounded_decoding_schedule_support import FROZEN_DIGESTS
+from tests.scientific_transport_support import make_request, success_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "configs" / "iclr2027" / "minimal_factorial.yaml"
@@ -492,7 +495,7 @@ class V8NativeFakes:
         fmt = payload.get("format")
         enum = fmt.get("enum") if isinstance(fmt, dict) else None
         if isinstance(enum, list) and len(enum) == len(GROUNDED_PROBE_ACTION_IDS):
-            content = self._grounded_content
+            content = json.dumps(self._grounded_content)
         elif "format" in payload:
             content = json.dumps(FIXED_IDLE_ACTION_TEXT)
         else:
@@ -621,9 +624,20 @@ class GroundedDecodingLockAuthoringTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 ValueError,
-                "did not return a strict canonical action",
+                "schema rejection",
             ):
                 run_v8_authoring(output, fakes)
+
+    def test_grounded_probe_preserves_transport_drift_diagnostic(self) -> None:
+        request = make_request(
+            OutputEnforcement.BACKEND_SCHEMA_GROUNDED,
+            available_action_ids=GROUNDED_PROBE_ACTION_IDS,
+        )
+        payload = success_payload(json.dumps(GROUNDED_ACTION_TEXT))
+        payload["done_reason"] = " stop "
+
+        with self.assertRaisesRegex(ValueError, "malformed native response"):
+            derive_response_evidence(request, 200, payload, json.dumps(payload))
 
     def test_v8_lock_authoring_leaves_no_destination_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

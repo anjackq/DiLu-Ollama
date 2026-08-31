@@ -17,6 +17,7 @@ from .harness_config import (
     ParserMode,
     ResolverMode,
 )
+from .runtime_failures import RuntimeFailureClass
 from .scientific_transport_types import GenerationRequest
 
 
@@ -50,7 +51,7 @@ def derive_response_evidence(
     if attempt.error_class is not None:
         label = (
             "schema rejection"
-            if request.output_enforcement is OutputEnforcement.BACKEND_SCHEMA
+            if attempt.error_class is RuntimeFailureClass.SCHEMA_REJECTION
             else "malformed native response"
         )
         raise ValueError(f"Native capability probe {label}: {attempt.error_message}.")
